@@ -1,297 +1,640 @@
-"""Native, dependency-free display. Importing this module never creates a window."""
+"""Transparent Qt HUD groups and an independent settings window.
+
+Interaction follows WTRTI's group/OSD approach. Rendering uses Qt's native
+translucency and input-transparent windows, not whole-window opacity.
+"""
 
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 import math
+import sys
 from typing import Callable
 
+try:
+    from PySide6.QtCore import QAbstractNativeEventFilter, QPoint, QRect, QSettings, Qt, QTimer, Signal
+    from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
+    from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
+        QFileDialog, QFontComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+        QLineEdit, QMenu, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon,
+        QTextEdit, QVBoxLayout, QWidget)
+except ImportError as exc:
+    raise RuntimeError("图形界面需要 PySide6。请运行 start_windows.cmd，或安装 requirements.txt 中的依赖。") from exc
+
 from .contracts import OverlaySnapshot
+from .hud import HudContent, contents, details
+from .windows import GameWindow, WindowsDesktop
 
 
-class OverlayApp:
-    """Render snapshots on the Tk thread; commands are delegated to the owner."""
+GROUPS = {"flight": "飞行状态", "energy": "实际能量", "reference": "静态参考"}
+DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60), "reference": (0.73, 0.60)}
+HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置"}
 
-    BG = "#101820"
-    PANEL = "#192630"
-    FG = "#edf4f6"
-    MUTED = "#a7b8c2"
-    ACCENT = "#69d9c5"
-    WARNING = "#f4c778"
-    NEGATIVE = "#ff9c9c"
 
-    def __init__(self, get_snapshot: Callable[[], OverlaySnapshot],
-                 on_command: Callable[[dict], None], *, title: str = "WT Energy"):
-        global tk, filedialog
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-        except ImportError as exc:
-            raise RuntimeError("图形界面需要带 Tcl/Tk 的 Python；Windows 安装时请启用 Tcl/Tk。") from exc
-        self._get_snapshot = get_snapshot
-        self._on_command = on_command
-        self._closed = False
-        self._after_id: str | None = None
-        self._notes: tuple[str, ...] = ()
-        self.root = tk.Tk()
-        self.root.title(title)
-        self.root.configure(bg=self.BG)
-        self.root.geometry("430x690")
-        self.root.minsize(390, 540)
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self._font = "Microsoft YaHei UI" if self.root.tk.call("tk", "windowingsystem") == "win32" else "Helvetica"
-        self._topmost = tk.BooleanVar(value=True)
-        self._mode = tk.StringVar(value="live")
-        self._afterburner = tk.BooleanVar(value=True)
-        self._mass = tk.StringVar()
-        self._details_open = False
-        self._settings_open = False
-        self._build()
-        self._set_topmost()
-        self._refresh()
+def game_geometry(game: GameWindow, screen) -> QRect:
+    """Map native pixels using the monitor's origin, including mixed-DPI desktops."""
+    x, y, width, height = game.rect
+    mx, my = game.monitor_origin
+    area, ratio = screen.geometry(), screen.devicePixelRatio()
+    return QRect(area.x() + round((x - mx) / ratio), area.y() + round((y - my) / ratio),
+                 round(width / ratio), round(height / ratio))
 
-    def _label(self, parent, text="", size=10, color=None, bold=False, **kwargs):
-        return tk.Label(parent, text=text, font=(self._font, size, "bold" if bold else "normal"),
-                        bg=parent.cget("bg"), fg=color or self.FG, **kwargs)
 
-    def _button(self, parent, text, command):
-        return tk.Button(parent, text=text, command=command, font=(self._font, 10),
-                         bg=self.PANEL, fg=self.FG, activebackground="#2b414f",
-                         activeforeground=self.FG, relief="flat", padx=8, pady=5,
-                         highlightthickness=0, cursor="hand2")
+def position_fraction(position: QPoint, size, viewport: QRect) -> tuple[float, float]:
+    return (min(1.0, max(0.0, (position.x() - viewport.x()) / max(1, viewport.width() - size.width()))),
+            min(1.0, max(0.0, (position.y() - viewport.y()) / max(1, viewport.height() - size.height()))))
 
-    def _build(self):
-        # The scroll container keeps controls reachable at high display scaling.
-        canvas = tk.Canvas(self.root, bg=self.BG, highlightthickness=0)
-        scrollbar = tk.Scrollbar(self.root, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        body = tk.Frame(canvas, bg=self.BG, padx=18, pady=16)
-        window = canvas.create_window((0, 0), window=body, anchor="nw")
-        body.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
 
-        header = tk.Frame(body, bg=self.BG)
-        header.pack(fill="x")
-        self._label(header, "WT  /  能量", 15, bold=True).pack(side="left")
-        self.badge = self._label(header, "等待数据", 10, self.MUTED, bold=True)
-        self.badge.pack(side="right")
-        self.aircraft = self._label(body, "等待飞机状态", 12, anchor="w")
-        self.aircraft.pack(fill="x", pady=(9, 3))
-        self.status = self._label(body, "", 9, self.MUTED, anchor="w", justify="left", wraplength=345)
-        self.status.pack(fill="x")
-        self.banner = self._label(body, "", 10, self.WARNING, bold=True, anchor="w", wraplength=345)
-        self.banner.pack(fill="x", pady=(5, 7))
+class HudGroup(QWidget):
+    moved = Signal(str)
 
-        states = tk.Frame(body, bg=self.BG)
-        states.pack(fill="x", pady=(0, 14))
-        self.state_values = {}
-        for column, (key, caption) in enumerate((("tas", "真空速 km/h"), ("ias", "表速 km/h"), ("alt", "高度 m"))):
-            cell = tk.Frame(states, bg=self.BG)
-            cell.grid(row=0, column=column, sticky="ew")
-            states.columnconfigure(column, weight=1)
-            self._label(cell, caption, 9, self.MUTED).pack(anchor="w")
-            value = self._label(cell, "—", 19, bold=True)
-            value.pack(anchor="w")
-            self.state_values[key] = value
+    def __init__(self, key: str, font: QFont, color: str):
+        super().__init__()
+        self.key = key
+        self.content = HudContent(GROUPS[key], ())
+        self.editing = False
+        self.fraction = DEFAULT_POSITIONS[key]
+        self.viewport = QRect(0, 0, 1920, 1080)
+        self._drag = None
+        self.accent = color
+        self.setFont(font)
+        self.setWindowTitle("WT Energy HUD · " + GROUPS[key])
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAutoFillBackground(False)
+        self.setWindowFlags(self._flags())
+        self._measure()
 
-        actual = tk.Frame(body, bg=self.PANEL, padx=15, pady=13)
-        actual.pack(fill="x")
-        self._label(actual, "实际 SEP", 11, self.MUTED).pack(anchor="w")
-        sep_line = tk.Frame(actual, bg=self.PANEL)
-        sep_line.pack(fill="x")
-        self.sep = self._label(sep_line, "—", 38, self.ACCENT, bold=True)
-        self.sep.pack(side="left")
-        self._label(sep_line, "m/s", 12, self.MUTED).pack(side="left", padx=8, pady=(20, 0))
-        self.sep_hint = self._label(actual, "等待有效采样", 9, self.MUTED, anchor="w", wraplength=315)
-        self.sep_hint.pack(fill="x", pady=(0, 9))
-        self.energy_height = self._metric_row(actual, "比能高度", "m")
-        self.climb = self._metric_row(actual, "爬升贡献", "m/s")
-        self.kinetic = self._metric_row(actual, "动能贡献", "m/s")
+    def _flags(self):
+        flags = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                 | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
+        if not self.editing:
+            flags |= Qt.WindowType.WindowTransparentForInput
+        return flags
 
-        predicted = tk.Frame(body, bg=self.BG)
-        predicted.pack(fill="x", pady=(17, 0))
-        self._label(predicted, "静态参考 · 同高 / 1g / 干净构型", 11, bold=True).pack(anchor="w")
-        self.model = self._label(predicted, "未加载 FM", 9, self.MUTED, anchor="w", wraplength=345)
-        self.model.pack(fill="x", pady=(3, 5))
-        self.pred_sep = self._metric_row(predicted, "当前速度的参考 SEP", "m/s")
-        self.best_speed = self._metric_row(predicted, "采样最高 SEP 对应真空速", "km/h")
-        self.best_sep = self._metric_row(predicted, "采样最高 SEP", "m/s")
-        self.pred_hint = self._label(predicted, "等待模型", 9, self.WARNING, anchor="w", justify="left", wraplength=345)
-        self.pred_hint.pack(fill="x", pady=(5, 0))
-        self._label(body, "三维转向建议：动态模型尚未接入", 9, self.MUTED, anchor="w").pack(fill="x", pady=(14, 8))
+    def set_editing(self, enabled: bool):
+        if enabled == self.editing:
+            return
+        self.editing = enabled
+        self._drag = None
+        position, visible = self.pos(), self.isVisible()
+        self.setWindowFlags(self._flags())
+        self.move(position)
+        self.setCursor(Qt.CursorShape.SizeAllCursor if enabled else Qt.CursorShape.ArrowCursor)
+        if visible:
+            self.show()
+        self.update()
 
-        controls = tk.Frame(body, bg=self.BG)
-        controls.pack(fill="x")
-        self.settings_button = self._button(controls, "设置 ▸", self._toggle_settings)
-        self.settings_button.pack(side="left")
-        self.details_button = self._button(controls, "说明 ▸", self._toggle_details)
-        self.details_button.pack(side="left", padx=6)
-        self._check(controls, "置顶", self._topmost, self._set_topmost).pack(side="right")
+    def set_content(self, content: HudContent):
+        if content != self.content:
+            self.content = content
+            self._measure()
+            self.update()
 
-        self.settings = tk.Frame(body, bg=self.PANEL, padx=10, pady=10)
-        mode_row = tk.Frame(self.settings, bg=self.PANEL)
-        mode_row.pack(fill="x")
-        for caption, value in (("实时 8111", "live"), ("合成演示", "demo")):
-            tk.Radiobutton(mode_row, text=caption, value=value, variable=self._mode,
-                           command=lambda: self._command({"action": "mode", "value": self._mode.get()}),
-                           bg=self.PANEL, fg=self.FG, selectcolor=self.BG,
-                           activebackground=self.PANEL, activeforeground=self.FG,
-                           font=(self._font, 10)).pack(side="left")
-        self._button(self.settings, "选择 FM 文件…", self._choose_model).pack(fill="x", pady=7)
-        mass_row = tk.Frame(self.settings, bg=self.PANEL)
-        mass_row.pack(fill="x")
-        self._label(mass_row, "总质量 kg", 10).pack(side="left")
-        entry = tk.Entry(mass_row, textvariable=self._mass, width=11, font=(self._font, 10),
-                         bg=self.BG, fg=self.FG, insertbackground=self.FG, relief="flat")
-        entry.pack(side="left", padx=7, ipady=5)
-        entry.bind("<Return>", lambda event: self._apply_mass())
-        self._button(mass_row, "应用", self._apply_mass).pack(side="right")
-        self._check(self.settings, "模型使用加力", self._afterburner,
-                    lambda: self._command({"action": "afterburner", "enabled": self._afterburner.get()})).pack(anchor="w", pady=5)
-        self._label(self.settings, "窗口不透明度", 9, self.MUTED).pack(anchor="w")
-        tk.Scale(self.settings, from_=0.45, to=1.0, resolution=0.05, orient="horizontal",
-                 showvalue=False, command=self._set_opacity, bg=self.PANEL, fg=self.FG,
-                 highlightthickness=0, troughcolor=self.BG, variable=tk.DoubleVar(value=1.0)).pack(fill="x")
-        self.details = self._label(body, "暂无额外说明", 9, self.MUTED, justify="left", anchor="w", wraplength=345)
-        self.command_status = self._label(body, "", 9, self.WARNING, anchor="w", justify="left", wraplength=345)
-        self.command_status.pack(fill="x", pady=(7, 0))
+    def set_style(self, font: QFont, color: str):
+        self.setFont(font)
+        self.accent = color
+        self._measure()
+        self.update()
 
-    def _check(self, parent, text, variable, command):
-        return tk.Checkbutton(parent, text=text, variable=variable, command=command,
-                              bg=parent.cget("bg"), fg=self.MUTED, selectcolor=self.BG,
-                              activebackground=parent.cget("bg"), activeforeground=self.FG,
-                              font=(self._font, 9))
+    def _measure(self):
+        self.small_font = QFont(self.font())
+        self.small_font.setPointSizeF(max(8.0, self.font().pointSizeF() * 0.75))
+        self.small_metrics = QFontMetrics(self.small_font)
+        self.metrics = QFontMetrics(self.font())
+        self.row_height = self.metrics.height() + 6
+        self.header_height = self.small_metrics.height() + 15
+        labels = max((self.metrics.horizontalAdvance(row.label) for row in self.content.rows), default=120)
+        values = max([self.metrics.horizontalAdvance("−12,345.6"),
+                      *(self.metrics.horizontalAdvance(row.value) for row in self.content.rows)])
+        self.unit_width = self.small_metrics.horizontalAdvance("km/h")
+        ideal = max(labels + values + self.unit_width + 54,
+                    self.small_metrics.horizontalAdvance(self.content.title) + 24)
+        width = min(max(280, ideal), max(100, self.viewport.width()))
+        footer_lines = self.content.footer.splitlines()
+        height = 12 + self.header_height + len(self.content.rows) * self.row_height
+        height += len(footer_lines) * (self.small_metrics.height() + 3) + 12
+        self.resize(width, height)
 
-    def _metric_row(self, parent, caption, unit):
-        row = tk.Frame(parent, bg=parent.cget("bg"))
-        row.pack(fill="x", pady=3)
-        self._label(row, caption, 10, self.MUTED).pack(side="left")
-        value = self._label(row, "— " + unit, 11, bold=True)
-        value.pack(side="right")
-        return value
+    def place(self, viewport: QRect):
+        if self.viewport != viewport:
+            self.viewport = QRect(viewport)
+            self._measure()
+        if self._drag is None:
+            x, y = self.fraction
+            self.move(viewport.x() + round(max(0, viewport.width() - self.width()) * x),
+                      viewport.y() + round(max(0, viewport.height() - self.height()) * y))
 
     @staticmethod
-    def _number(value, digits=0, signed=False, scale=1.0):
-        if value is None or not math.isfinite(value):
-            return "—"
-        return format(value * scale, f"{'+' if signed else ''},.{digits}f")
+    def _text(painter, x, baseline, text, font, color):
+        path = QPainterPath()
+        path.addText(x, baseline, font, text)
+        outline = QPen(QColor(0, 0, 0, 235), 2.5, Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.strokePath(path, outline)
+        painter.fillPath(path, QColor(color))
 
-    def _render(self, snapshot: OverlaySnapshot):
-        state, energy, advice = snapshot.state, snapshot.energy, snapshot.advice
-        valid = state is not None and state.valid
-        demo = snapshot.mode == "demo" or (state is not None and state.source == "demo")
-        self._mode.set(snapshot.mode)
-        self._afterburner.set(snapshot.afterburner)
-        if not self._mass.get() and snapshot.mass_override_kg is not None:
-            self._mass.set(f"{snapshot.mass_override_kg:g}")
-        self.badge.configure(text="DEMO" if demo else ("LIVE" if valid else "未连接 / 无效"),
-                             fg=self.WARNING if demo else (self.ACCENT if valid else self.MUTED))
-        self.banner.configure(text="合成演示数据 · 非游戏实测" if demo else "")
-        self.aircraft.configure(text=state.aircraft_id if state and state.aircraft_id else "等待飞机状态")
-        self.status.configure(text=snapshot.status)
-        for key, value, scale in (("tas", state.tas_mps if valid else None, 3.6),
-                                  ("ias", state.ias_mps if valid else None, 3.6),
-                                  ("alt", state.altitude_m if valid else None, 1.0)):
-            self.state_values[key].configure(text=self._number(value, scale=scale))
-        ready = valid and energy is not None and energy.ready
-        sep = energy.sep_mps if ready else None
-        self.sep.configure(text=self._number(sep, 1, True),
-                           fg=self.NEGATIVE if sep is not None and sep < 0 else self.ACCENT)
-        self.sep_hint.configure(text=("总比能正在增加" if sep > 0 else "总比能正在减少" if sep < 0 else "总比能基本不变")
-                                if sep is not None and math.isfinite(sep) else
-                                ("等待稳定采样" if valid else "等待有效飞行数据"))
-        self.energy_height.configure(text=self._number(energy.energy_height_m if valid and energy else None) + " m")
-        self.climb.configure(text=self._number(energy.climb_mps if valid and energy else None, 1, True) + " m/s")
-        self.kinetic.configure(text=self._number(energy.kinetic_sep_mps if ready else None, 1, True) + " m/s")
-        self.model.configure(text=snapshot.model_name)
-        current = advice.current if valid and advice else None
-        best = advice.best if valid and advice and advice.available else None
-        self.pred_sep.configure(text=self._number(current.sep_mps if current and current.valid else None, 1, True) + " m/s")
-        self.best_speed.configure(text=self._number(best.condition.tas_mps if best and best.valid else None, scale=3.6) + " km/h")
-        self.best_sep.configure(text=self._number(best.sep_mps if best and best.valid else None, 1, True) + " m/s")
-        hint = advice.reason if advice and advice.reason else (current.reason if current and not current.valid else "")
-        self.pred_hint.configure(text=hint or ("未求配平 · 尚未通过游戏验证 · 不代表当前机动" if current or best else "加载 FM 并设置总质量后查看参考性能"))
-        notes = list(snapshot.notes)
-        for item in (state, energy, advice, current, best):
-            if item:
-                notes.extend(item.notes)
-        if current or best:
-            notes.insert(0, "模型预测未求配平，尚未通过游戏验证；采样最优不等于全程最优爬升。")
-        self._notes = tuple(dict.fromkeys(notes))
-        self.details.configure(text="\n\n".join(self._notes) or "暂无额外说明")
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if self.editing:
+            painter.fillRect(self.rect(), QColor(12, 22, 30, 110))
+            painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 5, 5)
+        header = self.content.title + (" · 拖动" if self.editing else "")
+        header = self.small_metrics.elidedText(header, Qt.TextElideMode.ElideRight, self.width() - 24)
+        header_color = "#ffce79" if "合成演示" in self.content.title else self.accent
+        self._text(painter, 12, 10 + self.small_metrics.ascent(), header, self.small_font, header_color)
+        y = 10 + self.header_height
+        value_right = self.width() - self.unit_width - 22
+        for row in self.content.rows:
+            value_width = self.metrics.horizontalAdvance(row.value)
+            label = self.metrics.elidedText(row.label, Qt.TextElideMode.ElideRight,
+                                            max(1, value_right - value_width - 25))
+            baseline = y + self.metrics.ascent()
+            self._text(painter, 12, baseline, label, self.font(), "#f1f5f8")
+            color = {"accent": self.accent, "negative": "#ff8d86"}.get(row.tone, "#ffffff")
+            self._text(painter, value_right - value_width, baseline, row.value, self.font(), color)
+            self._text(painter, value_right + 8, baseline, row.unit, self.small_font, "#d2dee5")
+            y += self.row_height
+        for line in self.content.footer.splitlines():
+            line = self.small_metrics.elidedText(line, Qt.TextElideMode.ElideRight, self.width() - 24)
+            self._text(painter, 12, y + self.small_metrics.ascent(), line, self.small_font, "#c2ced6")
+            y += self.small_metrics.height() + 3
+        painter.end()
 
-    def _refresh(self):
-        if self._closed:
-            return
+    def mousePressEvent(self, event):
+        if self.editing and event.button() == Qt.MouseButton.LeftButton:
+            self._drag = event.globalPosition().toPoint() - self.pos()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.editing and self._drag is not None:
+            point = event.globalPosition().toPoint() - self._drag
+            point.setX(min(max(self.viewport.left(), point.x()),
+                           self.viewport.left() + max(0, self.viewport.width() - self.width())))
+            point.setY(min(max(self.viewport.top(), point.y()),
+                           self.viewport.top() + max(0, self.viewport.height() - self.height())))
+            self.move(point)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag is not None:
+            self._drag = None
+            self.fraction = position_fraction(self.pos(), self.size(), self.viewport)
+            self.moved.emit(self.key)
+            event.accept()
+
+
+class SettingsWindow(QWidget):
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+        self.setWindowTitle("WT Energy · 设置")
+        self.resize(600, 730)
+        self.setMinimumSize(450, 400)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer.addWidget(scroll)
+        body = QWidget()
+        scroll.setWidget(body)
+        layout = QVBoxLayout(body)
+        title = QLabel("WT ENERGY  /  游戏叠加显示")
+        title.setStyleSheet("font-size: 20px; font-weight: 600")
+        layout.addWidget(title)
+        self.status = QLabel("等待飞行数据")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        help_text = QLabel("游戏使用「全屏窗口」模式。关闭设置后，指标仍可显示在游戏中。\n"
+                           "战斗时鼠标穿透；调整位置时进入布局模式。")
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+        display = QGroupBox("显示与布局")
+        form = QFormLayout(display)
+        layout.addWidget(display)
+        self.visible_box = QCheckBox("显示 HUD")
+        self.visible_box.setChecked(owner.hud_visible)
+        self.visible_box.toggled.connect(owner.set_visible)
+        self.layout_box = QCheckBox("布局模式：拖动指标组")
+        self.layout_box.toggled.connect(owner.set_editing)
+        form.addRow(self.visible_box)
+        form.addRow(self.layout_box)
+        self.group_boxes = {}
+        group_row = QHBoxLayout()
+        for key, caption in GROUPS.items():
+            check = QCheckBox(caption)
+            check.setChecked(owner.group_enabled[key])
+            check.toggled.connect(lambda enabled, key=key: owner.set_group_enabled(key, enabled))
+            group_row.addWidget(check)
+            self.group_boxes[key] = check
+        form.addRow("指标组", group_row)
+        self.font_box = QFontComboBox()
+        self.font_box.setCurrentFont(owner.hud_font)
+        self.font_box.currentFontChanged.connect(owner.change_font)
+        form.addRow("字体", self.font_box)
+        self.font_size = QSpinBox()
+        self.font_size.setRange(9, 28)
+        self.font_size.setValue(owner.hud_font.pointSize())
+        self.font_size.valueChanged.connect(owner.change_font_size)
+        form.addRow("字号", self.font_size)
+        self.color_button = QPushButton("选择强调色…")
+        self.color_button.clicked.connect(owner.choose_color)
+        form.addRow("颜色", self.color_button)
+        self.screen_box = QComboBox()
+        self.screen_box.currentIndexChanged.connect(owner.change_screen)
+        form.addRow("预览 / 备用屏幕", self.screen_box)
+        self.follow_box = QCheckBox("自动跟随战雷窗口的位置和尺寸")
+        self.follow_box.setChecked(owner.follow_game)
+        self.follow_box.toggled.connect(owner.set_follow_game)
+        self.hide_box = QCheckBox("切出游戏或最小化时隐藏（演示 / 布局除外）")
+        self.hide_box.setChecked(owner.hide_outside)
+        self.hide_box.toggled.connect(owner.set_hide_outside)
+        form.addRow(self.follow_box)
+        form.addRow(self.hide_box)
+        self.surface_status = QLabel()
+        self.surface_status.setWordWrap(True)
+        form.addRow(self.surface_status)
+        reset = QPushButton("恢复默认位置")
+        reset.clicked.connect(owner.reset_positions)
+        form.addRow(reset)
+        data = QGroupBox("数据与静态参考")
+        form = QFormLayout(data)
+        layout.addWidget(data)
+        self.mode_box = QComboBox()
+        self.mode_box.addItem("实时 8111", "live")
+        self.mode_box.addItem("合成演示 · 非游戏实测", "demo")
+        self.mode_box.currentIndexChanged.connect(lambda i: owner.command({"action": "mode", "value": self.mode_box.itemData(i)}))
+        form.addRow("数据来源", self.mode_box)
+        self.model_label = QLabel("未加载 FM")
+        self.model_label.setWordWrap(True)
+        form.addRow("当前模型", self.model_label)
+        choose_model = QPushButton("选择 FM 文件…")
+        choose_model.clicked.connect(owner.choose_model)
+        form.addRow(choose_model)
+        row = QHBoxLayout()
+        self.mass = QLineEdit()
+        self.mass.setPlaceholderText("手动指定参考总质量")
+        self.mass.returnPressed.connect(self.apply_mass)
+        row.addWidget(self.mass)
+        apply_mass = QPushButton("应用")
+        apply_mass.clicked.connect(self.apply_mass)
+        row.addWidget(apply_mass)
+        form.addRow("总质量 / kg", row)
+        self.afterburner_box = QCheckBox("模型使用全加力（关闭则使用全军推）")
+        self.afterburner_box.toggled.connect(lambda enabled: owner.command({"action": "afterburner", "enabled": enabled}))
+        form.addRow(self.afterburner_box)
+        self.error = QLabel()
+        self.error.setWordWrap(True)
+        self.error.setStyleSheet("color: #ce562e")
+        layout.addWidget(self.error)
+        self.hotkey_status = QLabel()
+        self.hotkey_status.setWordWrap(True)
+        layout.addWidget(self.hotkey_status)
+        self.notes = QTextEdit()
+        self.notes.setReadOnly(True)
+        self.notes.setMinimumHeight(120)
+        layout.addWidget(self.notes)
+        buttons = QHBoxLayout()
+        done = QPushButton("完成布局并收起设置")
+        done.clicked.connect(self.close)
+        quit_button = QPushButton("退出程序")
+        quit_button.clicked.connect(owner.close)
+        buttons.addWidget(done)
+        buttons.addWidget(quit_button)
+        outer.addLayout(buttons)
+
+    def apply_mass(self):
         try:
-            self._render(self._get_snapshot())
-        except Exception as exc:
-            self._render(OverlaySnapshot(mode="live", status="暂时无法读取飞行状态"))
-            self.badge.configure(text="数据不可用", fg=self.WARNING)
-            self.command_status.configure(text=f"读取状态失败：{exc}")
-            self.sep.configure(text="—")
-        self._after_id = self.root.after(100, self._refresh)
-
-    def _command(self, command):
-        try:
-            self._on_command(command)
-        except Exception as exc:
-            self.command_status.configure(text=f"操作未完成：{exc}")
-        else:
-            self.command_status.configure(text="")
-
-    def _choose_model(self):
-        path = filedialog.askopenfilename(parent=self.root, title="选择飞机 FM 文件",
-                                          filetypes=(("FM 文件", "*.blkx *.json *.blk"), ("所有文件", "*")))
-        if path:
-            self._command({"action": "model", "path": path})
-
-    def _apply_mass(self):
-        try:
-            value = float(self._mass.get().strip())
+            value = float(self.mass.text().strip())
             if not math.isfinite(value) or value <= 0:
                 raise ValueError
         except ValueError:
-            self.command_status.configure(text="请输入大于 0 的总质量（kg）。")
+            self.error.setText("请输入大于 0 的总质量（kg）。")
             return
-        self._command({"action": "mass", "kg": value})
+        self.owner.command({"action": "mass", "kg": value})
 
-    def _toggle_settings(self):
-        self._settings_open = not self._settings_open
-        self.settings_button.configure(text="设置 ▾" if self._settings_open else "设置 ▸")
-        if self._settings_open:
-            self.settings.pack(fill="x", pady=(9, 0), before=self.command_status)
+    def closeEvent(self, event):
+        if self.owner.closed:
+            event.accept()
+        elif self.owner.can_reopen_settings:
+            self.owner.set_editing(False)
+            self.hide()
+            event.ignore()
         else:
-            self.settings.pack_forget()
+            # Never strand a click-through HUD without a tray or a settings hotkey.
+            self.owner.close()
+            event.accept()
 
-    def _toggle_details(self):
-        self._details_open = not self._details_open
-        self.details_button.configure(text="说明 ▾" if self._details_open else "说明 ▸")
-        if self._details_open:
-            self.details.pack(fill="x", pady=(10, 0), before=self.command_status)
+
+class HotkeyFilter(QAbstractNativeEventFilter):
+    def __init__(self, callbacks):
+        super().__init__()
+        self.callbacks = callbacks
+
+    def nativeEventFilter(self, event_type, message):
+        if bytes(event_type) in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+            msg = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
+            if msg.message == 0x0312 and int(msg.wParam) in self.callbacks:
+                QTimer.singleShot(0, self.callbacks[int(msg.wParam)])
+                return True, 0
+        return False, 0
+
+
+class OverlayApp:
+    def __init__(self, get_snapshot: Callable[[], OverlaySnapshot], on_command: Callable[[dict], None],
+                 *, title="WT Energy", settings: QSettings | None = None, show_on_start=True):
+        self.app = QApplication.instance() or QApplication([sys.argv[0]])
+        self.app.setQuitOnLastWindowClosed(False)
+        self.app.setApplicationName(title)
+        self._get_snapshot, self._on_command = get_snapshot, on_command
+        self.closed = False
+        self.preferences = settings if settings is not None else QSettings(
+            QSettings.Format.IniFormat, QSettings.Scope.UserScope, "WT Energy", "Overlay")
+        self.hud_visible = True
+        self.editing = False
+        self.follow_game = self.preferences.value("follow_game", True, type=bool)
+        self.hide_outside = self.preferences.value("hide_outside", True, type=bool)
+        self.screen_name = self.preferences.value("screen", "", type=str)
+        family = self.preferences.value("font_family", "Microsoft YaHei UI" if sys.platform == "win32" else "PingFang SC", type=str)
+        size = max(9, min(28, self.preferences.value("font_size", 14, type=int)))
+        self.hud_font = QFont(family, size)
+        self.hud_font.setWeight(QFont.Weight.DemiBold)
+        self.color = self.preferences.value("accent", "#71e3ce", type=str)
+        if not QColor(self.color).isValid():
+            self.color = "#71e3ce"
+        self.groups, self.group_enabled = {}, {}
+        for key in GROUPS:
+            group = HudGroup(key, self.hud_font, self.color)
+            x, y = DEFAULT_POSITIONS[key]
+            position = (self.preferences.value(f"groups/{key}/x", x, type=float),
+                        self.preferences.value(f"groups/{key}/y", y, type=float))
+            group.fraction = tuple(min(1.0, max(0.0, p)) if math.isfinite(p) else d
+                                   for p, d in zip(position, (x, y)))
+            group.moved.connect(self.save_position)
+            self.groups[key] = group
+            self.group_enabled[key] = self.preferences.value(f"groups/{key}/enabled", True, type=bool)
+        self.desktop = WindowsDesktop() if sys.platform == "win32" else None
+        self.game = None
+        self.snapshot = OverlaySnapshot("live", "等待飞行数据")
+        self.settings_window = SettingsWindow(self)
+        self._setup_tray()
+        self._setup_hotkeys()
+        self.can_reopen_settings = self.tray.isVisible() or self.settings_hotkey_available
+        self.app.screenAdded.connect(self._screens_changed)
+        self.app.screenRemoved.connect(self._screens_changed)
+        self._screens_changed()
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(100)
+        self.surface_timer = QTimer()
+        self.surface_timer.timeout.connect(self.refresh_surface)
+        self.surface_timer.start(250)
+        self.refresh()
+        self.refresh_surface()
+        self.app.aboutToQuit.connect(self.close)
+        first_run = not self.preferences.value("configured", False, type=bool)
+        if show_on_start and (not self.can_reopen_settings or (first_run and self.snapshot.mode != "demo")):
+            self.show_settings()
+        self.preferences.setValue("configured", True)
+
+    def _setup_tray(self):
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(self.color), 3))
+        painter.drawEllipse(3, 3, 26, 26)
+        painter.drawLine(9, 21, 16, 10)
+        painter.drawLine(16, 10, 23, 21)
+        painter.end()
+        self.tray = QSystemTrayIcon(QIcon(pixmap), self.settings_window)
+        self.tray.setToolTip("WT Energy · 透明 HUD")
+        self.tray_menu = QMenu()
+        self.visible_action = QAction("显示 HUD", self.tray_menu, checkable=True, checked=True)
+        self.visible_action.toggled.connect(self.set_visible)
+        self.edit_action = QAction("布局模式", self.tray_menu, checkable=True)
+        self.edit_action.toggled.connect(self.set_editing)
+        self.tray_menu.addAction(self.visible_action)
+        self.tray_menu.addAction(self.edit_action)
+        self.tray_menu.addAction("设置…", self.show_settings)
+        self.tray_menu.addSeparator()
+        self.tray_menu.addAction("退出", self.close)
+        self.tray.setContextMenu(self.tray_menu)
+        self.tray.activated.connect(lambda reason: self.show_settings()
+            if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray.show()
+
+    def _setup_hotkeys(self):
+        callbacks = {"O": lambda: self.set_visible(not self.hud_visible),
+                     "L": lambda: self.set_editing(not self.editing), "S": self.show_settings}
+        active, failures = {}, []
+        self.settings_hotkey_available = False
+        if self.desktop:
+            for identifier, (letter, callback) in enumerate(callbacks.items(), 0x5740):
+                if self.desktop.register_hotkey(identifier, letter):
+                    active[identifier] = callback
+                    if letter == "S":
+                        self.settings_hotkey_available = True
+                else:
+                    failures.append("Ctrl+Alt+" + letter)
+        self.hotkey_filter = HotkeyFilter(active)
+        if active:
+            self.app.installNativeEventFilter(self.hotkey_filter)
+        text = "  ·  ".join(f"Ctrl+Alt+{key}：{value}" for key, value in HOTKEYS.items())
+        if not self.desktop:
+            text = "全局热键与自动跟随仅在 Windows 提供；当前可用设置界面预览布局。"
+        elif failures:
+            text += "\n注册失败（可能已被占用）：" + "、".join(failures) + "。可使用托盘或设置。"
+        self.settings_window.hotkey_status.setText(text)
+
+    @staticmethod
+    def _checked(widget, value):
+        blocked = widget.blockSignals(True)
+        widget.setChecked(value)
+        widget.blockSignals(blocked)
+
+    def set_visible(self, enabled):
+        self.hud_visible = enabled
+        if not enabled and self.editing:
+            self.set_editing(False)
+        self._checked(self.settings_window.visible_box, enabled)
+        self._checked(self.visible_action, enabled)
+        self._sync_surface()
+
+    def set_editing(self, enabled):
+        self.editing = enabled
+        if enabled:
+            self.set_visible(True)
+        for group in self.groups.values():
+            group.set_editing(enabled)
+        self._checked(self.settings_window.layout_box, enabled)
+        self._checked(self.edit_action, enabled)
+        self._sync_surface()
+        self.preferences.sync()
+
+    def set_group_enabled(self, key, enabled):
+        self.group_enabled[key] = enabled
+        self.preferences.setValue(f"groups/{key}/enabled", enabled)
+        self._sync_surface()
+
+    def save_position(self, key):
+        x, y = self.groups[key].fraction
+        self.preferences.setValue(f"groups/{key}/x", x)
+        self.preferences.setValue(f"groups/{key}/y", y)
+        self.preferences.sync()
+
+    def reset_positions(self):
+        for key, group in self.groups.items():
+            group.fraction = DEFAULT_POSITIONS[key]
+            self.save_position(key)
+        self._sync_surface()
+
+    def change_font(self, font):
+        self.hud_font.setFamily(font.family())
+        self._apply_style()
+
+    def change_font_size(self, size):
+        self.hud_font.setPointSize(size)
+        self._apply_style()
+
+    def choose_color(self):
+        color = QColorDialog.getColor(QColor(self.color), self.settings_window, "选择强调色")
+        if color.isValid():
+            self.color = color.name()
+            self._apply_style()
+
+    def _apply_style(self):
+        self.preferences.setValue("font_family", self.hud_font.family())
+        self.preferences.setValue("font_size", self.hud_font.pointSize())
+        self.preferences.setValue("accent", self.color)
+        for group in self.groups.values():
+            group.set_style(self.hud_font, self.color)
+        self._sync_surface()
+
+    def _screens_changed(self, *args):
+        box = self.settings_window.screen_box
+        box.blockSignals(True)
+        box.clear()
+        for screen in self.app.screens():
+            box.addItem(screen.name() or "主屏幕", screen.name())
+        box.setCurrentIndex(max(0, box.findData(self.screen_name)))
+        box.blockSignals(False)
+        self._sync_surface()
+
+    def change_screen(self, index):
+        self.screen_name = self.settings_window.screen_box.itemData(index) or ""
+        self.preferences.setValue("screen", self.screen_name)
+        self._sync_surface()
+
+    def set_follow_game(self, enabled):
+        self.follow_game = enabled
+        self.preferences.setValue("follow_game", enabled)
+        self._sync_surface()
+
+    def set_hide_outside(self, enabled):
+        self.hide_outside = enabled
+        self.preferences.setValue("hide_outside", enabled)
+        self._sync_surface()
+
+    def refresh_surface(self):
+        if self.closed:
+            return
+        self.game = self.desktop.game_window() if self.desktop else None
+        self._sync_surface()
+
+    def _sync_surface(self):
+        screens = self.app.screens()
+        if not screens:
+            return
+        screen = next((s for s in screens if s.name() == self.screen_name), self.app.primaryScreen())
+        viewport = screen.availableGeometry()
+        game = self.game
+        demo = self.snapshot.mode == "demo"
+        if game and self.follow_game and not game.minimized and not demo:
+            game_screen = next((s for s in screens if s.name() == game.monitor_name), screen)
+            area = game_geometry(game, game_screen)
+            if area.width() > 0 and area.height() > 0:
+                viewport = area
+        allowed = self.hud_visible and (self.editing or demo or not self.hide_outside
+                                        or not self.desktop or bool(game and game.foreground and not game.minimized))
+        for key, group in self.groups.items():
+            group.place(viewport)
+            visible = allowed and self.group_enabled[key]
+            if group.isVisible() != visible:
+                group.setVisible(visible)
+        status = ("布局模式 · 拖动边框，Ctrl+Alt+L 完成" if self.editing else
+                  "合成演示 · 使用所选屏幕" if demo else
+                  "未检测到战雷窗口 · 可进入布局模式预览" if self.desktop and not game else
+                  "战雷已最小化" if game and game.minimized else
+                  "已识别战雷窗口" if game else "当前为跨平台预览；Windows 游戏覆盖仍需实测")
+        self.settings_window.surface_status.setText(status)
+
+    def refresh(self):
+        if self.closed:
+            return
+        try:
+            snapshot = self._get_snapshot()
+        except Exception as exc:
+            snapshot = OverlaySnapshot(self.snapshot.mode, f"读取状态失败：{exc}")
+        self.snapshot = snapshot
+        for key, content in contents(snapshot).items():
+            self.groups[key].set_content(content)
+        window = self.settings_window
+        window.status.setText(snapshot.status)
+        window.model_label.setText(snapshot.model_name)
+        window.mode_box.blockSignals(True)
+        window.mode_box.setCurrentIndex(1 if snapshot.mode == "demo" else 0)
+        window.mode_box.blockSignals(False)
+        self._checked(window.afterburner_box, snapshot.afterburner)
+        if not window.mass.text() and snapshot.mass_override_kg is not None:
+            window.mass.setText(f"{snapshot.mass_override_kg:g}")
+        note_text = details(snapshot)
+        if window.notes.toPlainText() != note_text:
+            window.notes.setPlainText(note_text)
+        self._sync_surface()
+
+    def command(self, command):
+        try:
+            self._on_command(command)
+        except Exception as exc:
+            self.settings_window.error.setText(f"操作未完成：{exc}")
         else:
-            self.details.pack_forget()
+            self.settings_window.error.clear()
 
-    def _set_topmost(self):
-        try:
-            self.root.attributes("-topmost", self._topmost.get())
-        except tk.TclError:
-            self.command_status.configure(text="当前窗口系统不支持置顶。")
+    def choose_model(self):
+        path, _ = QFileDialog.getOpenFileName(self.settings_window, "选择飞机 FM 文件", "", "FM 文件 (*.blkx *.json *.blk);;所有文件 (*)")
+        if path:
+            self.command({"action": "model", "path": path})
 
-    def _set_opacity(self, value):
-        try:
-            self.root.attributes("-alpha", float(value))
-        except tk.TclError:
-            self.command_status.configure(text="当前窗口系统不支持透明度调整。")
+    def show_settings(self):
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
 
     def run(self):
-        self.root.mainloop()
+        return self.app.exec()
 
     def close(self):
-        if self._closed:
+        if self.closed:
             return
-        self._closed = True
-        if self._after_id is not None:
-            self.root.after_cancel(self._after_id)
-        self.root.destroy()
+        self.closed = True
+        self.timer.stop()
+        self.surface_timer.stop()
+        self.app.removeNativeEventFilter(self.hotkey_filter)
+        if self.desktop:
+            self.desktop.close()
+        self.preferences.sync()
+        self.tray.hide()
+        for group in self.groups.values():
+            group.close()
+        self.settings_window.close()
+        self.app.quit()

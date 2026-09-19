@@ -62,7 +62,7 @@ class OverlayController:
                                          afterburner=afterburner)
 
     def submit(self, command: dict) -> None:
-        """Validate and queue UI intent without filesystem/network work on Tk."""
+        """Validate and queue UI intent without filesystem/network work on the GUI thread."""
         if not isinstance(command, dict):
             raise ValueError("设置命令无效")
         action = command.get("action")
