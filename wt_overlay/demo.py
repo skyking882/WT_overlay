@@ -1,0 +1,19 @@
+"""Explicit synthetic samples for interface demonstrations, never a real aircraft FM."""
+from __future__ import annotations
+
+import math
+from .contracts import FlightState
+
+
+def make_demo_sample(time_s: float) -> FlightState:
+    if not isinstance(time_s, (int, float)) or not math.isfinite(time_s):
+        return FlightState(0.0, False, source='demo', notes=('Invalid demo timestamp',))
+    phase = time_s / 8.0
+    return FlightState(
+        time_s, True, altitude_m=4000.0 + 180.0 * math.sin(phase),
+        tas_mps=280.0 + 22.0 * math.sin(phase * 0.7),
+        vertical_speed_mps=22.5 * math.cos(phase),
+        aoa_deg=4.0 + 2.0 * math.sin(phase), roll_deg=25.0 * math.sin(phase * 0.5),
+        throttle_percent=100.0, aircraft_id='synthetic-demo', source='demo',
+        notes=('SYNTHETIC DEMO: these values do not represent a real aircraft.',),
+    )

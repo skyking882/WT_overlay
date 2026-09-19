@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+# The FM loader verifies original bytes; checkout must not rewrite this file.
+*.blkx -text
