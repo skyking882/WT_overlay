@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 HAS_QT = importlib.util.find_spec("PySide6") is not None
 if HAS_QT:
@@ -17,7 +18,7 @@ if HAS_QT:
     from wt_overlay.ui import OverlayApp, game_geometry
     from wt_overlay.windows import GameWindow
 
-from wt_overlay.contracts import EnergyMetrics, FlightState, OverlaySnapshot
+from wt_overlay.contracts import ClimbGuidance, ClimbRequest, EnergyMetrics, FlightState, OverlaySnapshot
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 is optional for backend-only tests")
@@ -87,12 +88,12 @@ class OverlayTests(unittest.TestCase):
         game = GameWindow(True, False, (0, 0, 1280, 720), (0, 0), self.app.primaryScreen().name())
         self.ui.game = game
         self.ui._sync_surface()
-        self.assertTrue(all(g.isVisible() for g in self.ui.groups.values()))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key != "climb"))
         self.ui.game = replace(game, foreground=False)
         self.ui._sync_surface()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_editing(True)
-        self.assertTrue(all(g.isVisible() for g in self.ui.groups.values()))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key != "climb"))
         self.ui.set_visible(False)
         self.assertFalse(self.ui.editing)
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
@@ -100,7 +101,71 @@ class OverlayTests(unittest.TestCase):
         self.ui.refresh()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_visible(True)
-        self.assertTrue(all(g.isVisible() for g in self.ui.groups.values()))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key != "climb"))
+
+    def test_climb_is_independent_defaults_off_and_hides_before_worker_acknowledges(self):
+        self.assertFalse(self.ui.groups["climb"].isVisible())
+        self.ui.set_climb_enabled(True)
+        self.assertEqual(self.commands[-1], {"action": "climb_enabled", "enabled": True})
+        self.snapshot = replace(self.snapshot, climb_enabled=True,
+                                climb=ClimbGuidance(True, "爬升", 320, 12, 2, 3000))
+        self.ui.refresh()
+        self.assertTrue(self.ui.groups["climb"].isVisible())
+        self.ui.set_climb_enabled(False)
+        self.assertFalse(self.ui.groups["climb"].isVisible())
+        self.ui.refresh()  # The worker's last snapshot still says enabled.
+        self.assertFalse(self.ui.groups["climb"].isVisible())
+        self.assertTrue(self.ui.groups["energy"].isVisible())
+        self.snapshot = replace(self.snapshot, climb_enabled=False, climb=None)
+        self.ui.refresh()
+        self.assertIsNone(self.ui._pending_climb_enabled)
+
+    def test_climb_target_is_saved_but_active_mode_is_not(self):
+        window = self.ui.settings_window
+        window.climb_altitude.setValue(9000)
+        window.climb_speed.setText("1200")
+        self.assertTrue(window.apply_climb_target())
+        self.assertEqual(self.commands[-1], {"action": "climb_target", "altitude_m": 9000,
+                                             "minimum_tas_mps": 1200/3.6})
+        self.ui.set_climb_enabled(True)
+        self.ui.close()
+        self.ui = self.make_ui()
+        self.assertFalse(self.ui.climb_enabled)
+        self.assertEqual(self.ui.climb_request, ClimbRequest(9000, 1200/3.6))
+        self.assertEqual(self.ui.settings_window.climb_speed.text(), "1200")
+        self.ui.settings_window.climb_speed.setText("nan")
+        count = len(self.commands)
+        self.ui.set_climb_enabled(True)
+        self.assertFalse(self.ui.climb_enabled)
+        self.assertEqual(len(self.commands), count)
+
+    def test_climb_cue_has_transparent_background_green_band_and_no_stale_marker(self):
+        self.snapshot = replace(self.snapshot, mode="live", climb_enabled=True,
+                                climb=ClimbGuidance(True, "爬升", 320, 12, 3, 3000))
+        self.ui.refresh()
+        group = self.ui.groups["climb"]
+        image = group.grab().toImage()
+        self.assertEqual(image.pixelColor(0, 0).alpha(), 0)
+        self.assertEqual(group._header(), "")
+        green = sum(1 for y in range(image.height()) for x in range(image.width())
+                    if image.pixelColor(x, y).green() > 190 and image.pixelColor(x, y).red() < 150)
+        self.assertGreater(green, 30)
+        self.snapshot = replace(self.snapshot, state=replace(self.snapshot.state, valid=False))
+        self.ui.refresh()
+        self.assertIsNone(group.content.cue_error_deg)
+        self.assertTrue(all(row.value == "—" for row in group.content.rows[1:]))
+
+    def test_windows_climb_hotkey_keeps_settings_registration_and_toggles(self):
+        registrations = []
+        self.ui.desktop = SimpleNamespace(register_hotkey=lambda identifier, letter:
+            registrations.append((identifier, letter)) or True, close=lambda: None)
+        self.ui._setup_hotkeys()
+        self.assertIn((0x5742, "S"), registrations)
+        self.assertIn((0x5743, "C"), registrations)
+        self.ui.hotkey_filter.callbacks[0x5743]()
+        self.assertTrue(self.ui.climb_enabled)
+        self.ui.hotkey_filter.callbacks[0x5743]()
+        self.assertFalse(self.ui.climb_enabled)
 
     def test_failed_snapshot_read_clears_rendered_flight_and_energy(self):
         def broken():

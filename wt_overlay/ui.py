@@ -22,15 +22,17 @@ try:
 except ImportError as exc:
     raise RuntimeError("图形界面需要 PySide6。请运行 start_windows.cmd，或安装 requirements.txt 中的依赖。") from exc
 
-from .contracts import OverlaySnapshot
+from .contracts import ClimbRequest, OverlaySnapshot
+from .climb import CUE_DEADBAND_DEG, CUE_RANGE_DEG, validate_request
 from .hud import INDICATORS, HudContent, contents, details
 from .windows import GameWindow, WindowsDesktop
 
 
-GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考"}
+GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考",
+          "climb": "爬升引导"}
 DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
-                     "engine": (0.73, 0.30), "reference": (0.73, 0.60)}
-HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置"}
+                     "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65)}
+HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导"}
 
 
 def game_geometry(game: GameWindow, screen) -> QRect:
@@ -117,6 +119,8 @@ class HudGroup(QWidget):
                     self.small_metrics.horizontalAdvance(self._header()) + 24)
         width = min(max(220, ideal), max(100, self.viewport.width()))
         height = 16 + self.header_height + len(self.content.rows) * self.row_height
+        if self.content.cue_active:
+            height += self.small_metrics.height() + 25
         self.resize(width, height)
 
     def _header(self):
@@ -170,6 +174,26 @@ class HudGroup(QWidget):
             self._text(painter, value_right - value_width, baseline, row.value, self.font(), color)
             self._text(painter, value_right + 8, baseline, row.unit, self.small_font, "#d2dee5")
             y += self.row_height
+        if self.content.cue_active:
+            left, right = 20, self.width() - 20
+            center, half = (left + right) / 2, (right - left) / 2
+            bar_y = y + 9
+            painter.setPen(QPen(QColor(0, 0, 0, 220), 5))
+            painter.drawLine(QPoint(left, bar_y), QPoint(right, bar_y))
+            painter.setPen(QPen(QColor("#d2dee5"), 2))
+            painter.drawLine(QPoint(left, bar_y), QPoint(right, bar_y))
+            band = max(3, round(half * CUE_DEADBAND_DEG / CUE_RANGE_DEG))
+            painter.fillRect(round(center)-band, bar_y-5, 2*band+1, 11, QColor("#71e3a0"))
+            error = self.content.cue_error_deg
+            if error is not None and math.isfinite(error):
+                x = round(center + half * max(-1, min(1, error / CUE_RANGE_DEG)))
+                painter.setPen(QPen(QColor("#101820"), 2))
+                painter.setBrush(QColor("#ffffff"))
+                painter.drawEllipse(QPoint(x, bar_y), 5, 5)
+            baseline = bar_y + 12 + self.small_metrics.ascent()
+            self._text(painter, left, baseline, "压低", self.small_font, "#d2dee5")
+            self._text(painter, right-self.small_metrics.horizontalAdvance("抬高"), baseline,
+                       "抬高", self.small_font, "#d2dee5")
         painter.end()
 
     def mousePressEvent(self, event):
@@ -233,6 +257,8 @@ class SettingsWindow(QWidget):
         self.group_boxes = {}
         group_row = QHBoxLayout()
         for key, caption in GROUPS.items():
+            if key == "climb":
+                continue
             check = QCheckBox(caption)
             check.setChecked(owner.group_enabled[key])
             check.toggled.connect(lambda enabled, key=key: owner.set_group_enabled(key, enabled))
@@ -305,6 +331,26 @@ class SettingsWindow(QWidget):
         self.afterburner_box = QCheckBox("模型使用全加力（关闭则使用全军推）")
         self.afterburner_box.toggled.connect(lambda enabled: owner.command({"action": "afterburner", "enabled": enabled}))
         form.addRow(self.afterburner_box)
+        climb = QGroupBox("爬升引导")
+        form = QFormLayout(climb)
+        layout.addWidget(climb)
+        self.climb_box = QCheckBox("启用爬升引导 · Ctrl+Alt+C")
+        self.climb_box.toggled.connect(owner.set_climb_enabled)
+        form.addRow(self.climb_box)
+        self.climb_altitude = QSpinBox()
+        self.climb_altitude.setRange(100, 20000)
+        self.climb_altitude.setSingleStep(500)
+        self.climb_altitude.setValue(round(owner.climb_request.target_altitude_m))
+        form.addRow("目标高度 / m", self.climb_altitude)
+        self.climb_speed = QLineEdit()
+        self.climb_speed.setPlaceholderText("留空自动选择")
+        if owner.climb_request.minimum_tas_mps is not None:
+            self.climb_speed.setText(f"{owner.climb_request.minimum_tas_mps * 3.6:g}")
+        self.climb_speed.returnPressed.connect(self.apply_climb_target)
+        form.addRow("到达最低 TAS / km/h", self.climb_speed)
+        apply_climb = QPushButton("应用目标")
+        apply_climb.clicked.connect(self.apply_climb_target)
+        form.addRow(apply_climb)
         self.error = QLabel()
         self.error.setWordWrap(True)
         self.error.setStyleSheet("color: #ce562e")
@@ -335,6 +381,16 @@ class SettingsWindow(QWidget):
             return
         self.owner.command({"action": "mass", "kg": value})
 
+    def apply_climb_target(self):
+        try:
+            text = self.climb_speed.text().strip()
+            request = ClimbRequest(self.climb_altitude.value(), float(text)/3.6 if text else None)
+            validate_request(request)
+        except ValueError as exc:
+            self.error.setText(str(exc))
+            return False
+        return self.owner.set_climb_target(request)
+
     def closeEvent(self, event):
         if self.owner.closed:
             event.accept()
@@ -364,7 +420,8 @@ class HotkeyFilter(QAbstractNativeEventFilter):
 
 class OverlayApp:
     def __init__(self, get_snapshot: Callable[[], OverlaySnapshot], on_command: Callable[[dict], None],
-                 *, title="WT Energy", settings: QSettings | None = None, show_on_start=True):
+                 *, title="WT Energy", settings: QSettings | None = None, show_on_start=True,
+                 climb_request: ClimbRequest | None = None):
         self.app = QApplication.instance() or QApplication([sys.argv[0]])
         self.app.setQuitOnLastWindowClosed(False)
         self.app.setApplicationName(title)
@@ -374,6 +431,18 @@ class OverlayApp:
             QSettings.Format.IniFormat, QSettings.Scope.UserScope, "WT Energy", "Overlay")
         self.hud_visible = True
         self.editing = False
+        self.climb_enabled = False
+        self._pending_climb_enabled = None
+        self.climb_request = climb_request or ClimbRequest()
+        if climb_request is None and self.preferences.contains("climb/altitude_m"):
+            try:
+                speed = self.preferences.value("climb/speed_mps", "", type=str)
+                saved = ClimbRequest(self.preferences.value("climb/altitude_m", 8000, type=float),
+                                     float(speed) if speed else None)
+                validate_request(saved)
+                self.climb_request = saved
+            except (ValueError, TypeError):
+                pass
         self.follow_game = self.preferences.value("follow_game", True, type=bool)
         self.hide_outside = self.preferences.value("hide_outside", True, type=bool)
         self.screen_name = self.preferences.value("screen", "", type=str)
@@ -408,6 +477,8 @@ class OverlayApp:
         self.settings_window = SettingsWindow(self)
         self._setup_tray()
         self._setup_hotkeys()
+        if climb_request is None and self.preferences.contains("climb/altitude_m"):
+            self.set_climb_target(self.climb_request)
         self.can_reopen_settings = self.tray.isVisible() or self.settings_hotkey_available
         self.app.screenAdded.connect(self._screens_changed)
         self.app.screenRemoved.connect(self._screens_changed)
@@ -445,6 +516,9 @@ class OverlayApp:
         self.edit_action.toggled.connect(self.set_editing)
         self.tray_menu.addAction(self.visible_action)
         self.tray_menu.addAction(self.edit_action)
+        self.climb_action = QAction("爬升引导", self.tray_menu, checkable=True)
+        self.climb_action.toggled.connect(self.set_climb_enabled)
+        self.tray_menu.addAction(self.climb_action)
         self.tray_menu.addAction("设置…", self.show_settings)
         self.tray_menu.addSeparator()
         self.tray_menu.addAction("退出", self.close)
@@ -456,7 +530,8 @@ class OverlayApp:
 
     def _setup_hotkeys(self):
         callbacks = {"O": lambda: self.set_visible(not self.hud_visible),
-                     "L": lambda: self.set_editing(not self.editing), "S": self.show_settings}
+                     "L": lambda: self.set_editing(not self.editing), "S": self.show_settings,
+                     "C": lambda: self.set_climb_enabled(not self.climb_enabled)}
         active, failures = {}, []
         self.settings_hotkey_available = False
         if self.desktop:
@@ -505,6 +580,28 @@ class OverlayApp:
     def set_group_enabled(self, key, enabled):
         self.group_enabled[key] = enabled
         self.preferences.setValue(f"groups/{key}/enabled", enabled)
+        self._sync_surface()
+
+    def set_climb_target(self, request):
+        if not self.command({"action": "climb_target", "altitude_m": request.target_altitude_m,
+                             "minimum_tas_mps": request.minimum_tas_mps}):
+            return False
+        self.climb_request = request
+        self.preferences.setValue("climb/altitude_m", request.target_altitude_m)
+        self.preferences.setValue("climb/speed_mps", "" if request.minimum_tas_mps is None else request.minimum_tas_mps)
+        return True
+
+    def set_climb_enabled(self, enabled):
+        # Apply the visible target before enabling; hiding never waits for the worker.
+        if enabled and not self.settings_window.apply_climb_target():
+            self._checked(self.settings_window.climb_box, self.climb_enabled)
+            self._checked(self.climb_action, self.climb_enabled)
+            return
+        if self.command({"action": "climb_enabled", "enabled": enabled}):
+            self.climb_enabled = enabled
+            self._pending_climb_enabled = enabled
+        self._checked(self.settings_window.climb_box, self.climb_enabled)
+        self._checked(self.climb_action, self.climb_enabled)
         self._sync_surface()
 
     def set_indicator_enabled(self, key, enabled):
@@ -594,7 +691,8 @@ class OverlayApp:
                                         or not self.desktop or bool(game and game.foreground and not game.minimized))
         for key, group in self.groups.items():
             group.place(viewport)
-            visible = allowed and self.group_enabled[key] and (bool(group.content.rows) or self.editing)
+            enabled = self.climb_enabled if key == "climb" else self.group_enabled[key]
+            visible = allowed and enabled and (bool(group.content.rows) or self.editing)
             if group.isVisible() != visible:
                 group.setVisible(visible)
         status = ("布局模式 · 拖动边框，Ctrl+Alt+L 完成" if self.editing else
@@ -612,6 +710,12 @@ class OverlayApp:
         except Exception as exc:
             snapshot = OverlaySnapshot(self.snapshot.mode, f"读取状态失败：{exc}")
         self.snapshot = snapshot
+        if self._pending_climb_enabled == snapshot.climb_enabled:
+            self._pending_climb_enabled = None
+        if self._pending_climb_enabled is None:
+            self.climb_enabled = snapshot.climb_enabled
+        self._checked(self.settings_window.climb_box, self.climb_enabled)
+        self._checked(self.climb_action, self.climb_enabled)
         enabled = {key for key, value in self.indicator_enabled.items() if value}
         for key, content in contents(snapshot, enabled).items():
             self.groups[key].set_content(content)
@@ -634,8 +738,10 @@ class OverlayApp:
             self._on_command(command)
         except Exception as exc:
             self.settings_window.error.setText(f"操作未完成：{exc}")
+            return False
         else:
             self.settings_window.error.clear()
+            return True
 
     def choose_model(self):
         path, _ = QFileDialog.getOpenFileName(self.settings_window, "选择飞机 FM 文件", "", "FM 文件 (*.blkx *.json *.blk);;所有文件 (*)")

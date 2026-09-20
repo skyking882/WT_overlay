@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 import math
 from queue import Empty, Full, Queue
 import re
 from threading import Event, Lock, Thread
 import time
 
-from .contracts import EnergyMetrics, FlightState, OverlaySnapshot, PerformanceCondition, SEPAdvice
+from .contracts import (G, ClimbGuidance, ClimbRequest, EnergyMetrics, FlightState,
+                        OverlaySnapshot, PerformanceCondition, SEPAdvice)
+from .climb import (ClimbDirector, PlanningCancelled, PlanningUnavailable,
+                    build_climb_plan, valid_number, validate_request)
 from .demo import make_demo_sample
 from .energy import EnergyEstimator
 from .fm import load_model
@@ -58,6 +62,15 @@ class OverlayController:
         self._advice: SEPAdvice | None = None
         self._identity = None
         self._settings_error = ""
+        self.climb_enabled = False
+        self.climb_request = ClimbRequest()
+        self._director = ClimbDirector()
+        self._planner = None
+        self._plan_future = None
+        self._plan_cancel = None
+        self._plan = None
+        self._plan_base = None
+        self._failed_energy = None
         self._snapshot = OverlaySnapshot(mode, "等待首个数据样本", mass_override_kg=self.mass_kg,
                                          afterburner=afterburner)
 
@@ -77,6 +90,11 @@ class OverlayController:
         elif action == "model":
             if not isinstance(command.get("path"), str) or not command["path"].strip():
                 raise ValueError("请选择 FM 文件")
+        elif action == "climb_enabled":
+            if type(command.get("enabled")) is not bool:
+                raise ValueError("爬升开关须为布尔值")
+        elif action == "climb_target":
+            validate_request(ClimbRequest(command.get("altitude_m"), command.get("minimum_tas_mps")))
         else:
             raise ValueError("未知设置命令")
         try:
@@ -91,6 +109,7 @@ class OverlayController:
             except Empty:
                 return
             self._settings_error = ""
+            self._reset_climb()
             self._advice = None
             self._last_prediction = -math.inf
             action = command["action"]
@@ -102,12 +121,79 @@ class OverlayController:
                 self.mass_kg = float(command["kg"])
             elif action == "afterburner":
                 self.afterburner = command["enabled"]
+            elif action == "climb_enabled":
+                self.climb_enabled = command["enabled"]
+            elif action == "climb_target":
+                self.climb_request = ClimbRequest(command["altitude_m"], command.get("minimum_tas_mps"))
             elif action == "model":
                 self.model = None
                 try:
                     self.model = load_model(command["path"])
                 except (OSError, ValueError) as exc:
                     self._settings_error = f"FM 未加载：{exc}"
+
+    def _reset_climb(self):
+        if self._plan_cancel is not None:
+            self._plan_cancel.set()
+        if self._plan_future is not None:
+            self._plan_future.cancel()
+        self._plan_future = self._plan_cancel = self._plan = self._plan_base = None
+        self._failed_energy = None
+        self._director.reset()
+
+    def _climb_guidance(self, state, energy):
+        if not self.climb_enabled:
+            return None
+        if not state.valid or not all(valid_number(v) for v in (state.altitude_m, state.tas_mps)):
+            self._reset_climb()
+            return ClimbGuidance(phase="等待数据")
+        if self.model is None:
+            return ClimbGuidance(phase="选择 FM")
+        if self.mode == "live" and (not state.aircraft_id or
+                _aircraft_key(state.aircraft_id) != _aircraft_key(self.model.info.aircraft_id)):
+            return ClimbGuidance(phase="核对机型")
+        mass = self.mass_kg if self.mass_kg is not None else state.mass_kg
+        if not valid_number(mass) or mass <= 0:
+            self._reset_climb()
+            return ClimbGuidance(phase="设置质量")
+        base = PerformanceCondition(state.altitude_m, state.tas_mps, mass, afterburner=self.afterburner)
+        if self._plan_base is not None and abs(mass / self._plan_base.mass_kg - 1) > .01:
+            self._reset_climb()
+        current = self.model.evaluate(base)
+        if not current.valid or not valid_number(current.sep_mps):
+            self._director.reset()
+            return ClimbGuidance(phase="超出范围")
+        es = state.altitude_m + state.tas_mps ** 2 / (2 * G)
+        if self._failed_energy is not None:
+            if abs(es - self._failed_energy) < 500:
+                return ClimbGuidance(phase="无法规划")
+            self._reset_climb()
+        if self._plan_future is not None and self._plan_future.done():
+            future, self._plan_future = self._plan_future, None
+            try:
+                self._plan = future.result()
+            except (PlanningUnavailable, PlanningCancelled, ValueError):
+                self._failed_energy = es
+                return ClimbGuidance(phase="无法规划")
+        if self._plan is None:
+            if self._plan_future is None:
+                if self._planner is None:
+                    self._planner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wt-climb")
+                self._plan_cancel = Event()
+                self._plan_base = base
+                self._plan_future = self._planner.submit(
+                    build_climb_plan, self.model, base, self.climb_request, self._plan_cancel)
+            return ClimbGuidance(phase="计算")
+        try:
+            speed, _ = self._plan.reference(es)
+        except PlanningUnavailable:
+            self._reset_climb()
+            return ClimbGuidance(phase="重新规划")
+        reference = self.model.evaluate(replace(base, altitude_m=max(0, es-speed**2/(2*G)), tas_mps=speed))
+        if not reference.valid:
+            self._director.reset()
+            return ClimbGuidance(phase="超出范围")
+        return self._director.update(self._plan, state, energy, current.sep_mps)
 
     def _predict(self, state: FlightState) -> SEPAdvice | None:
         if self.model is None:
@@ -138,6 +224,7 @@ class OverlayController:
         energy = self.estimator.update(state)
         identity = (state.source, state.aircraft_id)
         if identity != self._identity:
+            self._reset_climb()
             self._advice = None
             self._last_prediction = -math.inf
             self._identity = identity
@@ -147,6 +234,7 @@ class OverlayController:
         elif now-self._last_prediction >= 1.0:
             self._advice = self._predict(state)
             self._last_prediction = now
+        climb = self._climb_guidance(state, energy)
         if self.mode == "demo":
             status = "合成演示 · 未连接游戏"
         elif state.valid:
@@ -163,7 +251,8 @@ class OverlayController:
         snapshot = OverlaySnapshot(
             self.mode, status, state, energy, self._advice,
             self.model.info.name if self.model else "未加载 FM",
-            tuple(notes), self.mass_kg, self.afterburner)
+            tuple(notes), self.mass_kg, self.afterburner,
+            self.climb_enabled, self.climb_request, climb)
         with self._lock:
             self._snapshot = snapshot
             self._published_at = time.monotonic()
@@ -176,7 +265,8 @@ class OverlayController:
                 and snapshot.state is not None and snapshot.state.valid):
             return replace(snapshot, status="数据已过期，等待重新连接",
                            state=replace(snapshot.state, valid=False), advice=None,
-                           energy=EnergyMetrics(snapshot.state.time_s, notes=("样本已过期",)))
+                           energy=EnergyMetrics(snapshot.state.time_s, notes=("样本已过期",)),
+                           climb=ClimbGuidance(phase="等待数据") if snapshot.climb_enabled else None)
         return snapshot
 
     def _run(self) -> None:
@@ -185,6 +275,7 @@ class OverlayController:
             try:
                 self.tick(started)
             except Exception as exc:
+                self._reset_climb()
                 self.estimator.reset()
                 self._advice = None
                 self._last_prediction = -math.inf
@@ -192,7 +283,9 @@ class OverlayController:
                     self._snapshot = OverlaySnapshot(
                         self.mode, f"采样失败：{type(exc).__name__}: {exc}",
                         notes=("当前数据不可用；没有切换到演示数据。",),
-                        mass_override_kg=self.mass_kg, afterburner=self.afterburner)
+                        mass_override_kg=self.mass_kg, afterburner=self.afterburner,
+                        climb_enabled=self.climb_enabled, climb_request=self.climb_request,
+                        climb=ClimbGuidance(phase="等待数据") if self.climb_enabled else None)
             self._stop.wait(max(0.0, self.interval-(time.monotonic()-started)))
 
     def start(self) -> None:
@@ -206,3 +299,7 @@ class OverlayController:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2.0)
+        self._reset_climb()
+        if self._planner is not None:
+            self._planner.shutdown(wait=False, cancel_futures=True)
+            self._planner = None

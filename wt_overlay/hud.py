@@ -57,6 +57,8 @@ class HudContent:
     title: str
     rows: tuple[HudRow, ...]
     demo: bool = False
+    cue_active: bool = False
+    cue_error_deg: float | None = None
 
 
 def number(value, digits=0, signed=False, scale=1.0):
@@ -96,10 +98,23 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
     }
     enabled = DEFAULT_INDICATORS if enabled is None else enabled
     groups = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考"}
-    return {key: HudContent(title, tuple(
+    result = {key: HudContent(title, tuple(
         HudRow(item.label, values[item.key], item.unit, tone if item.key == "sep" else "normal", item.key)
         for item in INDICATORS if item.group == key and item.key in enabled), demo)
         for key, title in groups.items()}
+    climb = snapshot.climb
+    usable = valid and climb is not None and climb.available
+    rows = ()
+    if snapshot.climb_enabled:
+        rows = (
+            HudRow("阶段", climb.phase if climb is not None and valid else "等待数据"),
+            HudRow("目标 TAS", number(climb.target_tas_mps if usable else None, scale=3.6), "km/h"),
+            HudRow("航迹角", number(climb.target_path_deg if usable else None, 1, True), "°"),
+            HudRow("剩余高度", number(climb.remaining_height_m if usable else None), "m"),
+        )
+    result["climb"] = HudContent("爬升引导", rows, demo, snapshot.climb_enabled,
+                                 climb.path_error_deg if usable else None)
+    return result
 
 
 def details(snapshot: OverlaySnapshot) -> str:

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 import math
 import sys
 import time
 
 from .app import OverlayController
+from .contracts import ClimbRequest
 
 
 def _positive(text: str) -> float:
@@ -44,6 +46,9 @@ def snapshot_json(snapshot) -> dict:
         "reference_afterburner": snapshot.afterburner,
         "reference_scope": "same-altitude 1g clean; untrimmed and not game-validated",
         "reference_reason": advice.reason if advice else "FM 未加载",
+        "climb_enabled": snapshot.climb_enabled,
+        "climb_target": asdict(snapshot.climb_request),
+        "climb_guidance": asdict(snapshot.climb) if snapshot.climb else None,
         "notes": list(dict.fromkeys((*snapshot.notes, *(advice.notes if advice else ())))),
     }
 
@@ -57,13 +62,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--military", action="store_true", help="静态模型用全军推；默认全加力")
     parser.add_argument("--headless", action="store_true", help="输出 JSON 行，不创建窗口")
     parser.add_argument("--duration", type=_positive, default=5.0, help="无窗口运行秒数，默认 5")
+    parser.add_argument("--climb-altitude", type=_positive, help="开启爬升引导，目标高度（m）")
+    parser.add_argument("--arrival-speed-kmh", type=_positive, help="到达最低 TAS（km/h）；留空自动选择")
     args = parser.parse_args(argv)
     if sys.version_info < (3, 11):
         parser.error("需要 Python 3.11 或更新版本")
+    if args.arrival_speed_kmh is not None and args.climb_altitude is None:
+        parser.error("到达速度需要与 --climb-altitude 一起使用")
     try:
         controller = OverlayController(mode="demo" if args.demo else "live", base_url=args.url,
                                        model_path=args.model, mass_kg=args.mass_kg,
                                        afterburner=not args.military)
+        if args.climb_altitude is not None:
+            controller.submit({"action": "climb_target", "altitude_m": args.climb_altitude,
+                               "minimum_tas_mps": args.arrival_speed_kmh/3.6 if args.arrival_speed_kmh else None})
+            controller.submit({"action": "climb_enabled", "enabled": True})
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     try:
@@ -78,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
                              allow_nan=False), flush=True)
         else:
             from .ui import OverlayApp
-            window = OverlayApp(controller.get_snapshot, controller.submit)
+            request = ClimbRequest(args.climb_altitude, args.arrival_speed_kmh/3.6 if args.arrival_speed_kmh else None) if args.climb_altitude else None
+            window = OverlayApp(controller.get_snapshot, controller.submit, climb_request=request)
             controller.start()
             window.run()
     except KeyboardInterrupt:

@@ -123,6 +123,22 @@ class TurnAdvice:
 
 
 @dataclass(frozen=True)
+class ClimbRequest:
+    target_altitude_m: float = 8000.0
+    minimum_tas_mps: float | None = None
+
+
+@dataclass(frozen=True)
+class ClimbGuidance:
+    available: bool = False
+    phase: str = "等待"
+    target_tas_mps: float | None = None
+    target_path_deg: float | None = None
+    path_error_deg: float | None = None
+    remaining_height_m: float | None = None
+
+
+@dataclass(frozen=True)
 class OverlaySnapshot:
     mode: str
     status: str
@@ -133,3 +149,6 @@ class OverlaySnapshot:
     notes: tuple[str, ...] = ()
     mass_override_kg: float | None = None
     afterburner: bool = True
+    climb_enabled: bool = False
+    climb_request: ClimbRequest = field(default_factory=ClimbRequest)
+    climb: ClimbGuidance | None = None
