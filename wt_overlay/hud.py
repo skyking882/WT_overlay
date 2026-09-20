@@ -119,17 +119,24 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
     usable = valid and turn is not None and turn.available
     rows = ()
     if snapshot.turn_enabled:
+        stale_progress = not valid or bool(turn and turn.progress_stale)
         rows = (
             HudRow("转向", turn.phase if turn is not None and valid else "等待数据"),
             HudRow("动作", turn.action if usable and turn.action else "—", tone="accent"),
+            HudRow("动作段", f"{turn.step_index}/{turn.step_count}" if usable and turn.step_index else "—"),
+            HudRow("预计换步", number(turn.step_remaining_s if usable else None, 1), "s"),
+            HudRow("下一步", turn.next_action if usable and turn.next_action else "—"),
             HudRow("油门", (("收油", "保持", "加油")[turn.throttle_command+1]+
                 f" {number(turn.throttle_percent, 0)} → {number(turn.target_throttle_percent, 0)}%")
                 if usable and turn.throttle_percent is not None and turn.target_throttle_percent is not None else "—"),
             HudRow("目标转角", number(snapshot.turn_settings.angle_deg), "°"),
-            HudRow("已转角度", number(turn.turned_deg if valid and turn else None, 1), "°"),
-            HudRow("剩余角度", number(turn.remaining_deg if valid and turn else None, 1), "°"),
+            HudRow("最近转角" if stale_progress else "已转角度", number(turn.turned_deg if turn else None, 1), "°"),
+            HudRow("最近余角" if stale_progress else "剩余角度", number(turn.remaining_deg if turn else None, 1), "°"),
             HudRow("参考用时", number(turn.duration_s if usable else None, 1), "s"),
         )
+        if valid and turn and turn.estimated_roll_deg is not None:
+            rows = (*rows[:-1], HudRow("姿态估计",
+                f"俯仰 {number(turn.estimated_pitch_deg, 1, True)}°／滚转 {number(turn.estimated_roll_deg, 1, True)}°"), rows[-1])
     result["turn"] = HudContent("转向引导", rows, demo)
     return result
 

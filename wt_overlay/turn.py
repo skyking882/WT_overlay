@@ -7,6 +7,7 @@ Coordinates are east, north, up; roll is positive right-wing-down.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from bisect import bisect_left
 from dataclasses import dataclass, replace
 from functools import lru_cache
 import math
@@ -68,7 +69,7 @@ def validate_settings(s: KeyboardTurnSettings):
     bounds = {"horizon_s": (3, 30), "max_altitude_loss_m": (0, 5000),
               "minimum_tas_mps": (50, 650), "max_load": (1, 12), "min_load": (-5, 0),
               "roll_rate_deg_s": (10, 360), "roll_response_s": (.1, 2),
-              "load_response_s": (.1, 3), "reaction_s": (0, 1.5), "hold_s": (.3, 2),
+              "load_response_s": (.1, 3), "reaction_s": (0, 1.5), "hold_s": (.8, 3),
               "throttle_rate_percent_s": (5, 200), "engine_response_s": (.1, 5)}
     for key, (low, high) in bounds.items():
         value = getattr(s, key)
@@ -95,7 +96,7 @@ class Motion:
         return self.altitude+dot(self.velocity, self.velocity)/(2*G)
 
 
-def flight_frame(state):
+def flight_frame(state, *, enforce_envelope=True):
     if not state.valid:
         raise ValueError("等待有效飞行数据")
     fields = ((state.tas_mps, "真空速 TAS"), (state.altitude_m, "海拔高度"),
@@ -105,9 +106,9 @@ def flight_frame(state):
     missing = [label for value, label in fields if not valid_number(value)]
     if missing:
         raise ValueError("缺少转向读数："+"、".join(missing))
-    if state.tas_mps < 50:
+    if state.tas_mps <= 0 or enforce_envelope and state.tas_mps < 50:
         raise ValueError("当前 TAS 低于转向计算下限 180 km/h")
-    if abs(state.aos_deg) > 10 or not -20 <= state.aoa_deg <= 30:
+    if enforce_envelope and (abs(state.aos_deg) > 10 or not -20 <= state.aoa_deg <= 30):
         raise ValueError("姿态超出转向参考范围")
     heading, pitch, roll, alpha, beta = map(math.radians,
         (state.heading_deg, state.pitch_deg, state.roll_deg, state.aoa_deg, state.aos_deg))
@@ -120,7 +121,7 @@ def flight_frame(state):
                           math.cos(beta)), scale(body_right, math.sin(beta)))
     # Vy anchors flight path; heading is reconstructed using AoA/AoS, not the nose.
     vertical = state.vertical_speed_mps/state.tas_mps
-    if abs(vertical) >= .985 or math.hypot(*direction[:2]) < .05:
+    if abs(vertical) > 1 or math.hypot(*direction[:2]) < .05 or enforce_envelope and abs(vertical) >= .985:
         raise ValueError("近垂直飞行暂不提供指令")
     horizontal = unit((direction[0], direction[1], 0.))
     direction = add(scale(horizontal, math.sqrt(1-vertical*vertical)), (0., 0., vertical))
@@ -260,6 +261,24 @@ class ManeuverModel:
 
 
 @dataclass(frozen=True)
+class TurnStep:
+    action: Action
+    duration_s: float
+
+
+def append_step(steps, action, duration):
+    if steps and steps[-1].action == action:
+        return (*steps[:-1], TurnStep(action, steps[-1].duration_s+duration))
+    return (*steps, TurnStep(action, duration))
+
+
+def allowed_motion(s, settings, floor):
+    return (floor <= s.altitude <= 20000 and s.speed >= settings.minimum_tas_mps
+            and abs(s.velocity[2])/s.speed < .985
+            and settings.min_load-.2 <= s.load <= settings.max_load+.2)
+
+
+@dataclass(frozen=True)
 class TurnPlan:
     initial: Motion
     action: Action | None
@@ -267,6 +286,7 @@ class TurnPlan:
     energy_change_m: float | None
     reached: bool
     expansions: int = 0
+    steps: tuple[TurnStep, ...] = ()
 
 
 class Cancelled(Exception):
@@ -282,9 +302,7 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
     validate_settings(settings)
     deadline = time.monotonic()+budget_s
     def allowed(s):
-        return (floor <= s.altitude <= 20000 and s.speed >= settings.minimum_tas_mps
-                and abs(s.velocity[2])/s.speed < .985
-                and settings.min_load-.2 <= s.load <= settings.max_load+.2)
+        return allowed_motion(s, settings, floor)
     if not allowed(initial):
         raise ValueError("当前状态超出所设机动限制")
     if goal.remaining(initial.velocity) == 0:
@@ -300,14 +318,16 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
         delay += dt
     if goal.remaining(state.velocity) == 0:
         return TurnPlan(initial, Action(0, 0), delay, state.energy-initial.energy, True)
-    beam = [(state, None)]
+    beam = [(state, ())]
     best = None
     elapsed, expansions = delay, 0
     while elapsed < settings.horizon_s-1e-9:
         candidates, reached = [], []
         segment = min(settings.hold_s, settings.horizon_s-elapsed)
-        for current, first in beam:
+        for current, steps in beam:
             for action in ACTIONS:
+                if len(steps) >= 4 and action != steps[-1].action:
+                    continue
                 if (action.throttle < 0 and current.throttle_percent <= 0
                         or action.throttle > 0 and current.throttle_percent >= model.max_throttle):
                     continue
@@ -318,7 +338,7 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
                         return min(reached, key=lambda p: (p.duration_s, -p.energy_change_m))
                     return best or TurnPlan(initial, None, None, None, False, expansions)
                 trial, t = current, 0.
-                command = first or action
+                command = steps[0].action if steps else action
                 feasible = True
                 while t < segment-1e-9:
                     dt = min(.15, segment-t)
@@ -335,32 +355,96 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
                     if goal.remaining(trial.velocity) == 0:
                         # First crossing is resolved on the integration grid.
                         reached.append(TurnPlan(initial, command, elapsed+t,
-                                                trial.energy-initial.energy, True, expansions))
+                                                trial.energy-initial.energy, True, expansions,
+                                                append_step(steps, action, t)))
                         feasible = False
                         break
                 if feasible:
-                    candidates.append((trial, command))
+                    candidates.append((trial, append_step(steps, action, segment)))
         if reached:
             return min(reached, key=lambda p: (p.duration_s, -p.energy_change_m))
         if not candidates:
             break
-        candidates.sort(key=lambda x: (goal.remaining(x[0].velocity), -x[0].energy))
-        best_state, best_action = candidates[0]
+        candidates.sort(key=lambda x: (goal.remaining(x[0].velocity), len(x[1]), -x[0].energy))
+        best_state, best_steps = candidates[0]
         if goal.remaining(best_state.velocity) < goal.remaining(initial.velocity)-.25:
-            best = TurnPlan(initial, best_action, None, None, False, expansions)
+            best = TurnPlan(initial, best_steps[0].action, None, None, False, expansions, best_steps)
         beam, seen = [], set()
         for candidate in candidates:
-            if candidate[1] not in seen:
+            first = candidate[1][0].action
+            if first not in seen:
                 beam.append(candidate)
-                seen.add(candidate[1])
+                seen.add(first)
                 if len(beam) >= beam_width:
                     break
         elapsed += segment
     return best or TurnPlan(initial, None, None, None, False, expansions)
 
 
+def nearby(expected, actual, *, coarse=False):
+    factor = 2.5 if coarse else 1.
+    return (angle(expected.velocity, actual.velocity) <= 12*factor
+            and angle(expected.normal, actual.normal) <= 25*factor
+            and abs(expected.speed-actual.speed) <= 25*factor
+            and abs(expected.altitude-actual.altitude) <= 150*factor
+            and abs(expected.load-actual.load) <= 2.5*factor
+            and abs(expected.throttle_percent-actual.throttle_percent) <= 20*factor
+            and abs(expected.roll_rate-actual.roll_rate) <= math.radians(70*factor))
+
+
+@dataclass(frozen=True)
+class Execution:
+    steps: tuple[TurnStep, ...]
+    ends: tuple[float, ...]
+    times: tuple[float, ...]
+    states: tuple[Motion, ...]
+    reached: bool
+
+    def reference(self, elapsed):
+        i = min(bisect_left(self.times, elapsed), len(self.times)-1)
+        if i == 0:
+            return self.states[0]
+        left, right = self.states[i-1], self.states[i]
+        f = max(0., min(1., (elapsed-self.times[i-1])/(self.times[i]-self.times[i-1])))
+        def blend(a, b):
+            return a+(b-a)*f
+        velocity = tuple(blend(a, b) for a, b in zip(left.velocity, right.velocity))
+        normal = unit(tuple(blend(a, b) for a, b in zip(left.normal, right.normal)))
+        normal = unit(add(normal, scale(unit(velocity), -dot(normal, unit(velocity)))))
+        return Motion(blend(left.altitude, right.altitude), velocity, normal,
+                      blend(left.roll_rate, right.roll_rate), blend(left.load, right.load),
+                      blend(left.throttle_percent, right.throttle_percent),
+                      blend(left.engine_throttle_percent, right.engine_throttle_percent))
+
+    def index(self, elapsed):
+        return min(bisect_left(self.ends, elapsed), len(self.steps)-1)
+
+
+def prepare_execution(model, motion, plan, goal, settings, floor):
+    """Rebase the selected sequence on the current measured state before display."""
+    requested = plan.steps or (TurnStep(plan.action, settings.hold_s),)
+    times, states, steps, ends = [0.], [motion], [], []
+    elapsed = 0.
+    for action, duration in [(None, settings.reaction_s), *((x.action, x.duration_s) for x in requested)]:
+        dt_left = duration
+        while dt_left > 1e-9:
+            dt = min(.15, dt_left)
+            motion = model.step(motion, action, dt, settings)
+            if not allowed_motion(motion, settings, floor):
+                raise ValueError("动作序列超出所设限制，重新规划")
+            elapsed += dt
+            dt_left -= dt
+            times.append(elapsed); states.append(motion)
+            if action is not None and goal.remaining(motion.velocity) == 0:
+                steps.append(TurnStep(action, duration-dt_left)); ends.append(elapsed)
+                return Execution(tuple(steps), tuple(ends), tuple(times), tuple(states), True)
+        if action is not None:
+            steps.append(TurnStep(action, duration)); ends.append(elapsed)
+    return Execution(tuple(steps), tuple(ends), tuple(times), tuple(states), False)
+
+
 class TurnSession:
-    """Worker-owned session with a frozen target and cancellable background search."""
+    """Commit to a readable sequence; validate against its moving trajectory."""
     def __init__(self):
         self.executor = None
         self.reset()
@@ -371,33 +455,35 @@ class TurnSession:
         if getattr(self, "future", None) is not None:
             self.future.cancel()
         self.future = self.cancel = self.goal = self.previous = self.plan = None
-        self.model = self.signature = None
-        self.last_submit = self.last_switch = -math.inf
-        self.plan_time = -math.inf
-        self.action = None
-        self.rate = None
-        self.require_restart = require_restart
-        self.restart_reason = reason
-        self.last_sample_time = None
-        self.engine_throttle = None
+        self.model = self.signature = self.execution = None
+        self.execution_index = 0
+        self.last_submit = self.plan_time = -math.inf
+        self.action = self.rate = None
+        self.require_restart, self.restart_reason = require_restart, reason
+        self.last_sample_time = self.engine_throttle = None
         self.completed = False
         self.floor = None
+        self.turned = self.remaining = None
+        self.progress_current = False
 
     def invalidate(self, reason="机型或参考设置已改变，请重新开始转向"):
         self.reset(require_restart=self.require_restart or self.goal is not None, reason=reason)
 
-    def pause(self, reason="", phase="等待数据", *, keep_previous=False):
-        """Withdraw unsafe cues without discarding the original maneuver goal."""
+    def status(self, phase, reason="", *, current=False):
+        return KeyboardTurnGuidance(phase=phase, reason=reason, turned_deg=self.turned,
+                                    remaining_deg=self.remaining, progress_stale=not current)
+
+    def pause(self, reason="", phase="等待数据", *, keep_previous=False, current=False):
         if self.cancel is not None:
             self.cancel.set()
         if self.future is not None:
             self.future.cancel()
-        self.future = self.cancel = self.plan = self.action = None
+        self.future = self.cancel = self.plan = self.action = self.execution = None
         self.last_submit = -math.inf
         self.rate = None
         if not keep_previous:
             self.previous = None
-        return KeyboardTurnGuidance(phase=phase, reason=reason)
+        return self.status(phase, reason, current=current)
 
     def close(self):
         self.reset()
@@ -405,20 +491,38 @@ class TurnSession:
             self.executor.shutdown(wait=False, cancel_futures=True)
             self.executor = None
 
+    def execution_guidance(self, motion, now):
+        execution = self.execution
+        elapsed = max(0., now-self.plan_time)
+        i = execution.index(elapsed)
+        self.execution_index = i
+        action = self.action = execution.steps[i].action
+        next_action = (execution.steps[i+1].action.label+"／"+
+            ("收油", "保持油门", "加油")[execution.steps[i+1].action.throttle+1]
+            if i+1 < len(execution.steps) else "达到目标后松键" if execution.reached else "继续规划")
+        endpoint = execution.reference(execution.ends[i])
+        return KeyboardTurnGuidance(True, "转向", action.label, self.turned, self.remaining,
+            max(0., execution.ends[-1]-elapsed) if execution.reached else None,
+            execution.states[-1].energy-motion.energy, action.roll, action.pitch,
+            throttle_command=action.throttle, throttle_percent=motion.throttle_percent,
+            target_throttle_percent=endpoint.throttle_percent, next_action=next_action,
+            step_index=i+1, step_count=len(execution.steps),
+            step_remaining_s=max(0., execution.ends[i]-elapsed))
+
     def update(self, state, fm, mass, afterburner, sweep, settings):
+        self.progress_current = False
         if self.require_restart:
-            return KeyboardTurnGuidance(phase="重新开始", reason=self.restart_reason)
+            return self.status("重新开始", self.restart_reason)
         if not state.valid:
             return self.pause("等待有效飞行数据")
         if self.goal is not None and self.last_sample_time is not None and state.time_s-self.last_sample_time > 2.5:
             self.invalidate("飞行数据中断超过 2.5 秒，请重新开始转向")
-            return KeyboardTurnGuidance(phase="重新开始", reason=self.restart_reason)
+            return self.status("重新开始", self.restart_reason)
         previous_time = self.last_sample_time
         self.last_sample_time = state.time_s
         try:
-            velocity, normal = flight_frame(state)
-            if not valid_number(state.throttle_percent) or not 0 <= state.throttle_percent <= 110:
-                return self.pause("需要有效油门读数")
+            # Geometry remains measurable when the force model is out of range.
+            velocity, normal = flight_frame(state, enforce_envelope=False)
             signature = (id(fm), afterburner, sweep, settings)
             if signature != self.signature:
                 self.reset()
@@ -426,96 +530,96 @@ class TurnSession:
                 self.model = ManeuverModel(fm, mass, afterburner, sweep)
                 self.last_sample_time = state.time_s
             elif abs(mass/self.model.mass-1) > .01:
-                # A fuel-related mass update must not re-anchor the turn angle.
+                self.pause("质量变化，更新计划", keep_previous=True)
+                self.model = ManeuverModel(fm, mass, afterburner, sweep)
+            direction = unit(velocity)
+            if self.goal is not None:
+                self.turned = angle(self.goal.direction, direction)
+                self.remaining = max(0., settings.angle_deg-self.turned)
+                self.progress_current = True
+            if not valid_number(state.throttle_percent) or not 0 <= state.throttle_percent <= 110:
+                return self.pause("需要有效油门读数", "缺少油门", current=self.progress_current)
+            if self.previous is None:
+                self.previous = (state.time_s, direction, normal)
+                return self.status("读取姿态", current=self.progress_current)
+            t0, v0, n0 = self.previous
+            dt = state.time_s-t0
+            self.previous = (state.time_s, direction, normal)
+            if not .02 <= dt <= .6:
+                return self.pause("采样间隔变化，正在重新读取姿态", "读取姿态",
+                                  keep_previous=True, current=self.progress_current)
+            previous_normal = transport(n0, v0, direction)
+            rate = math.atan2(dot(direction, cross(previous_normal, normal)), dot(previous_normal, normal))/dt
+            if abs(rate) > math.radians(400):
+                return self.pause("姿态变化过快", "姿态跳变", current=self.progress_current)
+            self.rate = rate if self.rate is None else self.rate+(rate-self.rate)*(1-math.exp(-dt/.25))
+            if self.goal is None:
+                self.goal = VelocityGoal(direction, settings.angle_deg)
+                self.floor = max(0., state.altitude_m-settings.max_altitude_loss_m)
+                self.turned, self.remaining = 0., settings.angle_deg
+                self.progress_current = True
+            if self.remaining <= .05:
+                self.completed = True
+            if self.completed:
                 if self.cancel:
                     self.cancel.set()
-                self.future = self.plan = self.action = None
-                self.model = ManeuverModel(fm, mass, afterburner, sweep)
-                self.last_submit = -math.inf
+                self.action = self.execution = None
+                return KeyboardTurnGuidance(True, "到达", "", self.turned, 0.)
+            if state.altitude_m < self.floor:
+                return self.pause("已低于本次机动高度下限；恢复高度或重新开始", "高度不足", current=True)
+            if state.tas_mps < settings.minimum_tas_mps:
+                return self.pause("当前 TAS 低于所设最低速度", "速度不足", current=True)
+            flight_frame(state)  # Apply the prediction envelope after updating progress.
             load = self.model.observed_load(state.altitude_m, state.tas_mps, state.aoa_deg)
+            if not settings.min_load-.2 <= load <= settings.max_load+.2:
+                return self.pause("由迎角估计的载荷超出所设机动限制", "载荷超限", current=True)
             if self.engine_throttle is None:
                 self.engine_throttle = state.throttle_percent
             elif previous_time is not None:
                 elapsed = max(0., state.time_s-previous_time)
                 self.engine_throttle = state.throttle_percent+(self.engine_throttle-state.throttle_percent)*math.exp(
                     -elapsed/settings.engine_response_s)
-            direction = unit(velocity)
-            if self.previous is None:
-                self.previous = (state.time_s, direction, normal)
-                return KeyboardTurnGuidance(phase="读取姿态")
-            t0, v0, n0 = self.previous
-            dt = state.time_s-t0
-            self.previous = (state.time_s, direction, normal)
-            if not .02 <= dt <= .6:
-                return self.pause("采样间隔变化，正在重新读取姿态", "读取姿态", keep_previous=True)
-            previous_normal = transport(n0, v0, direction)
-            rate = math.atan2(dot(direction, cross(previous_normal, normal)), dot(previous_normal, normal))/dt
-            if abs(rate) > math.radians(400):
-                raise ValueError("姿态变化过快")
-            self.rate = rate if self.rate is None else self.rate+(rate-self.rate)*(1-math.exp(-dt/.25))
-            rate = self.rate
-            motion = Motion(state.altitude_m, velocity, normal, rate, load,
+            motion = Motion(state.altitude_m, velocity, normal, self.rate, load,
                             state.throttle_percent, self.engine_throttle)
-            if self.goal is None:
-                self.goal = VelocityGoal(direction, settings.angle_deg)
-                self.floor = max(0., state.altitude_m-settings.max_altitude_loss_m)
-            turned = angle(self.goal.direction, direction)
-            remaining = max(0., settings.angle_deg-turned)
-            if motion.altitude < self.floor:
-                return self.pause("已低于本次机动高度下限；恢复高度或重新开始", "高度不足")
-            if motion.speed < settings.minimum_tas_mps:
-                return self.pause("当前 TAS 低于所设最低速度", "速度不足")
-            if not settings.min_load-.2 <= load <= settings.max_load+.2:
-                return self.pause("由迎角估计的载荷超出所设机动限制", "载荷超限")
-            if remaining <= .05:
-                self.completed = True
-            if self.completed:
-                if self.cancel:
-                    self.cancel.set()
-                self.action = None
-                return KeyboardTurnGuidance(True, "到达", "", turned, 0.)
+            if self.execution is not None:
+                elapsed = state.time_s-self.plan_time
+                expected = self.execution.reference(elapsed)
+                index = self.execution.index(elapsed)
+                if (not nearby(expected, motion, coarse=True)
+                        or index != self.execution_index and not nearby(expected, motion)):
+                    self.pause("执行轨迹偏离预测，正在调整后续动作", "调整动作", keep_previous=True, current=True)
+                elif elapsed >= self.execution.ends[-1]:
+                    self.pause("本段完成，继续规划", "更新计划", keep_previous=True, current=True)
+                else:
+                    return self.execution_guidance(motion, state.time_s)
             if self.future is not None and self.future.done():
                 future, self.future = self.future, None
                 candidate = future.result()
-                # No old-aircraft/settings result can survive reset. Reject a
-                # result if actual movement has left its starting neighborhood.
-                if (angle(candidate.initial.velocity, velocity) <= 10
-                        and angle(candidate.initial.normal, normal) <= 20
-                        and abs(candidate.initial.speed-motion.speed) <= 25
-                        and abs(candidate.initial.altitude-motion.altitude) <= 150
-                        and abs(candidate.initial.load-motion.load) <= 2
-                        and abs(candidate.initial.throttle_percent-motion.throttle_percent) <= 15
-                        and abs(candidate.initial.engine_throttle_percent-motion.engine_throttle_percent) <= 15
-                        and abs(candidate.initial.roll_rate-motion.roll_rate) <= math.radians(60)):
-                    if (candidate.action == self.action or self.action is None
-                            or state.time_s-self.last_switch >= settings.hold_s):
-                        if candidate.action != self.action:
-                            self.last_switch = state.time_s
-                        self.plan, self.action = candidate, candidate.action
-                        self.plan_time = state.time_s
-                else:
-                    self.plan = self.action = None
+                # During computation no new cue was visible. Project the observed
+                # motion through that latency, then rebase the selected sequence.
+                expected, elapsed = candidate.initial, 0.
+                latency = max(0., state.time_s-self.last_submit)
+                while elapsed < min(latency, 2.5)-1e-9:
+                    step = min(.15, latency-elapsed)
+                    expected = self.model.step(expected, None, step, settings)
+                    elapsed += step
+                if latency <= 2.5 and nearby(expected, motion) and candidate.action is not None:
+                    try:
+                        self.execution = prepare_execution(self.model, motion, candidate, self.goal, settings, self.floor)
+                    except ValueError as exc:
+                        return self.pause(str(exc), "调整动作", keep_previous=True, current=True)
+                    self.plan, self.plan_time = candidate, state.time_s
+                    return self.execution_guidance(motion, state.time_s)
             if self.future is None and state.time_s-self.last_submit >= .8:
                 if self.executor is None:
                     self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wt-turn")
                 self.cancel = Event()
                 self.last_submit = state.time_s
                 self.future = self.executor.submit(search_turn, self.model, motion, self.goal, settings, self.floor, self.cancel)
-            if self.plan is not None and (angle(self.plan.initial.velocity, velocity) > 15
-                    or angle(self.plan.initial.normal, normal) > 30
-                    or abs(self.plan.initial.throttle_percent-motion.throttle_percent) > 20
-                    or state.time_s-self.plan_time > 2.):
-                self.plan = self.action = None
-            if self.action is None:
-                return KeyboardTurnGuidance(False, "计算" if self.future else "无可用动作", "", turned, remaining)
-            return KeyboardTurnGuidance(True, "转向", self.action.label, turned, remaining,
-                self.plan.duration_s, self.plan.energy_change_m, self.action.roll, self.action.pitch,
-                throttle_command=self.action.throttle, throttle_percent=motion.throttle_percent,
-                target_throttle_percent=(motion.throttle_percent if self.action.throttle == 0 else
-                    max(0., motion.throttle_percent-settings.throttle_rate_percent_s*settings.hold_s)
-                    if self.action.throttle < 0 else min(self.model.max_throttle,
-                        motion.throttle_percent+settings.throttle_rate_percent_s*settings.hold_s)))
+            return self.status("计算" if self.future else "无可用动作", current=True)
         except Cancelled:
-            return KeyboardTurnGuidance(phase="计算")
+            return self.status("计算", current=self.progress_current)
         except (ValueError, OverflowError) as exc:
-            return self.pause(str(exc))
+            missing = not valid_number(state.pitch_deg) or not valid_number(state.roll_deg)
+            return self.pause(str(exc), "缺少姿态" if missing else "模型范围",
+                              current=self.progress_current)

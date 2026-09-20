@@ -9,7 +9,7 @@ from unittest.mock import patch
 from wt_overlay.app import OverlayController
 from wt_overlay.contracts import FlightState, G, KeyboardTurnSettings, PerformanceCondition
 from wt_overlay.fm import load_aircraft
-from wt_overlay.turn import (Action, Cancelled, ManeuverModel, Motion, TurnPlan, TurnSession,
+from wt_overlay.turn import (Action, Cancelled, ManeuverModel, Motion, TurnPlan, TurnSession, TurnStep,
                              VelocityGoal, angle, dot, flight_frame, norm, rotate, search_turn,
                              transport, unit, validate_settings)
 
@@ -18,6 +18,20 @@ def sample(t=0, **changes):
     return replace(FlightState(t, True, altitude_m=5000, tas_mps=250, ias_mps=200,
         vertical_speed_mps=0, pitch_deg=4, roll_deg=0, heading_deg=0,
         aoa_deg=4, aos_deg=0, mass_kg=23000, aircraft_id="su_27sm", throttle_percent=110), **changes)
+
+
+def telemetry_for_motion(model, motion, t):
+    alpha = model.forces(motion.altitude, motion.speed, motion.load)[3]
+    v, n = unit(motion.velocity), motion.normal
+    forward = tuple(a*math.cos(alpha)+b*math.sin(alpha) for a, b in zip(v, n))
+    up = tuple(-a*math.sin(alpha)+b*math.cos(alpha) for a, b in zip(v, n))
+    heading, pitch = math.atan2(forward[0], forward[1]), math.asin(forward[2])
+    right = (math.cos(heading), -math.sin(heading), 0)
+    level_up = (-math.sin(pitch)*math.sin(heading), -math.sin(pitch)*math.cos(heading), math.cos(pitch))
+    roll = math.atan2(dot(up, right), dot(up, level_up))
+    return sample(t, altitude_m=motion.altitude, tas_mps=motion.speed, vertical_speed_mps=motion.velocity[2],
+        heading_deg=math.degrees(heading), pitch_deg=math.degrees(pitch), roll_deg=math.degrees(roll),
+        aoa_deg=math.degrees(alpha), throttle_percent=motion.throttle_percent)
 
 
 class GeometryTests(unittest.TestCase):
@@ -158,6 +172,10 @@ class ManeuverTests(unittest.TestCase):
                 self.assertIsNotNone(result.action)
                 self.assertGreater(result.duration_s, s.reaction_s)
                 self.assertLessEqual(result.duration_s, s.horizon_s)
+                self.assertGreater(len(result.steps), 0)
+                self.assertLessEqual(len(result.steps), 4)
+                self.assertEqual(result.action, result.steps[0].action)
+                self.assertTrue(all(x.duration_s >= s.hold_s-1e-8 for x in result.steps[:-1]))
 
     def test_cancellation_invalid_limits_and_incomplete_search_have_no_eta(self):
         stop = Event(); stop.set()
@@ -281,7 +299,7 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(result.available)
         self.assertEqual(result.action, "")
 
-    def test_matching_completed_plan_is_published_and_then_expires(self):
+    def test_matching_action_is_published_without_unverified_eta(self):
         self.update(0); self.update(.1)
         self.session.cancel.set()
         velocity, normal = flight_frame(sample())
@@ -292,7 +310,9 @@ class SessionTests(unittest.TestCase):
         result = self.update(.2)
         self.assertTrue(result.available)
         self.assertEqual(result.action, "右滚＋拉杆")
-        self.assertEqual(result.duration_s, 4)
+        self.assertIsNone(result.duration_s)  # Rebased sequence has not reached the goal.
+        self.assertEqual(result.step_count, 1)
+        self.assertEqual(result.next_action, "继续规划")
 
     def test_throttle_recommendation_and_stale_throttle_rejection(self):
         self.update(0); self.update(.1)
@@ -306,10 +326,53 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(result.available)
         self.assertEqual(result.throttle_command, -1)
         self.assertEqual(result.throttle_percent, 110)
-        self.assertEqual(result.target_throttle_percent, 80)
+        self.assertEqual(result.target_throttle_percent, 50)
         result = self.update(.3, throttle_percent=50)
         self.assertFalse(result.available)
         self.assertIsNone(result.target_throttle_percent)
+
+    def test_normal_rolling_follows_committed_sequence_and_previews_next_action(self):
+        self.settings = replace(self.settings, angle_deg=120)
+        self.update(0); self.update(.1)
+        self.session.cancel.set()
+        v, n = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        initial = Motion(5000, v, n, 0, load)
+        future = Future()
+        steps = (TurnStep(Action(1, 1), 1.2), TurnStep(Action(0, 1), 1.2))
+        future.set_result(TurnPlan(initial, steps[0].action, None, None, False, steps=steps))
+        self.session.future = future
+        result = self.update(.2)
+        self.assertTrue(result.available)
+        self.assertIn("停止滚转", result.next_action)
+        execution, origin = self.session.execution, self.session.goal
+        for i in range(1, 18):
+            elapsed = i*.1
+            motion = execution.reference(elapsed)
+            state = telemetry_for_motion(self.session.model, motion, .2+elapsed)
+            result = self.session.update(state, self.fm, 23000, True, 0, self.settings)
+            self.assertTrue(result.available, (elapsed, result))
+            self.assertIs(self.session.execution, execution)
+            self.assertIs(self.session.goal, origin)
+            self.assertIsNone(self.session.future)
+            self.assertEqual(result.roll_command, 1 if elapsed < 1.5-1e-8 else 0)
+            if i == 11:
+                self.assertGreater(angle(initial.normal, motion.normal), 30)
+        self.assertEqual(result.step_index, 2)
+
+    def test_model_limit_keeps_live_progress_and_missing_pose_marks_last_progress(self):
+        self.settings = replace(self.settings, angle_deg=90)
+        self.update(0); self.update(.1)
+        result = self.update(.2, heading_deg=20, aoa_deg=35)
+        self.assertFalse(result.available)
+        self.assertEqual(result.phase, "模型范围")
+        self.assertAlmostEqual(result.turned_deg, 20)
+        self.assertAlmostEqual(result.remaining_deg, 70)
+        self.assertFalse(result.progress_stale)
+        missing = self.update(.3, pitch_deg=None)
+        self.assertEqual(missing.turned_deg, result.turned_deg)
+        self.assertTrue(missing.progress_stale)
+        self.assertEqual(missing.phase, "缺少姿态")
 
 
 class ControllerTests(unittest.TestCase):

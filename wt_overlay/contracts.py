@@ -135,7 +135,7 @@ class KeyboardTurnSettings:
     roll_response_s: float = .35
     load_response_s: float = .6
     reaction_s: float = .3
-    hold_s: float = .6
+    hold_s: float = 1.2
     throttle_rate_percent_s: float = 50.
     engine_response_s: float = 1.
 
@@ -156,6 +156,13 @@ class KeyboardTurnGuidance:
     throttle_command: int = 0
     throttle_percent: float | None = None
     target_throttle_percent: float | None = None
+    next_action: str = ""
+    step_index: int | None = None
+    step_count: int | None = None
+    step_remaining_s: float | None = None
+    progress_stale: bool = False
+    estimated_pitch_deg: float | None = None
+    estimated_roll_deg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -196,3 +203,4 @@ class OverlaySnapshot:
     turn_enabled: bool = False
     turn_settings: KeyboardTurnSettings = field(default_factory=KeyboardTurnSettings)
     turn: KeyboardTurnGuidance | None = None
+    attitude_status: str = ""

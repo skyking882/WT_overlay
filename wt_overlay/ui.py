@@ -10,7 +10,7 @@ import ctypes
 from ctypes import wintypes
 import math
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import sys
 from typing import Callable
 
@@ -38,7 +38,7 @@ DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
                      "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65),
                      "turn": (0.42, 0.65)}
 HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导",
-           "T": "开关转向引导", "R": "重新开始转向"}
+           "T": "开关转向引导", "R": "重新开始转向", "A": "平翼校准"}
 
 
 def game_geometry(game: GameWindow, screen) -> QRect:
@@ -388,6 +388,17 @@ class SettingsWindow(QWidget):
         self.turn_box = QCheckBox("启用转向引导 · Ctrl+Alt+T")
         self.turn_box.toggled.connect(owner.set_turn_enabled)
         form.addRow(self.turn_box)
+        self.pose_status = QLabel()
+        self.pose_status.setWordWrap(True)
+        form.addRow("姿态来源", self.pose_status)
+        self.pose_sign = QComboBox()
+        self.pose_sign.addItem("正向 Wx", 1)
+        self.pose_sign.addItem("反向 Wx", -1)
+        self.pose_sign.setCurrentIndex(1 if owner.preferences.value("turn/pose_sign", 1, type=int) == -1 else 0)
+        form.addRow("滚转率方向", self.pose_sign)
+        self.calibrate_pose = QPushButton("平翼校准 · Ctrl+Alt+A · 机翼水平且停止滚转")
+        self.calibrate_pose.clicked.connect(self.apply_pose_calibration)
+        form.addRow(self.calibrate_pose)
         self.turn_angle = QComboBox()
         for value in (30, 45, 90, 120):
             self.turn_angle.addItem(f"{value}°", value)
@@ -404,7 +415,7 @@ class SettingsWindow(QWidget):
             ("roll_response_s", "滚转响应时间 / s", .1, 2, .05, 1),
             ("load_response_s", "载荷响应时间 / s", .1, 3, .1, 1),
             ("reaction_s", "操纵反应时间 / s", 0, 1.5, .05, 1),
-            ("hold_s", "动作保持时间 / s", .3, 2, .1, 1),
+            ("hold_s", "每段最短时间 / s", .8, 3, .1, 1),
             ("throttle_rate_percent_s", "油门变化速度 / %/s", 5, 200, 5, 1),
             ("engine_response_s", "推力响应时间 / s", .1, 5, .1, 1),
         ):
@@ -445,6 +456,11 @@ class SettingsWindow(QWidget):
         identity = self.aircraft_box.itemData(index)
         if identity and identity != "file":
             self.owner.command({"action": "aircraft", "id": identity})
+
+    def apply_pose_calibration(self):
+        sign = self.pose_sign.currentData()
+        if self.owner.command({"action": "pose_calibrate", "roll_sign": sign}):
+            self.owner.preferences.setValue("turn/pose_sign", sign)
 
     def apply_mass(self):
         try:
@@ -525,6 +541,8 @@ class OverlayApp:
         if turn_settings is None and self.preferences.contains("turn/settings"):
             try:
                 saved_turn = KeyboardTurnSettings(**json.loads(self.preferences.value("turn/settings", "{}", type=str)))
+                if saved_turn.hold_s < .8:
+                    saved_turn = replace(saved_turn, hold_s=1.2)
                 validate_settings(saved_turn)
                 self.turn_settings = saved_turn
             except (ValueError, TypeError):
@@ -632,7 +650,8 @@ class OverlayApp:
         callbacks = {"O": lambda: self.set_visible(not self.hud_visible),
                      "L": lambda: self.set_editing(not self.editing), "S": self.show_settings,
                      "C": lambda: self.set_climb_enabled(not self.climb_enabled),
-                     "T": lambda: self.set_turn_enabled(not self.turn_enabled), "R": self.restart_turn}
+                     "T": lambda: self.set_turn_enabled(not self.turn_enabled), "R": self.restart_turn,
+                     "A": self.settings_window.apply_pose_calibration}
         active, failures = {}, []
         self.settings_hotkey_available = False
         if self.desktop:
@@ -856,6 +875,7 @@ class OverlayApp:
             self.groups[key].set_content(content)
         window = self.settings_window
         window.status.setText(snapshot.status)
+        window.pose_status.setText(snapshot.attitude_status or "等待姿态数据")
         if snapshot.model_selection == "auto":
             state = snapshot.state
             if snapshot.mode == "demo":

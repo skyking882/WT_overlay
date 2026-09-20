@@ -21,6 +21,7 @@ from .fm.catalog import aircraft_key, find_aircraft
 from .planning import scan_sep
 from .telemetry import TelemetryClient
 from .turn import TurnSession, validate_settings
+from .attitude import AttitudeEstimator
 
 
 def positive(value: object, label: str) -> float:
@@ -90,6 +91,8 @@ class OverlayController:
         self.turn_enabled = False
         self.turn_settings = KeyboardTurnSettings()
         self._turn_session = TurnSession()
+        self._attitude = AttitudeEstimator()
+        self._pose_calibration_sign = None
         self._snapshot = OverlaySnapshot(mode, "等待首个数据样本", mass_override_kg=self.mass_kg,
                                          afterburner=afterburner, model_selection=self.model_selection,
                                          sweep_fraction=self.sweep_fraction,
@@ -134,6 +137,9 @@ class OverlayController:
                 raise ValueError("转向设置无效") from exc
         elif action == "turn_restart":
             pass
+        elif action == "pose_calibrate":
+            if type(command.get("roll_sign")) is not int or command["roll_sign"] not in (-1, 1):
+                raise ValueError("请选择滚转率方向")
         else:
             raise ValueError("未知设置命令")
         try:
@@ -151,11 +157,13 @@ class OverlayController:
             action = command["action"]
             if command["action"] in ("mode", "mass", "afterburner", "sweep", "model", "aircraft"):
                 self._turn_session.invalidate()
-            if not action.startswith("turn_") or (action == "turn_enabled" and command["enabled"]):
+            if (not action.startswith("turn_") and action != "pose_calibrate"
+                    or action == "turn_enabled" and command["enabled"]):
                 self._reset_climb()
                 self._advice = None
                 self._last_prediction = -math.inf
             if action == "mode":
+                self._attitude.reset()
                 self.mode = command["value"]
                 self.estimator.reset()
                 self._identity = None
@@ -182,6 +190,9 @@ class OverlayController:
                     self._turn_session.reset()
                 self.turn_settings = settings
             elif action == "turn_restart":
+                self._turn_session.reset()
+            elif action == "pose_calibrate":
+                self._pose_calibration_sign = command["roll_sign"]
                 self._turn_session.reset()
             elif action == "turn_enabled":
                 self.turn_enabled = command["enabled"]
@@ -338,6 +349,8 @@ class OverlayController:
         now = time.monotonic() if now is None else now
         state = (make_demo_sample(now-self._started_at) if self.mode == "demo"
                  else self.client.poll(time_s=now))
+        turn_state = self._attitude.update(state, calibrate_sign=self._pose_calibration_sign)
+        self._pose_calibration_sign = None
         self._select_live_aircraft(state)
         energy = self.estimator.update(state)
         identity = (state.source, aircraft_key(state.aircraft_id)) if state.valid and state.aircraft_id else None
@@ -356,7 +369,13 @@ class OverlayController:
             self._advice = self._predict(state)
             self._last_prediction = now
         climb = self._climb_guidance(state, energy)
-        turn = self._turn_guidance(state)
+        turn = self._turn_guidance(turn_state)
+        if turn is not None and self._attitude.estimated:
+            turn = replace(turn, estimated_pitch_deg=turn_state.pitch_deg,
+                           estimated_roll_deg=turn_state.roll_deg,
+                           reason="\n".join(x for x in (turn.reason, self._attitude.reason) if x))
+        elif turn is not None and state.valid and (state.pitch_deg is None or state.roll_deg is None):
+            turn = replace(turn, phase="需要校准", reason=self._attitude.reason)
         if self.mode == "demo":
             status = "合成演示 · 未连接游戏"
         elif state.valid:
@@ -376,7 +395,7 @@ class OverlayController:
             tuple(notes), self.mass_kg, self.afterburner,
             self.climb_enabled, self.climb_request, climb, self.model_selection,
             self.sweep_fraction, bool(self.model and getattr(self.model, "wings", ())),
-            self.turn_enabled, self.turn_settings, turn)
+            self.turn_enabled, self.turn_settings, turn, self._attitude.reason)
         with self._lock:
             self._snapshot = snapshot
             self._published_at = time.monotonic()
@@ -391,7 +410,9 @@ class OverlayController:
                            state=replace(snapshot.state, valid=False), advice=None,
                            energy=EnergyMetrics(snapshot.state.time_s, notes=("样本已过期",)),
                            climb=ClimbGuidance(phase="等待数据") if snapshot.climb_enabled else None,
-                           turn=KeyboardTurnGuidance(phase="等待数据") if snapshot.turn_enabled else None)
+                           turn=replace(snapshot.turn, available=False, phase="等待数据", action="",
+                                        duration_s=None, next_action="", step_remaining_s=None,
+                                        progress_stale=True) if snapshot.turn else None)
         return snapshot
 
     def _run(self) -> None:

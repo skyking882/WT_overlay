@@ -32,6 +32,25 @@ class HudDataTests(unittest.TestCase):
         partial = replace(snapshot, turn=replace(snapshot.turn, duration_s=None))
         self.assertEqual(contents(partial)["turn"].rows[-1].value, "—")
 
+    def test_sequence_preview_estimates_and_paused_progress_are_visible(self):
+        turn = KeyboardTurnGuidance(True, "转向", "右滚＋拉杆", 25, 65, 4,
+            next_action="停止滚转＋拉杆", step_index=1, step_count=2, step_remaining_s=1.1,
+            estimated_pitch_deg=5.3, estimated_roll_deg=30)
+        snapshot = replace(sample_snapshot(), turn_enabled=True, turn=turn)
+        rows = {row.label: row.value for row in contents(snapshot)["turn"].rows}
+        self.assertEqual(rows["动作段"], "1/2")
+        self.assertEqual(rows["下一步"], "停止滚转＋拉杆")
+        self.assertIn("+30.0", rows["姿态估计"])
+        paused = replace(snapshot, turn=replace(turn, available=False, phase="模型范围", action=""))
+        rows = {row.label: row.value for row in contents(paused)["turn"].rows}
+        self.assertEqual(rows["已转角度"], "25.0")
+        self.assertEqual(rows["动作"], "—")
+        stale = replace(paused, turn=replace(paused.turn, progress_stale=True),
+                        state=replace(snapshot.state, valid=False))
+        rows = {row.label: row.value for row in contents(stale)["turn"].rows}
+        self.assertEqual(rows["最近转角"], "25.0")
+        self.assertEqual(rows["参考用时"], "—")
+
     def test_climb_shows_indicated_speed_and_both_flight_path_angles(self):
         guidance = ClimbGuidance(True, "爬升", 300, 12, 2, 3000,
                                  actual_path_deg=10, target_ias_mps=210)

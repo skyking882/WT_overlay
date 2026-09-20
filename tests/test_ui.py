@@ -1,6 +1,7 @@
 """Qt render/interaction checks; Win32 compositor and game behavior need Windows."""
 
 from dataclasses import replace
+import json
 import importlib.util
 import os
 from pathlib import Path
@@ -171,6 +172,10 @@ class OverlayTests(unittest.TestCase):
         self.ui._setup_hotkeys()
         self.assertIn((0x5744, "T"), registrations)
         self.assertIn((0x5745, "R"), registrations)
+        self.assertIn((0x5746, "A"), registrations)
+        self.ui.settings_window.pose_sign.setCurrentIndex(1)
+        self.ui.hotkey_filter.callbacks[0x5746]()
+        self.assertEqual(self.commands[-1], {"action": "pose_calibrate", "roll_sign": -1})
         self.ui.hotkey_filter.callbacks[0x5744]()
         self.assertTrue(self.ui.turn_enabled)
         self.assertFalse(self.ui.climb_enabled)
@@ -196,6 +201,15 @@ class OverlayTests(unittest.TestCase):
         self.assertEqual(self.ui.turn_settings.roll_rate_deg_s, 90)
         self.assertEqual(self.ui.turn_settings.throttle_rate_percent_s, 30)
         self.assertEqual(self.ui.turn_settings.engine_response_s, 1.5)
+
+    def test_legacy_short_hold_migrates_without_losing_turn_target(self):
+        self.ui.preferences.setValue("turn/settings", json.dumps({"angle_deg": 120, "hold_s": .6,
+                                                                "max_altitude_loss_m": 800}))
+        self.ui.close()
+        self.ui = self.make_ui()
+        self.assertEqual(self.ui.turn_settings.hold_s, 1.2)
+        self.assertEqual(self.ui.turn_settings.angle_deg, 120)
+        self.assertEqual(self.ui.turn_settings.max_altitude_loss_m, 800)
 
     def test_climb_is_independent_defaults_off_and_hides_before_worker_acknowledges(self):
         self.assertFalse(self.ui.groups["climb"].isVisible())
