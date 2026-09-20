@@ -10,6 +10,7 @@ from threading import Event, Lock, Thread
 import time
 
 from .contracts import (G, ClimbGuidance, ClimbRequest, EnergyMetrics, FlightState,
+                        KeyboardTurnGuidance, KeyboardTurnSettings,
                         OverlaySnapshot, PerformanceCondition, SEPAdvice)
 from .climb import (ClimbDirector, PlanningCancelled, PlanningUnavailable,
                     build_climb_plan, valid_number, validate_request)
@@ -19,6 +20,7 @@ from .fm import load_aircraft, load_model
 from .fm.catalog import aircraft_key, find_aircraft
 from .planning import scan_sep
 from .telemetry import TelemetryClient
+from .turn import TurnSession, validate_settings
 
 
 def positive(value: object, label: str) -> float:
@@ -84,6 +86,9 @@ class OverlayController:
         self._plan = None
         self._plan_base = None
         self._failed_energy = None
+        self.turn_enabled = False
+        self.turn_settings = KeyboardTurnSettings()
+        self._turn_session = TurnSession()
         self._snapshot = OverlaySnapshot(mode, "等待首个数据样本", mass_override_kg=self.mass_kg,
                                          afterburner=afterburner, model_selection=self.model_selection,
                                          sweep_fraction=self.sweep_fraction,
@@ -118,6 +123,16 @@ class OverlayController:
                 raise ValueError("爬升开关须为布尔值")
         elif action == "climb_target":
             validate_request(ClimbRequest(command.get("altitude_m"), command.get("minimum_tas_mps")))
+        elif action == "turn_enabled":
+            if type(command.get("enabled")) is not bool:
+                raise ValueError("转向开关须为布尔值")
+        elif action == "turn_target":
+            try:
+                validate_settings(KeyboardTurnSettings(**command["settings"]))
+            except (TypeError, KeyError) as exc:
+                raise ValueError("转向设置无效") from exc
+        elif action == "turn_restart":
+            pass
         else:
             raise ValueError("未知设置命令")
         try:
@@ -132,10 +147,13 @@ class OverlayController:
             except Empty:
                 return
             self._settings_error = ""
-            self._reset_climb()
-            self._advice = None
-            self._last_prediction = -math.inf
             action = command["action"]
+            if command["action"] in ("mode", "mass", "afterburner", "sweep", "model", "aircraft"):
+                self._turn_session.invalidate()
+            if not action.startswith("turn_") or (action == "turn_enabled" and command["enabled"]):
+                self._reset_climb()
+                self._advice = None
+                self._last_prediction = -math.inf
             if action == "mode":
                 self.mode = command["value"]
                 self.estimator.reset()
@@ -151,8 +169,23 @@ class OverlayController:
                 self.sweep_fraction = float(command["fraction"])
             elif action == "climb_enabled":
                 self.climb_enabled = command["enabled"]
+                if self.climb_enabled:
+                    self.turn_enabled = False
+                    self._turn_session.reset()
             elif action == "climb_target":
                 self.climb_request = ClimbRequest(command["altitude_m"], command.get("minimum_tas_mps"))
+            elif action == "turn_target":
+                settings = KeyboardTurnSettings(**command["settings"])
+                if settings != self.turn_settings:
+                    self._turn_session.reset()
+                self.turn_settings = settings
+            elif action == "turn_restart":
+                self._turn_session.reset()
+            elif action == "turn_enabled":
+                self.turn_enabled = command["enabled"]
+                self._turn_session.reset()
+                if self.turn_enabled:
+                    self.climb_enabled = False
             elif action == "model":
                 self.model = None
                 self.model_selection = "file"
@@ -273,6 +306,25 @@ class OverlayController:
             scope += " 演示状态仅用于驱动界面，不能用于验证所选飞机。"
         return replace(advice, notes=(scope, *advice.notes))
 
+    def _turn_guidance(self, state):
+        if not self.turn_enabled:
+            return None
+        if not state.valid:
+            self._turn_session.invalidate()
+            return KeyboardTurnGuidance(phase="等待数据")
+        if self.model is None:
+            self._turn_session.invalidate()
+            return KeyboardTurnGuidance(phase="选择机型")
+        if self.mode == "live" and not _matches(self.model, state.aircraft_id):
+            self._turn_session.invalidate()
+            return KeyboardTurnGuidance(phase="核对机型")
+        mass = self.mass_kg if self.mass_kg is not None else state.mass_kg
+        if not valid_number(mass) or mass <= 0:
+            self._turn_session.invalidate()
+            return KeyboardTurnGuidance(phase="设置质量")
+        return self._turn_session.update(state, self.model, mass, self.afterburner,
+                                         self.sweep_fraction, self.turn_settings)
+
     def tick(self, now: float | None = None) -> OverlaySnapshot:
         """Perform one sampling cycle, on the worker (or synchronously in tests)."""
         self._apply_commands()
@@ -283,6 +335,8 @@ class OverlayController:
         energy = self.estimator.update(state)
         identity = (state.source, state.aircraft_id)
         if identity != self._identity:
+            if self._identity is not None:
+                self._turn_session.invalidate()
             self._reset_climb()
             self._advice = None
             self._last_prediction = -math.inf
@@ -294,6 +348,7 @@ class OverlayController:
             self._advice = self._predict(state)
             self._last_prediction = now
         climb = self._climb_guidance(state, energy)
+        turn = self._turn_guidance(state)
         if self.mode == "demo":
             status = "合成演示 · 未连接游戏"
         elif state.valid:
@@ -312,7 +367,8 @@ class OverlayController:
             self.model.info.name if self.model else "未加载 FM",
             tuple(notes), self.mass_kg, self.afterburner,
             self.climb_enabled, self.climb_request, climb, self.model_selection,
-            self.sweep_fraction, bool(self.model and getattr(self.model, "wings", ())))
+            self.sweep_fraction, bool(self.model and getattr(self.model, "wings", ())),
+            self.turn_enabled, self.turn_settings, turn)
         with self._lock:
             self._snapshot = snapshot
             self._published_at = time.monotonic()
@@ -326,7 +382,8 @@ class OverlayController:
             return replace(snapshot, status="数据已过期，等待重新连接",
                            state=replace(snapshot.state, valid=False), advice=None,
                            energy=EnergyMetrics(snapshot.state.time_s, notes=("样本已过期",)),
-                           climb=ClimbGuidance(phase="等待数据") if snapshot.climb_enabled else None)
+                           climb=ClimbGuidance(phase="等待数据") if snapshot.climb_enabled else None,
+                           turn=KeyboardTurnGuidance(phase="等待数据") if snapshot.turn_enabled else None)
         return snapshot
 
     def _run(self) -> None:
@@ -335,6 +392,7 @@ class OverlayController:
             try:
                 self.tick(started)
             except Exception as exc:
+                self._turn_session.invalidate()
                 self._reset_climb()
                 self.estimator.reset()
                 self._advice = None
@@ -346,6 +404,8 @@ class OverlayController:
                         mass_override_kg=self.mass_kg, afterburner=self.afterburner,
                         model_selection=self.model_selection, sweep_fraction=self.sweep_fraction,
                         variable_sweep=bool(self.model and getattr(self.model, "wings", ())),
+                        turn_enabled=self.turn_enabled, turn_settings=self.turn_settings,
+                        turn=KeyboardTurnGuidance(phase="等待数据") if self.turn_enabled else None,
                         climb_enabled=self.climb_enabled, climb_request=self.climb_request,
                         climb=ClimbGuidance(phase="等待数据") if self.climb_enabled else None)
             self._stop.wait(max(0.0, self.interval-(time.monotonic()-started)))
@@ -362,6 +422,7 @@ class OverlayController:
         if self._thread:
             self._thread.join(timeout=2.0)
         self._reset_climb()
+        self._turn_session.close()
         if self._planner is not None:
             self._planner.shutdown(wait=False, cancel_futures=True)
             self._planner = None

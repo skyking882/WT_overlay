@@ -124,6 +124,35 @@ class TurnAdvice:
 
 
 @dataclass(frozen=True)
+class KeyboardTurnSettings:
+    angle_deg: float = 90.
+    horizon_s: float = 15.
+    max_altitude_loss_m: float = 500.
+    minimum_tas_mps: float = 100.
+    max_load: float = 9.
+    min_load: float = -3.
+    roll_rate_deg_s: float = 120.
+    roll_response_s: float = .35
+    load_response_s: float = .6
+    reaction_s: float = .3
+    hold_s: float = .6
+
+
+@dataclass(frozen=True)
+class KeyboardTurnGuidance:
+    available: bool = False
+    phase: str = "等待数据"
+    action: str = ""
+    turned_deg: float | None = None
+    remaining_deg: float | None = None
+    duration_s: float | None = None
+    energy_change_m: float | None = None
+    roll_command: int = 0
+    pitch_command: int = 0
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class ClimbRequest:
     target_altitude_m: float = 8000.0
     minimum_tas_mps: float | None = None
@@ -158,3 +187,6 @@ class OverlaySnapshot:
     model_selection: str = "auto"
     sweep_fraction: float = 0.0
     variable_sweep: bool = False
+    turn_enabled: bool = False
+    turn_settings: KeyboardTurnSettings = field(default_factory=KeyboardTurnSettings)
+    turn: KeyboardTurnGuidance | None = None

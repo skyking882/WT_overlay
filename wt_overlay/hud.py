@@ -115,6 +115,19 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
         )
     result["climb"] = HudContent("爬升引导", rows, demo, snapshot.climb_enabled,
                                  climb.path_error_deg if usable else None)
+    turn = snapshot.turn
+    usable = valid and turn is not None and turn.available
+    rows = ()
+    if snapshot.turn_enabled:
+        rows = (
+            HudRow("转向", turn.phase if turn is not None and valid else "等待数据"),
+            HudRow("动作", turn.action if usable and turn.action else "—", tone="accent"),
+            HudRow("目标转角", number(snapshot.turn_settings.angle_deg), "°"),
+            HudRow("已转角度", number(turn.turned_deg if valid and turn else None, 1), "°"),
+            HudRow("剩余角度", number(turn.remaining_deg if valid and turn else None, 1), "°"),
+            HudRow("参考用时", number(turn.duration_s if usable else None, 1), "s"),
+        )
+    result["turn"] = HudContent("转向引导", rows, demo)
     return result
 
 
@@ -132,6 +145,7 @@ def details(snapshot: OverlaySnapshot) -> str:
                 notes.append(reason)
     if advice:
         notes.append("模型未求配平，尚未通过游戏验证；采样最优不等于全程最优爬升。")
-    notes.append("三维转向建议：动态模型尚未接入。")
+    if snapshot.turn and snapshot.turn.reason:
+        notes.append(snapshot.turn.reason)
     notes.append("指标定义\n" + "\n".join(f"{item.label}：{item.description}" for item in INDICATORS))
     return "\n\n".join(dict.fromkeys(notes))

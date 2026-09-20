@@ -102,11 +102,11 @@ def sample_sep_grid(model: PerformanceModel, base_condition: PerformanceConditio
 
 def evaluate_turn(request: TurnRequest, state: FlightState | None,
                   dynamic_model=None) -> TurnAdvice:
-    """Validate a finite 3D turn request without substituting steady-turn rates.
+    """Validate the general maneuver contract without inventing a full solver.
 
-    A dynamic provider is intentionally not accepted until its state, constraint,
-    and solution-validation contract is established. Dataclass defaults describe
-    a request, not a user-approved optimum.
+    The bounded keyboard reference lives in turn.TurnSession and requires its
+    own response settings, attitude history and frozen initial direction. This
+    general interface does not silently substitute that narrower approximation.
     """
     reason = ""
     if not _finite(request.angle_deg) or request.angle_deg not in (30, 45, 90, 120):
@@ -128,7 +128,7 @@ def evaluate_turn(request: TurnRequest, state: FlightState | None,
     if not reason and (state is None or not state.valid):
         reason = "A valid current flight state is required; no dynamic prediction is available."
     if not reason:
-        reason = "No verified dynamic maneuver model is integrated; finite 3D turn time and energy cannot be predicted."
+        reason = "No verified general maneuver solver is integrated; use TurnSession with explicit keyboard response settings for bounded reference guidance."
     return TurnAdvice(False, request, reason=reason, notes=(
         "Velocity-direction change and nose-direction change are distinct objectives.",
         "First crossing and stable exit are distinct endpoints; request defaults are not an approved optimum.",

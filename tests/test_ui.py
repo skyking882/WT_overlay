@@ -18,7 +18,8 @@ if HAS_QT:
     from wt_overlay.ui import OverlayApp, game_geometry
     from wt_overlay.windows import GameWindow
 
-from wt_overlay.contracts import ClimbGuidance, ClimbRequest, EnergyMetrics, FlightState, OverlaySnapshot
+from wt_overlay.contracts import (ClimbGuidance, ClimbRequest, EnergyMetrics, FlightState,
+                                  KeyboardTurnGuidance, KeyboardTurnSettings, OverlaySnapshot)
 
 
 @unittest.skipUnless(HAS_QT, "PySide6 is optional for backend-only tests")
@@ -119,12 +120,12 @@ class OverlayTests(unittest.TestCase):
         game = GameWindow(True, False, (0, 0, 1280, 720), (0, 0), self.app.primaryScreen().name())
         self.ui.game = game
         self.ui._sync_surface()
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key != "climb"))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn")))
         self.ui.game = replace(game, foreground=False)
         self.ui._sync_surface()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_editing(True)
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key != "climb"))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn")))
         self.ui.set_visible(False)
         self.assertFalse(self.ui.editing)
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
@@ -132,7 +133,50 @@ class OverlayTests(unittest.TestCase):
         self.ui.refresh()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_visible(True)
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key != "climb"))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn")))
+
+    def test_turn_toggle_restart_hotkeys_and_mutual_exclusion(self):
+        self.assertFalse(self.ui.groups["turn"].isVisible())
+        self.ui.set_turn_enabled(True)
+        self.assertEqual(self.commands[-1], {"action": "turn_enabled", "enabled": True})
+        self.snapshot = replace(self.snapshot, turn_enabled=True,
+            turn=KeyboardTurnGuidance(True, "转向", "右滚＋拉杆", 15, 75, 4))
+        self.ui.refresh()
+        group = self.ui.groups["turn"]
+        self.assertTrue(group.isVisible())
+        self.assertEqual(group.grab().toImage().pixelColor(0, 0).alpha(), 0)
+        self.ui.restart_turn()
+        self.assertEqual(self.commands[-1], {"action": "turn_restart"})
+        self.ui.set_climb_enabled(True)
+        self.assertFalse(group.isVisible())
+        self.assertFalse(self.ui.turn_enabled)
+        registrations = []
+        self.ui.desktop = SimpleNamespace(register_hotkey=lambda identifier, letter:
+            registrations.append((identifier, letter)) or True, close=lambda: None)
+        self.ui._setup_hotkeys()
+        self.assertIn((0x5744, "T"), registrations)
+        self.assertIn((0x5745, "R"), registrations)
+        self.ui.hotkey_filter.callbacks[0x5744]()
+        self.assertTrue(self.ui.turn_enabled)
+        self.assertFalse(self.ui.climb_enabled)
+        self.ui.hotkey_filter.callbacks[0x5745]()
+        self.assertEqual(self.commands[-1], {"action": "turn_restart"})
+        self.ui.set_turn_enabled(False)
+        self.ui.refresh()
+        self.assertFalse(group.isVisible())
+
+    def test_turn_preferences_restore_target_but_never_start_automatically(self):
+        w = self.ui.settings_window
+        w.turn_angle.setCurrentIndex(w.turn_angle.findData(120))
+        w.turn_fields["roll_rate_deg_s"][0].setValue(90)
+        w.turn_fields["minimum_tas_mps"][0].setValue(720)
+        self.assertTrue(w.apply_turn_settings())
+        self.assertEqual(self.ui.turn_settings.minimum_tas_mps, 200)
+        self.ui.close()
+        self.ui = self.make_ui()
+        self.assertFalse(self.ui.turn_enabled)
+        self.assertEqual(self.ui.turn_settings.angle_deg, 120)
+        self.assertEqual(self.ui.turn_settings.roll_rate_deg_s, 90)
 
     def test_climb_is_independent_defaults_off_and_hides_before_worker_acknowledges(self):
         self.assertFalse(self.ui.groups["climb"].isVisible())

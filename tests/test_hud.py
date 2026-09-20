@@ -1,7 +1,7 @@
 from dataclasses import replace
 import unittest
 
-from wt_overlay.contracts import (ClimbGuidance, EnergyMetrics, FlightState, OverlaySnapshot,
+from wt_overlay.contracts import (ClimbGuidance, EnergyMetrics, FlightState, OverlaySnapshot, KeyboardTurnGuidance,
                                   PerformanceCondition, PerformancePoint, SEPAdvice)
 from wt_overlay.hud import INDICATORS, contents, details
 from wt_overlay.telemetry import parse_telemetry
@@ -15,6 +15,20 @@ def sample_snapshot():
 
 
 class HudDataTests(unittest.TestCase):
+    def test_turn_hud_contains_only_cues_and_clears_stale_instructions(self):
+        snapshot = replace(sample_snapshot(), turn_enabled=True,
+            turn=KeyboardTurnGuidance(True, "转向", "右滚＋拉杆", 25, 65, 4))
+        rows = contents(snapshot)["turn"].rows
+        self.assertEqual(rows[1].value, "右滚＋拉杆")
+        self.assertEqual(rows[-1].value, "4.0")
+        self.assertNotIn("模型", " ".join(row.value for row in rows))
+        stale = replace(snapshot, state=replace(snapshot.state, valid=False))
+        rows = contents(stale)["turn"].rows
+        self.assertEqual(rows[1].value, "—")
+        self.assertEqual(rows[-1].value, "—")
+        partial = replace(snapshot, turn=replace(snapshot.turn, duration_s=None))
+        self.assertEqual(contents(partial)["turn"].rows[-1].value, "—")
+
     def test_climb_shows_indicated_speed_and_both_flight_path_angles(self):
         guidance = ClimbGuidance(True, "爬升", 300, 12, 2, 3000,
                                  actual_path_deg=10, target_ias_mps=210)

@@ -20,6 +20,7 @@ def make_demo_sample(time_s: float) -> FlightState:
         aoa_deg=4.0 + 2.0 * math.sin(phase), roll_deg=25.0 * math.sin(phase * 0.5),
         normal_load_g=1.0 + 2.0 * math.sin(phase * 0.5),
         aos_deg=0.5 * math.sin(phase * 0.7), pitch_deg=8.0 + 3.0 * math.sin(phase),
+        heading_deg=(45.+time_s*4.) % 360.,
         fuel_kg=4600.0, thrust_n=210000.0,
         throttle_percent=100.0, aircraft_id='synthetic-demo', source='demo',
         notes=('SYNTHETIC DEMO: these values do not represent a real aircraft.',),

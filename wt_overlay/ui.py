@@ -9,31 +9,36 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import math
+import json
+from dataclasses import asdict
 import sys
 from typing import Callable
 
 try:
     from PySide6.QtCore import QAbstractNativeEventFilter, QPoint, QRect, QSettings, Qt, QTimer, Signal
     from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
-    from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
+    from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox,
         QFileDialog, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
         QLineEdit, QMenu, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon,
         QTextEdit, QVBoxLayout, QWidget)
 except ImportError as exc:
     raise RuntimeError("图形界面需要 PySide6。请运行 start_windows.cmd，或安装 requirements.txt 中的依赖。") from exc
 
-from .contracts import ClimbRequest, OverlaySnapshot
+from .contracts import ClimbRequest, OverlaySnapshot, KeyboardTurnSettings
 from .climb import CUE_DEADBAND_DEG, CUE_RANGE_DEG, validate_request
 from .fm.catalog import aircraft_catalog
 from .hud import INDICATORS, HudContent, contents, details
 from .windows import GameWindow, WindowsDesktop
+from .turn import validate_settings
 
 
 GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考",
-          "climb": "爬升引导"}
+          "climb": "爬升引导", "turn": "转向引导"}
 DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
-                     "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65)}
-HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导"}
+                     "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65),
+                     "turn": (0.42, 0.65)}
+HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导",
+           "T": "开关转向引导", "R": "重新开始转向"}
 
 
 def game_geometry(game: GameWindow, screen) -> QRect:
@@ -258,7 +263,7 @@ class SettingsWindow(QWidget):
         self.group_boxes = {}
         group_row = QHBoxLayout()
         for key, caption in GROUPS.items():
-            if key == "climb":
+            if key in ("climb", "turn"):
                 continue
             check = QCheckBox(caption)
             check.setChecked(owner.group_enabled[key])
@@ -377,6 +382,43 @@ class SettingsWindow(QWidget):
         apply_climb = QPushButton("应用目标")
         apply_climb.clicked.connect(self.apply_climb_target)
         form.addRow(apply_climb)
+        turn = QGroupBox("键盘转向引导")
+        form = QFormLayout(turn)
+        layout.addWidget(turn)
+        self.turn_box = QCheckBox("启用转向引导 · Ctrl+Alt+T")
+        self.turn_box.toggled.connect(owner.set_turn_enabled)
+        form.addRow(self.turn_box)
+        self.turn_angle = QComboBox()
+        for value in (30, 45, 90, 120):
+            self.turn_angle.addItem(f"{value}°", value)
+        self.turn_angle.setCurrentIndex(self.turn_angle.findData(owner.turn_settings.angle_deg))
+        form.addRow("速度方向转角", self.turn_angle)
+        self.turn_fields = {}
+        for key, label, low, high, step, factor in (
+            ("max_altitude_loss_m", "允许损失高度 / m", 0, 5000, 100, 1),
+            ("minimum_tas_mps", "最低 TAS / km/h", 180, 2340, 36, 3.6),
+            ("horizon_s", "预测时长上限 / s", 3, 30, 1, 1),
+            ("max_load", "正向载荷上限 / g", 1, 12, .5, 1),
+            ("min_load", "负向载荷下限 / g", -5, 0, .5, 1),
+            ("roll_rate_deg_s", "满滚转参考速度 / °/s", 10, 360, 10, 1),
+            ("roll_response_s", "滚转响应时间 / s", .1, 2, .05, 1),
+            ("load_response_s", "载荷响应时间 / s", .1, 3, .1, 1),
+            ("reaction_s", "操纵反应时间 / s", 0, 1.5, .05, 1),
+            ("hold_s", "动作保持时间 / s", .3, 2, .1, 1),
+        ):
+            widget = QDoubleSpinBox()
+            widget.setRange(low, high)
+            widget.setDecimals(2 if high <= 3 else 1)
+            widget.setSingleStep(step)
+            widget.setValue(getattr(owner.turn_settings, key)*factor)
+            self.turn_fields[key] = (widget, factor)
+            form.addRow(label, widget)
+        apply_turn = QPushButton("应用转向设置")
+        apply_turn.clicked.connect(self.apply_turn_settings)
+        form.addRow(apply_turn)
+        restart_turn = QPushButton("重新开始转向 · Ctrl+Alt+R")
+        restart_turn.clicked.connect(owner.restart_turn)
+        form.addRow(restart_turn)
         self.error = QLabel()
         self.error.setWordWrap(True)
         self.error.setStyleSheet("color: #ce562e")
@@ -422,6 +464,16 @@ class SettingsWindow(QWidget):
             return False
         return self.owner.set_climb_target(request)
 
+    def apply_turn_settings(self):
+        settings = KeyboardTurnSettings(angle_deg=self.turn_angle.currentData(),
+            **{key: widget.value()/factor for key, (widget, factor) in self.turn_fields.items()})
+        try:
+            validate_settings(settings)
+        except ValueError as exc:
+            self.error.setText(str(exc))
+            return False
+        return self.owner.set_turn_settings(settings)
+
     def closeEvent(self, event):
         if self.owner.closed:
             event.accept()
@@ -452,7 +504,8 @@ class HotkeyFilter(QAbstractNativeEventFilter):
 class OverlayApp:
     def __init__(self, get_snapshot: Callable[[], OverlaySnapshot], on_command: Callable[[dict], None],
                  *, title="WT Energy", settings: QSettings | None = None, show_on_start=True,
-                 climb_request: ClimbRequest | None = None):
+                 climb_request: ClimbRequest | None = None,
+                 turn_settings: KeyboardTurnSettings | None = None):
         self.app = QApplication.instance() or QApplication([sys.argv[0]])
         self.app.setQuitOnLastWindowClosed(False)
         self.app.setApplicationName(title)
@@ -464,6 +517,16 @@ class OverlayApp:
         self.editing = False
         self.climb_enabled = False
         self._pending_climb_enabled = None
+        self.turn_enabled = False
+        self._pending_turn_enabled = None
+        self.turn_settings = turn_settings or KeyboardTurnSettings()
+        if turn_settings is None and self.preferences.contains("turn/settings"):
+            try:
+                saved_turn = KeyboardTurnSettings(**json.loads(self.preferences.value("turn/settings", "{}", type=str)))
+                validate_settings(saved_turn)
+                self.turn_settings = saved_turn
+            except (ValueError, TypeError):
+                pass
         self.climb_request = climb_request or ClimbRequest()
         if climb_request is None and self.preferences.contains("climb/altitude_m"):
             try:
@@ -510,6 +573,8 @@ class OverlayApp:
         self._setup_hotkeys()
         if climb_request is None and self.preferences.contains("climb/altitude_m"):
             self.set_climb_target(self.climb_request)
+        if turn_settings is None and self.preferences.contains("turn/settings"):
+            self.set_turn_settings(self.turn_settings)
         self.can_reopen_settings = self.tray.isVisible() or self.settings_hotkey_available
         self.app.screenAdded.connect(self._screens_changed)
         self.app.screenRemoved.connect(self._screens_changed)
@@ -548,6 +613,10 @@ class OverlayApp:
         self.climb_action = QAction("爬升引导", self.tray_menu, checkable=True)
         self.climb_action.toggled.connect(self.set_climb_enabled)
         self.tray_menu.addAction(self.climb_action)
+        self.turn_action = QAction("转向引导", self.tray_menu, checkable=True)
+        self.turn_action.toggled.connect(self.set_turn_enabled)
+        self.tray_menu.addAction(self.turn_action)
+        self.tray_menu.addAction("重新开始转向", self.restart_turn)
         self.tray_menu.addAction("设置…", self.show_settings)
         self.tray_menu.addSeparator()
         self.tray_menu.addAction("退出", self.close)
@@ -560,7 +629,8 @@ class OverlayApp:
     def _setup_hotkeys(self):
         callbacks = {"O": lambda: self.set_visible(not self.hud_visible),
                      "L": lambda: self.set_editing(not self.editing), "S": self.show_settings,
-                     "C": lambda: self.set_climb_enabled(not self.climb_enabled)}
+                     "C": lambda: self.set_climb_enabled(not self.climb_enabled),
+                     "T": lambda: self.set_turn_enabled(not self.turn_enabled), "R": self.restart_turn}
         active, failures = {}, []
         self.settings_hotkey_available = False
         if self.desktop:
@@ -626,12 +696,39 @@ class OverlayApp:
             self._checked(self.settings_window.climb_box, self.climb_enabled)
             self._checked(self.climb_action, self.climb_enabled)
             return
+        if enabled and self.turn_enabled:
+            self.set_turn_enabled(False)
         if self.command({"action": "climb_enabled", "enabled": enabled}):
             self.climb_enabled = enabled
             self._pending_climb_enabled = enabled
         self._checked(self.settings_window.climb_box, self.climb_enabled)
         self._checked(self.climb_action, self.climb_enabled)
         self._sync_surface()
+
+    def set_turn_settings(self, settings):
+        if not self.command({"action": "turn_target", "settings": asdict(settings)}):
+            return False
+        self.turn_settings = settings
+        self.preferences.setValue("turn/settings", json.dumps(asdict(settings)))
+        return True
+
+    def set_turn_enabled(self, enabled):
+        if enabled and not self.settings_window.apply_turn_settings():
+            self._checked(self.settings_window.turn_box, self.turn_enabled)
+            self._checked(self.turn_action, self.turn_enabled)
+            return
+        if enabled and self.climb_enabled:
+            self.set_climb_enabled(False)
+        if self.command({"action": "turn_enabled", "enabled": enabled}):
+            self.turn_enabled = enabled
+            self._pending_turn_enabled = enabled
+        self._checked(self.settings_window.turn_box, self.turn_enabled)
+        self._checked(self.turn_action, self.turn_enabled)
+        self._sync_surface()
+
+    def restart_turn(self):
+        if self.turn_enabled:
+            self.command({"action": "turn_restart"})
 
     def set_indicator_enabled(self, key, enabled):
         self.indicator_enabled[key] = enabled
@@ -720,7 +817,8 @@ class OverlayApp:
                                         or not self.desktop or bool(game and game.foreground and not game.minimized))
         for key, group in self.groups.items():
             group.place(viewport)
-            enabled = self.climb_enabled if key == "climb" else self.group_enabled[key]
+            enabled = (self.climb_enabled if key == "climb" else self.turn_enabled if key == "turn"
+                       else self.group_enabled[key])
             visible = allowed and enabled and (bool(group.content.rows) or self.editing)
             if group.isVisible() != visible:
                 group.setVisible(visible)
@@ -745,6 +843,12 @@ class OverlayApp:
             self.climb_enabled = snapshot.climb_enabled
         self._checked(self.settings_window.climb_box, self.climb_enabled)
         self._checked(self.climb_action, self.climb_enabled)
+        if self._pending_turn_enabled == snapshot.turn_enabled:
+            self._pending_turn_enabled = None
+        if self._pending_turn_enabled is None:
+            self.turn_enabled = snapshot.turn_enabled
+        self._checked(self.settings_window.turn_box, self.turn_enabled)
+        self._checked(self.turn_action, self.turn_enabled)
         enabled = {key for key, value in self.indicator_enabled.items() if value}
         for key, content in contents(snapshot, enabled).items():
             self.groups[key].set_content(content)

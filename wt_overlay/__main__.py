@@ -10,7 +10,7 @@ import sys
 import time
 
 from .app import OverlayController
-from .contracts import ClimbRequest
+from .contracts import ClimbRequest, KeyboardTurnSettings
 
 
 def _positive(text: str) -> float:
@@ -51,6 +51,9 @@ def snapshot_json(snapshot) -> dict:
         "climb_enabled": snapshot.climb_enabled,
         "climb_target": asdict(snapshot.climb_request),
         "climb_guidance": asdict(snapshot.climb) if snapshot.climb else None,
+        "turn_enabled": snapshot.turn_enabled,
+        "turn_settings": asdict(snapshot.turn_settings),
+        "turn_guidance": asdict(snapshot.turn) if snapshot.turn else None,
         "notes": list(dict.fromkeys((*snapshot.notes, *(advice.notes if advice else ())))),
     }
 
@@ -69,11 +72,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=_positive, default=5.0, help="无窗口运行秒数，默认 5")
     parser.add_argument("--climb-altitude", type=_positive, help="开启爬升引导，目标高度（m）")
     parser.add_argument("--arrival-speed-kmh", type=_positive, help="到达最低 TAS（km/h）；留空自动选择")
+    parser.add_argument("--turn-angle", type=int, choices=(30, 45, 90, 120), help="开启键盘转向引导，目标速度方向转角")
     args = parser.parse_args(argv)
     if sys.version_info < (3, 11):
         parser.error("需要 Python 3.11 或更新版本")
     if args.arrival_speed_kmh is not None and args.climb_altitude is None:
         parser.error("到达速度需要与 --climb-altitude 一起使用")
+    if args.turn_angle is not None and args.climb_altitude is not None:
+        parser.error("转向引导与爬升引导请分别开启")
     try:
         controller = OverlayController(mode="demo" if args.demo else "live", base_url=args.url,
                                        model_path=args.model, mass_kg=args.mass_kg,
@@ -83,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
             controller.submit({"action": "climb_target", "altitude_m": args.climb_altitude,
                                "minimum_tas_mps": args.arrival_speed_kmh/3.6 if args.arrival_speed_kmh else None})
             controller.submit({"action": "climb_enabled", "enabled": True})
+        if args.turn_angle is not None:
+            controller.submit({"action": "turn_target", "settings": asdict(KeyboardTurnSettings(angle_deg=args.turn_angle))})
+            controller.submit({"action": "turn_enabled", "enabled": True})
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     try:
@@ -98,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from .ui import OverlayApp
             request = ClimbRequest(args.climb_altitude, args.arrival_speed_kmh/3.6 if args.arrival_speed_kmh else None) if args.climb_altitude else None
-            window = OverlayApp(controller.get_snapshot, controller.submit, climb_request=request)
+            window = OverlayApp(controller.get_snapshot, controller.submit, climb_request=request,
+                                turn_settings=KeyboardTurnSettings(angle_deg=args.turn_angle) if args.turn_angle else None)
             controller.start()
             window.run()
     except KeyboardInterrupt:
