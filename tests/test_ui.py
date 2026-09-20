@@ -111,6 +111,27 @@ class OverlayTests(unittest.TestCase):
             self.assertTrue(all(row.value == "—" for row in group.content.rows))
         self.assertIn("sample unavailable", self.ui.settings_window.status.text())
 
+    def test_battle_hud_has_only_metric_rows_and_settings_keep_explanations(self):
+        self.snapshot = replace(self.snapshot, mode="live", status="8111 已连接 · 采样说明")
+        self.ui.refresh()
+        for group in self.ui.groups.values():
+            self.assertEqual(group._header(), "")
+            self.assertEqual(group.header_height, 0)
+            self.assertFalse(hasattr(group.content, "footer"))
+        self.assertIn("采样说明", self.ui.settings_window.notes.toPlainText())
+        self.assertEqual(self.ui.hud_font.pointSize(), 11)
+
+    def test_individual_indicator_choices_and_compact_font_survive_restart(self):
+        self.ui.settings_window.indicator_boxes["aoa"].setChecked(False)
+        self.ui.settings_window.indicator_boxes["heading"].setChecked(True)
+        self.ui.change_font_size(13)
+        self.ui.close()
+        self.ui = self.make_ui()
+        keys = {row.key for row in self.ui.groups["flight"].content.rows}
+        self.assertNotIn("aoa", keys)
+        self.assertIn("heading", keys)
+        self.assertEqual(self.ui.hud_font.pointSize(), 13)
+
     def test_settings_send_validated_mass_without_commands_during_refresh(self):
         self.assertEqual(self.commands, [])
         self.ui.settings_window.mass.setText("nan")

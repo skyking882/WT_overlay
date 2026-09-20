@@ -1,7 +1,7 @@
 """Read-only, loopback-only 8111 polling; exact unit-bearing state keys are used.
 
 Schema reference: matrixsukhoi/voidmei src/parser/State.java and Indicators.java.
-Body Ny stays in raw_state: it is not the lift/weight ratio used by performance models.
+Body Ny has its own display field; it is not the lift/weight ratio used by performance models.
 """
 from __future__ import annotations
 
@@ -94,6 +94,7 @@ def parse_telemetry(state: Mapping, indicators: Mapping, time_s: float) -> Fligh
         mass_kg=mass if mass is not None and mass > 0 else None,
         thrust_n=thrust, aircraft_id=aircraft or None, notes=notes,
         raw_state=dict(state), raw_indicators=dict(indicators),
+        normal_load_g=_number(state, 'Ny'),
     )
 
 

@@ -32,6 +32,7 @@ class FlightState:
     notes: tuple[str, ...] = ()
     raw_state: Mapping[str, Any] = field(default_factory=dict, repr=False)
     raw_indicators: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    normal_load_g: float | None = None  # Telemetry body Ny; independent of model L/W.
 
 
 @dataclass(frozen=True)

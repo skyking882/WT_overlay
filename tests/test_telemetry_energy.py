@@ -25,6 +25,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(sample.fuel_kg, 800)
         self.assertIsNone(sample.mass_kg)
         self.assertIsNone(sample.load_factor)
+        self.assertEqual(sample.normal_load_g, 4.0)
         self.assertAlmostEqual(sample.thrust_n, 100 * G + 1000)
 
     def test_ambiguous_thrust_is_not_converted(self):

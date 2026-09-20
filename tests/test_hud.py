@@ -3,7 +3,8 @@ import unittest
 
 from wt_overlay.contracts import (EnergyMetrics, FlightState, OverlaySnapshot,
                                   PerformanceCondition, PerformancePoint, SEPAdvice)
-from wt_overlay.hud import contents
+from wt_overlay.hud import INDICATORS, contents, details
+from wt_overlay.telemetry import parse_telemetry
 
 
 def sample_snapshot():
@@ -19,14 +20,13 @@ class HudDataTests(unittest.TestCase):
         stale = replace(snapshot, state=replace(snapshot.state, valid=False))
         for group in contents(stale).values():
             self.assertTrue(all(row.value == "—" for row in group.rows))
-            self.assertIn("无有效数据", group.title)
 
     def test_every_detachable_group_identifies_synthetic_data(self):
         snapshot = sample_snapshot()
         for group in contents(replace(snapshot, mode="demo")).values():
-            self.assertIn("合成演示", group.title)
+            self.assertTrue(group.demo)
         for group in contents(replace(snapshot, state=replace(snapshot.state, source="demo"))).values():
-            self.assertIn("合成演示", group.title)
+            self.assertTrue(group.demo)
 
     def test_partial_data_does_not_invent_values_or_display_nonfinite_numbers(self):
         snapshot = sample_snapshot()
@@ -34,8 +34,28 @@ class HudDataTests(unittest.TestCase):
         groups = contents(snapshot)
         self.assertEqual(groups["flight"].rows[1].value, "—")
         self.assertEqual(groups["energy"].rows[0].value, "—")
-        self.assertIn("未配平", groups["reference"].footer)
-        self.assertIn("非全程最优", groups["reference"].footer)
+        self.assertIn("未配平", details(snapshot))
+
+    def test_8111_maneuver_data_reaches_hud_without_becoming_model_load(self):
+        state = parse_telemetry(
+            {"valid": True, "H, m": 5000, "TAS, km/h": 1080,
+             "Ny": 5.3, "AoA, deg": 12.4, "AoS, deg": -0.6},
+            {"valid": True, "aviahorizon_pitch": 8, "aviahorizon_roll": -45}, 1)
+        rows = {row.key: row for group in contents(OverlaySnapshot("live", "ready", state)).values()
+                for row in group.rows}
+        self.assertEqual(rows["g"].value, "+5.3")
+        self.assertEqual(rows["aoa"].value, "+12.4")
+        self.assertEqual(rows["aos"].value, "-0.6")
+        self.assertEqual(rows["pitch"].value, "+8.0")
+        self.assertEqual(rows["roll"].value, "-45.0")
+        self.assertIsNone(state.load_factor)
+
+    def test_indicator_filter_is_exact_and_current_tas_is_not_a_hud_metric(self):
+        groups = contents(sample_snapshot(), {"aoa", "g"})
+        keys = [row.key for group in groups.values() for row in group.rows]
+        self.assertEqual(set(keys), {"aoa", "g"})
+        self.assertNotIn("tas", {item.key for item in INDICATORS})
+        self.assertTrue(all(not group.rows for group in contents(sample_snapshot(), set()).values()))
 
 
 if __name__ == "__main__":

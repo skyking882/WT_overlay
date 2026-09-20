@@ -16,19 +16,20 @@ try:
     from PySide6.QtCore import QAbstractNativeEventFilter, QPoint, QRect, QSettings, Qt, QTimer, Signal
     from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
     from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
-        QFileDialog, QFontComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+        QFileDialog, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
         QLineEdit, QMenu, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon,
         QTextEdit, QVBoxLayout, QWidget)
 except ImportError as exc:
     raise RuntimeError("图形界面需要 PySide6。请运行 start_windows.cmd，或安装 requirements.txt 中的依赖。") from exc
 
 from .contracts import OverlaySnapshot
-from .hud import HudContent, contents, details
+from .hud import INDICATORS, HudContent, contents, details
 from .windows import GameWindow, WindowsDesktop
 
 
-GROUPS = {"flight": "飞行状态", "energy": "实际能量", "reference": "静态参考"}
-DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60), "reference": (0.73, 0.60)}
+GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考"}
+DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
+                     "engine": (0.73, 0.30), "reference": (0.73, 0.60)}
 HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置"}
 
 
@@ -82,6 +83,7 @@ class HudGroup(QWidget):
         position, visible = self.pos(), self.isVisible()
         self.setWindowFlags(self._flags())
         self.move(position)
+        self._measure()
         self.setCursor(Qt.CursorShape.SizeAllCursor if enabled else Qt.CursorShape.ArrowCursor)
         if visible:
             self.show()
@@ -104,19 +106,23 @@ class HudGroup(QWidget):
         self.small_font.setPointSizeF(max(8.0, self.font().pointSizeF() * 0.75))
         self.small_metrics = QFontMetrics(self.small_font)
         self.metrics = QFontMetrics(self.font())
-        self.row_height = self.metrics.height() + 6
-        self.header_height = self.small_metrics.height() + 15
+        self.row_height = self.metrics.height() + 3
+        self.header_height = self.small_metrics.height() + 8 if self._header() else 0
         labels = max((self.metrics.horizontalAdvance(row.label) for row in self.content.rows), default=120)
         values = max([self.metrics.horizontalAdvance("−12,345.6"),
                       *(self.metrics.horizontalAdvance(row.value) for row in self.content.rows)])
-        self.unit_width = self.small_metrics.horizontalAdvance("km/h")
+        self.unit_width = max([self.small_metrics.horizontalAdvance("km/h"),
+                              *(self.small_metrics.horizontalAdvance(row.unit) for row in self.content.rows)])
         ideal = max(labels + values + self.unit_width + 54,
-                    self.small_metrics.horizontalAdvance(self.content.title) + 24)
-        width = min(max(280, ideal), max(100, self.viewport.width()))
-        footer_lines = self.content.footer.splitlines()
-        height = 12 + self.header_height + len(self.content.rows) * self.row_height
-        height += len(footer_lines) * (self.small_metrics.height() + 3) + 12
+                    self.small_metrics.horizontalAdvance(self._header()) + 24)
+        width = min(max(220, ideal), max(100, self.viewport.width()))
+        height = 16 + self.header_height + len(self.content.rows) * self.row_height
         self.resize(width, height)
+
+    def _header(self):
+        if self.editing:
+            return self.content.title + (" · DEMO" if self.content.demo else "")
+        return "DEMO" if self.content.demo else ""
 
     def place(self, viewport: QRect):
         if self.viewport != viewport:
@@ -147,11 +153,12 @@ class HudGroup(QWidget):
             painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 5, 5)
-        header = self.content.title + (" · 拖动" if self.editing else "")
+        header = self._header()
         header = self.small_metrics.elidedText(header, Qt.TextElideMode.ElideRight, self.width() - 24)
-        header_color = "#ffce79" if "合成演示" in self.content.title else self.accent
-        self._text(painter, 12, 10 + self.small_metrics.ascent(), header, self.small_font, header_color)
-        y = 10 + self.header_height
+        if header:
+            header_color = "#ffce79" if self.content.demo else self.accent
+            self._text(painter, 12, 8 + self.small_metrics.ascent(), header, self.small_font, header_color)
+        y = 8 + self.header_height
         value_right = self.width() - self.unit_width - 22
         for row in self.content.rows:
             value_width = self.metrics.horizontalAdvance(row.value)
@@ -163,10 +170,6 @@ class HudGroup(QWidget):
             self._text(painter, value_right - value_width, baseline, row.value, self.font(), color)
             self._text(painter, value_right + 8, baseline, row.unit, self.small_font, "#d2dee5")
             y += self.row_height
-        for line in self.content.footer.splitlines():
-            line = self.small_metrics.elidedText(line, Qt.TextElideMode.ElideRight, self.width() - 24)
-            self._text(painter, 12, y + self.small_metrics.ascent(), line, self.small_font, "#c2ced6")
-            y += self.small_metrics.height() + 3
         painter.end()
 
     def mousePressEvent(self, event):
@@ -265,6 +268,17 @@ class SettingsWindow(QWidget):
         reset = QPushButton("恢复默认位置")
         reset.clicked.connect(owner.reset_positions)
         form.addRow(reset)
+        indicators = QGroupBox("指标（勾选后显示）")
+        indicator_layout = QGridLayout(indicators)
+        self.indicator_boxes = {}
+        for index, item in enumerate(INDICATORS):
+            check = QCheckBox(item.label)
+            check.setToolTip(item.description)
+            check.setChecked(owner.indicator_enabled[item.key])
+            check.toggled.connect(lambda enabled, key=item.key: owner.set_indicator_enabled(key, enabled))
+            indicator_layout.addWidget(check, index // 2, index % 2)
+            self.indicator_boxes[item.key] = check
+        layout.addWidget(indicators)
         data = QGroupBox("数据与静态参考")
         form = QFormLayout(data)
         layout.addWidget(data)
@@ -364,12 +378,19 @@ class OverlayApp:
         self.hide_outside = self.preferences.value("hide_outside", True, type=bool)
         self.screen_name = self.preferences.value("screen", "", type=str)
         family = self.preferences.value("font_family", "Microsoft YaHei UI" if sys.platform == "win32" else "PingFang SC", type=str)
-        size = max(9, min(28, self.preferences.value("font_size", 14, type=int)))
+        size = max(9, min(28, self.preferences.value("font_size", 11, type=int)))
+        if self.preferences.value("hud_format", 1, type=int) < 2:
+            # Migrate existing profiles once; subsequent font choices are preserved.
+            size = min(size, 11)
+            self.preferences.setValue("font_size", size)
+            self.preferences.setValue("hud_format", 2)
         self.hud_font = QFont(family, size)
         self.hud_font.setWeight(QFont.Weight.DemiBold)
         self.color = self.preferences.value("accent", "#71e3ce", type=str)
         if not QColor(self.color).isValid():
             self.color = "#71e3ce"
+        self.indicator_enabled = {item.key: self.preferences.value(
+            f"indicators/{item.key}", item.enabled, type=bool) for item in INDICATORS}
         self.groups, self.group_enabled = {}, {}
         for key in GROUPS:
             group = HudGroup(key, self.hud_font, self.color)
@@ -486,6 +507,11 @@ class OverlayApp:
         self.preferences.setValue(f"groups/{key}/enabled", enabled)
         self._sync_surface()
 
+    def set_indicator_enabled(self, key, enabled):
+        self.indicator_enabled[key] = enabled
+        self.preferences.setValue(f"indicators/{key}", enabled)
+        self.refresh()
+
     def save_position(self, key):
         x, y = self.groups[key].fraction
         self.preferences.setValue(f"groups/{key}/x", x)
@@ -568,7 +594,7 @@ class OverlayApp:
                                         or not self.desktop or bool(game and game.foreground and not game.minimized))
         for key, group in self.groups.items():
             group.place(viewport)
-            visible = allowed and self.group_enabled[key]
+            visible = allowed and self.group_enabled[key] and (bool(group.content.rows) or self.editing)
             if group.isVisible() != visible:
                 group.setVisible(visible)
         status = ("布局模式 · 拖动边框，Ctrl+Alt+L 完成" if self.editing else
@@ -586,7 +612,8 @@ class OverlayApp:
         except Exception as exc:
             snapshot = OverlaySnapshot(self.snapshot.mode, f"读取状态失败：{exc}")
         self.snapshot = snapshot
-        for key, content in contents(snapshot).items():
+        enabled = {key for key, value in self.indicator_enabled.items() if value}
+        for key, content in contents(snapshot, enabled).items():
             self.groups[key].set_content(content)
         window = self.settings_window
         window.status.setText(snapshot.status)
