@@ -96,10 +96,17 @@ class Motion:
 
 
 def flight_frame(state):
-    fields = (state.tas_mps, state.altitude_m, state.heading_deg, state.pitch_deg,
-              state.roll_deg, state.aoa_deg, state.aos_deg, state.vertical_speed_mps)
-    if not state.valid or not all(valid_number(x) for x in fields) or state.tas_mps < 50:
-        raise ValueError("需要姿态、迎角、侧滑和速度数据")
+    if not state.valid:
+        raise ValueError("等待有效飞行数据")
+    fields = ((state.tas_mps, "真空速 TAS"), (state.altitude_m, "海拔高度"),
+              (state.heading_deg, "航向 compass"), (state.pitch_deg, "俯仰 aviahorizon_pitch"),
+              (state.roll_deg, "滚转 aviahorizon_roll"), (state.aoa_deg, "迎角 AoA"),
+              (state.aos_deg, "侧滑 AoS"), (state.vertical_speed_mps, "垂直速度 Vy"))
+    missing = [label for value, label in fields if not valid_number(value)]
+    if missing:
+        raise ValueError("缺少转向读数："+"、".join(missing))
+    if state.tas_mps < 50:
+        raise ValueError("当前 TAS 低于转向计算下限 180 km/h")
     if abs(state.aos_deg) > 10 or not -20 <= state.aoa_deg <= 30:
         raise ValueError("姿态超出转向参考范围")
     heading, pitch, roll, alpha, beta = map(math.radians,

@@ -56,6 +56,14 @@ class GeometryTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 flight_frame(sample(**change))
 
+    def test_missing_readings_are_named_and_low_speed_has_a_separate_reason(self):
+        with self.assertRaisesRegex(ValueError, "缺少转向读数：航向 compass、滚转 aviahorizon_roll"):
+            flight_frame(sample(heading_deg=None, roll_deg=None))
+        with self.assertRaisesRegex(ValueError, "缺少转向读数：侧滑 AoS"):
+            flight_frame(sample(aos_deg=None))
+        with self.assertRaisesRegex(ValueError, "低于转向计算下限"):
+            flight_frame(sample(tas_mps=40))
+
 
 class ManeuverTests(unittest.TestCase):
     @classmethod
