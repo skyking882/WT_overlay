@@ -24,6 +24,7 @@ except ImportError as exc:
 
 from .contracts import ClimbRequest, OverlaySnapshot
 from .climb import CUE_DEADBAND_DEG, CUE_RANGE_DEG, validate_request
+from .fm.catalog import aircraft_catalog
 from .hud import INDICATORS, HudContent, contents, details
 from .windows import GameWindow, WindowsDesktop
 
@@ -313,12 +314,37 @@ class SettingsWindow(QWidget):
         self.mode_box.addItem("合成演示 · 非游戏实测", "demo")
         self.mode_box.currentIndexChanged.connect(lambda i: owner.command({"action": "mode", "value": self.mode_box.itemData(i)}))
         form.addRow("数据来源", self.mode_box)
+        self.aircraft_box = QComboBox()
+        self.aircraft_box.setEditable(True)
+        self.aircraft_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.aircraft_box.addItem("自动识别机型", "auto")
+        for aircraft in aircraft_catalog():
+            label = aircraft.label
+            if aircraft.name_en != aircraft.name:
+                label += f" · {aircraft.name_en}"
+            self.aircraft_box.addItem(label, aircraft.id)
+        self.aircraft_box.addItem("FM 文件", "file")
+        self.aircraft_box.model().item(self.aircraft_box.count()-1).setEnabled(False)
+        self.aircraft_box.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        self.aircraft_box.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.aircraft_box.setMinimumContentsLength(28)
+        self.aircraft_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.aircraft_box.activated.connect(self.select_aircraft)
+        form.addRow("机型", self.aircraft_box)
         self.model_label = QLabel("未加载 FM")
         self.model_label.setWordWrap(True)
         form.addRow("当前模型", self.model_label)
         choose_model = QPushButton("选择 FM 文件…")
         choose_model.clicked.connect(owner.choose_model)
         form.addRow(choose_model)
+        self.sweep = QSpinBox()
+        self.sweep.setRange(0, 100)
+        self.sweep.setSuffix(" %")
+        self.sweep.setSingleStep(5)
+        self.sweep.setKeyboardTracking(False)
+        self.sweep.valueChanged.connect(lambda value: owner.command({"action": "sweep", "fraction": value/100}))
+        self.sweep_label = QLabel("固定参考后掠")
+        form.addRow(self.sweep_label, self.sweep)
         row = QHBoxLayout()
         self.mass = QLineEdit()
         self.mass.setPlaceholderText("手动指定参考总质量")
@@ -328,7 +354,7 @@ class SettingsWindow(QWidget):
         apply_mass.clicked.connect(self.apply_mass)
         row.addWidget(apply_mass)
         form.addRow("总质量 / kg", row)
-        self.afterburner_box = QCheckBox("模型使用全加力（关闭则使用全军推）")
+        self.afterburner_box = QCheckBox("模型使用最大推力（关闭则使用全军推）")
         self.afterburner_box.toggled.connect(lambda enabled: owner.command({"action": "afterburner", "enabled": enabled}))
         form.addRow(self.afterburner_box)
         climb = QGroupBox("爬升引导")
@@ -370,6 +396,11 @@ class SettingsWindow(QWidget):
         buttons.addWidget(done)
         buttons.addWidget(quit_button)
         outer.addLayout(buttons)
+
+    def select_aircraft(self, index):
+        identity = self.aircraft_box.itemData(index)
+        if identity and identity != "file":
+            self.owner.command({"action": "aircraft", "id": identity})
 
     def apply_mass(self):
         try:
@@ -720,6 +751,17 @@ class OverlayApp:
         window = self.settings_window
         window.status.setText(snapshot.status)
         window.model_label.setText(snapshot.model_name)
+        if not (window.aircraft_box.hasFocus() or window.aircraft_box.lineEdit().hasFocus()
+                or window.aircraft_box.view().isVisible()):
+            window.aircraft_box.blockSignals(True)
+            window.aircraft_box.setCurrentIndex(window.aircraft_box.findData(snapshot.model_selection))
+            window.aircraft_box.blockSignals(False)
+        window.sweep.setVisible(snapshot.variable_sweep)
+        window.sweep_label.setVisible(snapshot.variable_sweep)
+        if not window.sweep.hasFocus():
+            window.sweep.blockSignals(True)
+            window.sweep.setValue(round(snapshot.sweep_fraction*100))
+            window.sweep.blockSignals(False)
         window.mode_box.blockSignals(True)
         window.mode_box.setCurrentIndex(1 if snapshot.mode == "demo" else 0)
         window.mode_box.blockSignals(False)

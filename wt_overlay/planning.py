@@ -18,7 +18,7 @@ def _finite(value: object) -> bool:
 
 def _condition_error(c: PerformanceCondition) -> str:
     for name in ('altitude_m', 'tas_mps', 'mass_kg', 'throttle', 'load_factor',
-                 'flight_path_deg', 'flap_fraction', 'gear_fraction', 'airbrake_fraction'):
+                 'flight_path_deg', 'flap_fraction', 'gear_fraction', 'airbrake_fraction', 'sweep_fraction'):
         if not _finite(getattr(c, name)):
             return f"{name} must be finite."
     if c.tas_mps <= 0 or c.mass_kg <= 0:
@@ -30,7 +30,7 @@ def _condition_error(c: PerformanceCondition) -> str:
     if c.aoa_deg is not None and not _finite(c.aoa_deg):
         return "AoA must be finite when supplied."
     if any(not 0 <= getattr(c, n) <= 1 for n in
-           ('throttle', 'flap_fraction', 'gear_fraction', 'airbrake_fraction')):
+           ('throttle', 'flap_fraction', 'gear_fraction', 'airbrake_fraction', 'sweep_fraction')):
         return "Throttle and configuration fractions must lie in [0, 1]."
     return ""
 

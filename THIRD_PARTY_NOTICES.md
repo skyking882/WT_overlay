@@ -1,6 +1,6 @@
 # Third-party notices
 
-`wt_overlay/fm/polar.py` adapts Gaijin Games KFT's Dagor Engine `polares.cpp` and `polares.h`, revision `75723669297e48e200a0dc67b18c1629e0975daf`. Copyright (C) Gaijin Games KFT. All rights reserved. Python adaptation uses equivalent cubic Hermite evaluation for the nonsingular Mach interpolation; singular Mach intervals are rejected.
+`wt_overlay/fm/polar.py` adapts Gaijin Games KFT's Dagor Engine `polares.cpp` and `polares.h`, revision `75723669297e48e200a0dc67b18c1629e0975daf`. Copyright (C) Gaijin Games KFT. All rights reserved. Python adaptation uses equivalent cubic Hermite evaluation for the nonsingular Mach interpolation; singular Mach intervals used by static force calculations are rejected; unused focus-shift curve 6 is not evaluated.
 
 Dagor Engine
 
@@ -239,3 +239,5 @@ Apache License
    limitations under the License.
 
 `data/fm/su_27sm.blkx` is unmodified War Thunder datamine data from gszabi99/War-Thunder-Datamine revision `60345f1697efeb0fa54256b2f0aab3d83d7e708e`, path `aces.vromfs.bin_u/gamedata/flightmodels/fm/su_27sm.blkx`. Game data remains attributed to Gaijin; this project does not grant an independent license to that data. The sample is included for local research and is not evidence of game validation.
+
+`data/fm/aircraft/*.blkx` contains 113 unmodified FM files from gszabi99/War-Thunder-Datamine revision `371120bedae88b59fa0fa34c04566e83da64eed6` (game version `2.59.0.16`, 2026-09-20). `data/fm/catalog.json` derives 138 Air RB BR >= 12.0 aircraft identities, localized names and BRs from that revision’s unit definitions, `wpcost.blkx`, `shop.blkx`, and `units.csv`. The catalog records original paths and SHA-256 hashes. Game data and localized names remain attributed to Gaijin; this project does not grant an independent license to them. Data inclusion and schema adaptation do not establish in-game validation.

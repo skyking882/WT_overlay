@@ -61,6 +61,37 @@ class OverlayTests(unittest.TestCase):
                      if image.pixelColor(x, y).alpha() > 200 and image.pixelColor(x, y).lightness() > 160)
         self.assertGreater(bright, 200)
 
+    def test_aircraft_selector_search_manual_auto_and_sweep_settings(self):
+        window = self.ui.settings_window
+        box = window.aircraft_box
+        self.assertEqual(box.count(), 140)  # 138 aircraft + auto + file.
+        self.assertTrue(box.isEditable())
+        self.assertEqual(box.completer().filterMode(), Qt.MatchFlag.MatchContains)
+        box.completer().setCompletionPrefix("F-15")
+        expected = [box.itemText(i) for i in range(box.count()) if "f-15" in box.itemText(i).casefold()]
+        self.assertGreater(len(expected), 0)
+        self.assertEqual(box.completer().completionCount(), len(expected))
+        self.assertEqual(self.commands, [])
+        index = box.findData("f_15c_golden_eagle")
+        self.assertGreater(index, 0)
+        box.setCurrentIndex(index)
+        box.activated.emit(index)
+        self.assertEqual(self.commands[-1], {"action": "aircraft", "id": "f_15c_golden_eagle"})
+        window.select_aircraft(0)
+        self.assertEqual(self.commands[-1], {"action": "aircraft", "id": "auto"})
+        self.snapshot = replace(self.snapshot, model_selection="f_14b", variable_sweep=True,
+                                sweep_fraction=.5)
+        count = len(self.commands)
+        self.ui.refresh()
+        self.assertFalse(window.sweep.isHidden())
+        self.assertEqual(window.sweep.value(), 50)
+        self.assertEqual(len(self.commands), count)
+        window.sweep.setValue(65)
+        self.assertEqual(self.commands[-1], {"action": "sweep", "fraction": .65})
+        self.snapshot = replace(self.snapshot, variable_sweep=False)
+        self.ui.refresh()
+        self.assertTrue(window.sweep.isHidden())
+
     def test_layout_drag_is_saved_and_battle_mode_restores_input_transparency(self):
         group = self.ui.groups["energy"]
         self.assertTrue(group.windowFlags() & Qt.WindowType.WindowTransparentForInput)

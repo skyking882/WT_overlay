@@ -70,6 +70,7 @@ class PerformanceCondition:
     flap_fraction: float = 0.0
     gear_fraction: float = 0.0
     airbrake_fraction: float = 0.0
+    sweep_fraction: float = 0.0  # Fixed reference wing sweep; not an automatic control law.
 
 
 @dataclass(frozen=True)
@@ -154,3 +155,6 @@ class OverlaySnapshot:
     climb_enabled: bool = False
     climb_request: ClimbRequest = field(default_factory=ClimbRequest)
     climb: ClimbGuidance | None = None
+    model_selection: str = "auto"
+    sweep_fraction: float = 0.0
+    variable_sweep: bool = False

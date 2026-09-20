@@ -151,6 +151,7 @@ class ClimbControllerTests(unittest.TestCase):
                                  vertical_speed_mps=0, roll_deg=0, aircraft_id="test")
         self.controller = OverlayController(client=self)
         self.controller.model = AnalyticModel()
+        self.controller.model_selection = "file"
         self.addCleanup(self.controller.stop)
 
     def poll(self, time_s=None):

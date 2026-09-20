@@ -6,7 +6,6 @@ from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 import math
 from queue import Empty, Full, Queue
-import re
 from threading import Event, Lock, Thread
 import time
 
@@ -16,7 +15,8 @@ from .climb import (ClimbDirector, PlanningCancelled, PlanningUnavailable,
                     build_climb_plan, valid_number, validate_request)
 from .demo import make_demo_sample
 from .energy import EnergyEstimator
-from .fm import load_model
+from .fm import load_aircraft, load_model
+from .fm.catalog import aircraft_key, find_aircraft
 from .planning import scan_sep
 from .telemetry import TelemetryClient
 
@@ -29,8 +29,10 @@ def positive(value: object, label: str) -> float:
     return float(value)
 
 
-def _aircraft_key(value: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", value.casefold())
+def _matches(model, identity: str | None) -> bool:
+    if hasattr(model, "matches_aircraft"):
+        return model.matches_aircraft(identity)
+    return bool(identity and aircraft_key(identity) == aircraft_key(model.info.aircraft_id))
 
 
 class OverlayController:
@@ -38,7 +40,8 @@ class OverlayController:
 
     def __init__(self, *, mode: str = "live", base_url: str = "http://127.0.0.1:8111",
                  model_path: str | None = None, mass_kg: float | None = None,
-                 afterburner: bool = True, interval_s: float = 0.1, client=None):
+                 afterburner: bool = True, interval_s: float = 0.1, client=None,
+                 aircraft: str | None = None, sweep_fraction: float = 0.):
         if mode not in ("live", "demo"):
             raise ValueError("模式必须为 live 或 demo")
         if type(afterburner) is not bool:
@@ -50,7 +53,17 @@ class OverlayController:
         self.mass_kg = positive(mass_kg, "总质量") if mass_kg is not None else None
         self.afterburner = afterburner
         self.client = client if client is not None else TelemetryClient(base_url)
-        self.model = load_model(model_path) if model_path else None
+        if model_path and aircraft:
+            raise ValueError("请选择机型或 FM 文件其中一种")
+        self.model_selection = "file" if model_path else aircraft or "auto"
+        self.model = (load_model(model_path) if model_path else
+                      load_aircraft(aircraft) if aircraft and aircraft != "auto" else None)
+        if self.model is not None and self.model_selection != "file":
+            self.model_selection = self.model.info.aircraft_id
+        if not valid_number(sweep_fraction) or not 0 <= sweep_fraction <= 1:
+            raise ValueError("参考后掠必须在 0–100% 之间")
+        self.sweep_fraction = float(sweep_fraction)
+        self._auto_identity = None
         self.estimator = EnergyEstimator()
         self._commands: Queue[dict] = Queue(maxsize=32)
         self._lock = Lock()
@@ -72,7 +85,9 @@ class OverlayController:
         self._plan_base = None
         self._failed_energy = None
         self._snapshot = OverlaySnapshot(mode, "等待首个数据样本", mass_override_kg=self.mass_kg,
-                                         afterburner=afterburner)
+                                         afterburner=afterburner, model_selection=self.model_selection,
+                                         sweep_fraction=self.sweep_fraction,
+                                         variable_sweep=bool(self.model and self.model.wings))
 
     def submit(self, command: dict) -> None:
         """Validate and queue UI intent without filesystem/network work on the GUI thread."""
@@ -90,6 +105,14 @@ class OverlayController:
         elif action == "model":
             if not isinstance(command.get("path"), str) or not command["path"].strip():
                 raise ValueError("请选择 FM 文件")
+        elif action == "aircraft":
+            value = command.get("id")
+            if not isinstance(value, str) or (value != "auto" and find_aircraft(value) is None):
+                raise ValueError("请选择目录内的机型")
+        elif action == "sweep":
+            value = command.get("fraction")
+            if not valid_number(value) or not 0 <= value <= 1:
+                raise ValueError("参考后掠必须在 0–100% 之间")
         elif action == "climb_enabled":
             if type(command.get("enabled")) is not bool:
                 raise ValueError("爬升开关须为布尔值")
@@ -117,20 +140,55 @@ class OverlayController:
                 self.mode = command["value"]
                 self.estimator.reset()
                 self._identity = None
+                self._auto_identity = None
+                if self.model_selection == "auto":
+                    self.model = None
             elif action == "mass":
                 self.mass_kg = float(command["kg"])
             elif action == "afterburner":
                 self.afterburner = command["enabled"]
+            elif action == "sweep":
+                self.sweep_fraction = float(command["fraction"])
             elif action == "climb_enabled":
                 self.climb_enabled = command["enabled"]
             elif action == "climb_target":
                 self.climb_request = ClimbRequest(command["altitude_m"], command.get("minimum_tas_mps"))
             elif action == "model":
                 self.model = None
+                self.model_selection = "file"
                 try:
                     self.model = load_model(command["path"])
                 except (OSError, ValueError) as exc:
                     self._settings_error = f"FM 未加载：{exc}"
+            elif action == "aircraft":
+                self.model = None
+                self.model_selection = command["id"]
+                self._auto_identity = None
+                if self.model_selection != "auto":
+                    try:
+                        self.model = load_aircraft(self.model_selection)
+                        self.model_selection = self.model.info.aircraft_id
+                    except (OSError, ValueError) as exc:
+                        self._settings_error = f"FM 未加载：{exc}"
+
+    def _select_live_aircraft(self, state: FlightState) -> None:
+        if self.model_selection != "auto" or self.mode != "live":
+            return
+        identity = aircraft_key(state.aircraft_id) if state.valid and state.aircraft_id else ""
+        if identity == self._auto_identity:
+            return
+        self._auto_identity = identity
+        self._reset_climb()
+        self._advice = None
+        self._last_prediction = -math.inf
+        self.model = None
+        self._settings_error = ""
+        profile = find_aircraft(identity)
+        if profile:
+            try:
+                self.model = load_aircraft(profile.id)
+            except (OSError, ValueError) as exc:
+                self._settings_error = f"FM 未加载：{exc}"
 
     def _reset_climb(self):
         if self._plan_cancel is not None:
@@ -149,14 +207,14 @@ class OverlayController:
             return ClimbGuidance(phase="等待数据")
         if self.model is None:
             return ClimbGuidance(phase="选择 FM")
-        if self.mode == "live" and (not state.aircraft_id or
-                _aircraft_key(state.aircraft_id) != _aircraft_key(self.model.info.aircraft_id)):
+        if self.mode == "live" and not _matches(self.model, state.aircraft_id):
             return ClimbGuidance(phase="核对机型")
         mass = self.mass_kg if self.mass_kg is not None else state.mass_kg
         if not valid_number(mass) or mass <= 0:
             self._reset_climb()
             return ClimbGuidance(phase="设置质量")
-        base = PerformanceCondition(state.altitude_m, state.tas_mps, mass, afterburner=self.afterburner)
+        base = PerformanceCondition(state.altitude_m, state.tas_mps, mass, afterburner=self.afterburner,
+                                    sweep_fraction=self.sweep_fraction)
         if self._plan_base is not None and abs(mass / self._plan_base.mass_kg - 1) > .01:
             self._reset_climb()
         current = self.model.evaluate(base)
@@ -201,13 +259,13 @@ class OverlayController:
         if self.mode == "live":
             if not state.aircraft_id:
                 return SEPAdvice(False, reason="未能确认本机机型，暂不套用所选 FM")
-            if _aircraft_key(state.aircraft_id) != _aircraft_key(self.model.info.aircraft_id):
+            if not _matches(self.model, state.aircraft_id):
                 return SEPAdvice(False, reason="当前机型与所选 FM 不符，模型预测已停用")
         mass = self.mass_kg if self.mass_kg is not None else state.mass_kg
         if mass is None:
             return SEPAdvice(False, reason="请在设置中输入参考总质量；不从燃油量推算")
         condition = PerformanceCondition(state.altitude_m, state.tas_mps, mass,
-                                         afterburner=self.afterburner)
+                                         afterburner=self.afterburner, sweep_fraction=self.sweep_fraction)
         advice = scan_sep(self.model, condition)
         scope = (f"静态参考：同高度、1g、干净构型、总质量 {mass:,.0f} kg、"
                  f"{'全加力' if self.afterburner else '全军推'}；不代表当前操纵状态。")
@@ -221,6 +279,7 @@ class OverlayController:
         now = time.monotonic() if now is None else now
         state = (make_demo_sample(now-self._started_at) if self.mode == "demo"
                  else self.client.poll(time_s=now))
+        self._select_live_aircraft(state)
         energy = self.estimator.update(state)
         identity = (state.source, state.aircraft_id)
         if identity != self._identity:
@@ -252,7 +311,8 @@ class OverlayController:
             self.mode, status, state, energy, self._advice,
             self.model.info.name if self.model else "未加载 FM",
             tuple(notes), self.mass_kg, self.afterburner,
-            self.climb_enabled, self.climb_request, climb)
+            self.climb_enabled, self.climb_request, climb, self.model_selection,
+            self.sweep_fraction, bool(self.model and getattr(self.model, "wings", ())))
         with self._lock:
             self._snapshot = snapshot
             self._published_at = time.monotonic()
@@ -284,6 +344,8 @@ class OverlayController:
                         self.mode, f"采样失败：{type(exc).__name__}: {exc}",
                         notes=("当前数据不可用；没有切换到演示数据。",),
                         mass_override_kg=self.mass_kg, afterburner=self.afterburner,
+                        model_selection=self.model_selection, sweep_fraction=self.sweep_fraction,
+                        variable_sweep=bool(self.model and getattr(self.model, "wings", ())),
                         climb_enabled=self.climb_enabled, climb_request=self.climb_request,
                         climb=ClimbGuidance(phase="等待数据") if self.climb_enabled else None)
             self._stop.wait(max(0.0, self.interval-(time.monotonic()-started)))

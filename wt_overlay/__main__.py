@@ -39,6 +39,8 @@ def snapshot_json(snapshot) -> dict:
         "climb_mps": energy.climb_mps if energy else None,
         "kinetic_sep_mps": energy.kinetic_sep_mps if energy else None,
         "reference_model": snapshot.model_name,
+        "model_selection": snapshot.model_selection,
+        "reference_sweep_fraction": snapshot.sweep_fraction,
         "reference_sep_mps": current.sep_mps if current and current.valid else None,
         "reference_best_tas_mps": best.condition.tas_mps if best else None,
         "reference_best_sep_mps": best.sep_mps if best else None,
@@ -57,7 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="WT 8111 实际能量与静态 SEP 参考面板")
     parser.add_argument("--demo", action="store_true", help="显式合成演示；不读取游戏")
     parser.add_argument("--url", default="http://127.0.0.1:8111", help="本机 8111 HTTP 地址")
-    parser.add_argument("--model", help="FM 路径；当前仅支持附带的固定版本苏-27SM")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--model", help="附带固定版本 FM 的路径")
+    selection.add_argument("--aircraft", help="机型 ID；留空则按 8111 自动选择")
+    parser.add_argument("--sweep", type=float, default=0., help="固定参考后掠百分比，0–100；仅变后掠翼机型")
     parser.add_argument("--mass-kg", type=_positive, help="静态模型参考总质量（kg）")
     parser.add_argument("--military", action="store_true", help="静态模型用全军推；默认全加力")
     parser.add_argument("--headless", action="store_true", help="输出 JSON 行，不创建窗口")
@@ -72,7 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         controller = OverlayController(mode="demo" if args.demo else "live", base_url=args.url,
                                        model_path=args.model, mass_kg=args.mass_kg,
-                                       afterburner=not args.military)
+                                       afterburner=not args.military, aircraft=args.aircraft,
+                                       sweep_fraction=args.sweep/100)
         if args.climb_altitude is not None:
             controller.submit({"action": "climb_target", "altitude_m": args.climb_altitude,
                                "minimum_tas_mps": args.arrival_speed_kmh/3.6 if args.arrival_speed_kmh else None})

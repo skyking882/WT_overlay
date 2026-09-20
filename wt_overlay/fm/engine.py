@@ -28,11 +28,11 @@ def _bracket(axis: list[float], value: float) -> tuple[int, float]:
 
 
 class JetEngine:
-    def __init__(self, main: dict):
+    def __init__(self, main: dict, *, allow_sparse: bool = False):
         if main.get("Type") != "Jet":
             raise ValueError("only tabulated Jet engines supported")
         table = main.get("ThrustMax", {})
-        if table.get("VelocityType") != "TAS":
+        if table.get("VelocityType", "TAS") != "TAS":
             raise ValueError("only TAS engine thrust tables supported")
         hi, self.altitudes = _axis(table, "Altitude_")
         vi, self.velocities_kph = _axis(table, "Velocity_")
@@ -42,8 +42,9 @@ class JetEngine:
             raise ValueError("invalid base thrust / afterburner boost")
         self.grids = []
         for prefix in ("ThrustMaxCoeff", "ThrAftMaxCoeff"):
-            grid = [[finite(table.get(f"{prefix}_{h}_{v}"), prefix) for v in vi] for h in hi]
-            if any(x < 0 for row in grid for x in row):
+            grid = [[None if allow_sparse and f"{prefix}_{h}_{v}" not in table
+                     else finite(table.get(f"{prefix}_{h}_{v}"), prefix) for v in vi] for h in hi]
+            if any(x is not None and x < 0 for row in grid for x in row):
                 raise ValueError("negative thrust coefficient")
             self.grids.append(grid)
         modes = []
@@ -53,10 +54,11 @@ class JetEngine:
                               finite(value.get("ThrustMult"), key+" multiplier")))
         military = [x for x in modes if x[0] <= 1]
         wep = [x[1] for x in modes if x[0] > 1]
-        if not military or max(military)[0] != 1 or not wep:
-            raise ValueError("explicit full military and WEP modes required")
+        if not military or max(military)[0] != 1:
+            raise ValueError("explicit full military mode required")
         self.military = max(military)[1]
-        self.wep = max(wep)
+        self.has_wep = bool(wep)
+        self.wep = max(wep) if wep else self.military
         if min(self.military, self.wep) <= 0:
             raise ValueError("invalid thrust mode multiplier")
 
@@ -67,12 +69,14 @@ class JetEngine:
         j, v = _bracket(self.velocities_kph, speed)
 
         def interp(grid: list[list[float]]) -> float:
-            low = grid[i][j]*(1-v)+grid[i][j+1]*v
-            high = grid[i+1][j]*(1-v)+grid[i+1][j+1]*v
-            return low*(1-u)+high*u
+            cells = ((grid[i][j], (1-u)*(1-v)), (grid[i][j+1], (1-u)*v),
+                     (grid[i+1][j], u*(1-v)), (grid[i+1][j+1], u*v))
+            if any(value is None and weight > 0 for value, weight in cells):
+                raise ValueError("缺少此高度/速度的推力表节点；不填补或外推")
+            return sum(value*weight for value, weight in cells if weight > 0)
 
         thrust = self.base_kgf*interp(self.grids[0])
-        if afterburner:
+        if afterburner and self.has_wep:
             thrust *= self.wep*interp(self.grids[1])*self.boost
         else:
             thrust *= self.military

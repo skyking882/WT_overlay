@@ -63,6 +63,10 @@ class PolarProperties:
 
     @classmethod
     def from_mapping(cls, source: Mapping, span: float, area: float) -> "PolarProperties":
+        # Datamine represents repeated BLK keys as arrays. Identical scalar
+        # duplicates are unambiguous; conflicting values still fail validation.
+        source = {key: value[0] if isinstance(value, list) and value and
+                  all(x == value[0] for x in value) else value for key, value in source.items()}
         span, area = finite(span, "span"), finite(area, "area")
         if span <= 0 or area <= 0:
             raise ValueError("positive span and area are required")
@@ -88,7 +92,9 @@ class PolarProperties:
         for i, default in enumerate(_DEFAULT_CURVES, 1):
             args = [finite(source.get(f"{key}{i}", d), f"{key}{i}") for key, d in zip(
                 ("MachCrit", "MachMax", "MultMachMax", "MultLineCoeff", "MultLimit"), default)]
-            if mode == 3 and args[1] <= args[0]:
+            # Curve 6 changes aerodynamic focus in the source, not static CL/CD.
+            # Older FMs leave its unused interval at zero.
+            if mode == 3 and i != 6 and args[1] <= args[0]:
                 raise ValueError(f"Mach curve {i}: singular or reversed interval unsupported")
             curves.append(MachCurve(*args, initial=0. if i == 6 else 1.))
         return cls(values, tuple(curves), mode, combined, oswald*span*span/area)
@@ -103,7 +109,7 @@ class PolarProperties:
         ah, al = v["alphaCritHigh"], v["alphaCritLow"]
         induced, kq, clkq = 1/(pi*self.effective_aspect_ratio), 1., 1.
         if self.mode == 3:
-            m = [curve.evaluate(mach) for curve in self.curves]
+            m = [curve.evaluate(mach) if i != 5 else 0. for i, curve in enumerate(self.curves)]
             cd0 *= m[0]
             slope *= 1 + m[0] - m[1] if self.combined_cl else m[1]
             cl0 *= m[6]
