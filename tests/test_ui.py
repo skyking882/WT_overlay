@@ -141,7 +141,8 @@ class OverlayTests(unittest.TestCase):
 
     def test_climb_cue_has_transparent_background_green_band_and_no_stale_marker(self):
         self.snapshot = replace(self.snapshot, mode="live", climb_enabled=True,
-                                climb=ClimbGuidance(True, "爬升", 320, 12, 3, 3000))
+                                climb=ClimbGuidance(True, "爬升", 320, 12, 3, 3000,
+                                                    actual_path_deg=9, target_ias_mps=224))
         self.ui.refresh()
         group = self.ui.groups["climb"]
         image = group.grab().toImage()

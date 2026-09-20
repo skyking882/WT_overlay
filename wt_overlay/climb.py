@@ -16,13 +16,24 @@ from .contracts import (G, ClimbGuidance, ClimbRequest, EnergyMetrics, FlightSta
 MIN_SPEED = 80.0
 MAX_SPEED = 650.0
 MAX_PATH_DEG = 45.0
-PATH_RATE_DEG_S = 3.0
-CUE_DEADBAND_DEG = 0.75
-CUE_RANGE_DEG = 8.0
+PATH_RATE_DEG_S = 1.0
+PATH_RESPONSE_S = 2.0
+PATH_DISPLAY_S = 0.5
+CUE_DEADBAND_DEG = 1.5
+CUE_RANGE_DEG = 12.0
 
 
 def valid_number(value):
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def target_indicated_speed(state: FlightState, target_tas_mps: float) -> float | None:
+    """Local IAS estimate from the simultaneous telemetry pair; used only for display."""
+    if not state.valid or not all(valid_number(v) and v > 0
+                                  for v in (state.ias_mps, state.tas_mps, target_tas_mps)):
+        return None
+    value = target_tas_mps * (state.ias_mps / state.tas_mps)
+    return value if valid_number(value) else None
 
 
 def validate_request(request: ClimbRequest):
@@ -178,6 +189,7 @@ class ClimbDirector:
         self._time = None
         self._command = None
         self._filtered_power = None
+        self._filtered_path = None
         self._complete = False
 
     def update(self, plan: ClimbPlan, state: FlightState, energy: EnergyMetrics,
@@ -200,7 +212,9 @@ class ClimbDirector:
         if abs(remaining) <= 25 and state.tas_mps >= plan.end_tas_mps and abs(actual_path) <= 1.5:
             self._complete = True
         if self._complete:
-            return ClimbGuidance(True, "到达", plan.end_tas_mps, remaining_height_m=max(0.0, remaining))
+            return ClimbGuidance(True, "到达", plan.end_tas_mps, remaining_height_m=max(0.0, remaining),
+                                 actual_path_deg=actual_path,
+                                 target_ias_mps=target_indicated_speed(state, plan.end_tas_mps))
         energy_height = state.altitude_m + state.tas_mps ** 2 / (2 * G)
         try:
             target_speed, slope = plan.reference(energy_height)
@@ -215,10 +229,12 @@ class ClimbDirector:
         if not 0 < dt <= 2:
             self._command = max(-5.0, min(MAX_PATH_DEG, actual_path))
             self._filtered_power = power
+            self._filtered_path = actual_path
             dt = 0.0
         else:
             blend = 1 - math.exp(-dt / 1.0)
             self._filtered_power += blend * (power - self._filtered_power)
+            self._filtered_path += (1 - math.exp(-dt / PATH_DISPLAY_S)) * (actual_path - self._filtered_path)
         power = self._filtered_power
         acceleration = slope * power + 0.08 * (target_speed - state.tas_mps)
         climb = power - state.tas_mps / G * acceleration
@@ -230,7 +246,8 @@ class ClimbDirector:
         path = math.degrees(math.asin(max(-1.0, min(1.0, climb / state.tas_mps))))
         path = max(-5.0, min(MAX_PATH_DEG, path))
         change = PATH_RATE_DEG_S * dt
-        self._command += max(-change, min(change, path - self._command))
+        step = (1 - math.exp(-dt / PATH_RESPONSE_S)) * (path - self._command)
+        self._command += max(-change, min(change, step))
         self._time = state.time_s
         phase = ("收平" if abs(remaining) < 250 or energy_height >= plan.end_energy_m else
                  "加速" if path < 1.0 else "爬升")
@@ -242,4 +259,5 @@ class ClimbDirector:
             if entry is not None:
                 display_speed = max(target_speed, plan.reference(entry.energy_m)[0])
         return ClimbGuidance(True, phase, display_speed, self._command,
-                             self._command - actual_path, remaining)
+                             self._command - self._filtered_path, remaining, self._filtered_path,
+                             target_indicated_speed(state, display_speed))

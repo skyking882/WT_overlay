@@ -1,7 +1,7 @@
 from dataclasses import replace
 import unittest
 
-from wt_overlay.contracts import (EnergyMetrics, FlightState, OverlaySnapshot,
+from wt_overlay.contracts import (ClimbGuidance, EnergyMetrics, FlightState, OverlaySnapshot,
                                   PerformanceCondition, PerformancePoint, SEPAdvice)
 from wt_overlay.hud import INDICATORS, contents, details
 from wt_overlay.telemetry import parse_telemetry
@@ -15,6 +15,20 @@ def sample_snapshot():
 
 
 class HudDataTests(unittest.TestCase):
+    def test_climb_shows_indicated_speed_and_both_flight_path_angles(self):
+        guidance = ClimbGuidance(True, "爬升", 300, 12, 2, 3000,
+                                 actual_path_deg=10, target_ias_mps=210)
+        snapshot = replace(sample_snapshot(), climb_enabled=True, climb=guidance)
+        rows = {row.label: row.value for row in contents(snapshot)["climb"].rows}
+        self.assertEqual(rows["目标 IAS"], "756")
+        self.assertNotIn("目标 TAS", rows)
+        self.assertEqual(rows["当前航迹角"], "+10.0")
+        self.assertEqual(rows["目标航迹角"], "+12.0")
+        missing = replace(snapshot, climb=replace(guidance, target_ias_mps=None))
+        self.assertEqual(contents(missing)["climb"].rows[1].value, "—")
+        stale = replace(snapshot, state=replace(snapshot.state, valid=False))
+        self.assertTrue(all(row.value == "—" for row in contents(stale)["climb"].rows[1:]))
+
     def test_invalid_state_clears_even_previous_energy_and_model_values(self):
         snapshot = sample_snapshot()
         stale = replace(snapshot, state=replace(snapshot.state, valid=False))

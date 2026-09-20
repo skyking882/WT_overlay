@@ -136,6 +136,8 @@ class ClimbGuidance:
     target_path_deg: float | None = None
     path_error_deg: float | None = None
     remaining_height_m: float | None = None
+    actual_path_deg: float | None = None
+    target_ias_mps: float | None = None
 
 
 @dataclass(frozen=True)

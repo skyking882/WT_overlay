@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from wt_overlay.app import OverlayController
 from wt_overlay.climb import (ClimbDirector, PlanningCancelled, PlanningUnavailable,
-                              build_climb_plan, maximum_at_energy, validate_request)
+                              build_climb_plan, maximum_at_energy, target_indicated_speed, validate_request)
 from wt_overlay.contracts import (G, ClimbRequest, EnergyMetrics, FlightState, ModelInfo,
                                   PerformanceCondition, PerformancePoint)
 from wt_overlay.fm import load_model
@@ -67,11 +67,12 @@ class ClimbTests(unittest.TestCase):
             if i == 0:
                 self.assertEqual(cue.phase, "加速")
                 self.assertGreater(cue.target_tas_mps, speed+100)
-            self.assertLessEqual(abs(cue.target_path_deg-last_command), .30001)
+            self.assertLessEqual(abs(cue.target_path_deg-last_command), .10001)
             self.assertTrue(-5 <= cue.target_path_deg <= 45)
+            self.assertAlmostEqual(cue.path_error_deg, cue.target_path_deg-cue.actual_path_deg)
             last_command = cue.target_path_deg
-            # Pilot tracks the cue with a one-second lag; integrate point-mass physics.
-            gamma += .1*(cue.target_path_deg-gamma)
+            # Slower manual tracking: two-second pilot lag, with point-mass physics.
+            gamma += .05*(cue.target_path_deg-gamma)
             vertical = speed*math.sin(math.radians(gamma))
             h += vertical*.1
             speed += G*(power-vertical)/speed*.1
@@ -80,6 +81,41 @@ class ClimbTests(unittest.TestCase):
         self.assertGreaterEqual(speed, 300)
         self.assertLess(abs(gamma), 1.5)
         self.assertIsNone(cue.path_error_deg)
+
+    def test_indicated_speed_uses_current_telemetry_without_changing_tas_plan(self):
+        plan = build_climb_plan(self.model, self.base, ClimbRequest(8000))
+        state = FlightState(0, True, 3000, 300, ias_mps=210, vertical_speed_mps=0, roll_deg=0)
+        cue = ClimbDirector().update(plan, state, EnergyMetrics(0), 100)
+        self.assertAlmostEqual(cue.target_ias_mps, cue.target_tas_mps*.7)
+        self.assertAlmostEqual(target_indicated_speed(state, 350), 245)
+        self.assertAlmostEqual(target_indicated_speed(replace(state, ias_mps=180), 350), 210)
+        missing = ClimbDirector().update(plan, replace(state, ias_mps=None), EnergyMetrics(0), 100)
+        self.assertEqual(cue.target_tas_mps, missing.target_tas_mps)
+        self.assertEqual(cue.target_path_deg, missing.target_path_deg)
+        self.assertIsNone(missing.target_ias_mps)
+        for invalid in (None, 0, -1, float("nan")):
+            self.assertIsNone(target_indicated_speed(replace(state, ias_mps=invalid), 350))
+
+    def test_angle_jitter_is_smoothed_and_new_samples_reset_after_a_gap(self):
+        plan = build_climb_plan(self.model, self.base, ClimbRequest(8000))
+        director = ClimbDirector()
+        values = []
+        commands = []
+        for i in range(61):
+            angle = 10 if i == 0 else (11 if i % 2 else 9)
+            state = FlightState(i*.1, True, 3000, 360,
+                                vertical_speed_mps=360*math.sin(math.radians(angle)), roll_deg=0)
+            cue = director.update(plan, state, EnergyMetrics(state.time_s), 100)
+            values.append(cue.actual_path_deg)
+            commands.append(cue.target_path_deg)
+            self.assertAlmostEqual(cue.path_error_deg, cue.target_path_deg-cue.actual_path_deg)
+        self.assertLess(max(values[-20:])-min(values[-20:]), .3)
+        self.assertTrue(all(abs(b-a) <= .10001 for a, b in zip(commands, commands[1:])))
+        fresh = replace(state, time_s=10, vertical_speed_mps=0)
+        cue = director.update(plan, fresh, EnergyMetrics(10), 100)
+        self.assertEqual(cue.actual_path_deg, 0)
+        self.assertEqual(cue.target_path_deg, 0)
+        self.assertEqual(cue.path_error_deg, 0)
 
     def test_cue_uses_flight_path_not_pitch_and_withdraws_on_missing_or_banked_state(self):
         plan = build_climb_plan(self.model, self.base, ClimbRequest(8000))

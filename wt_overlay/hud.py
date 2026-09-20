@@ -108,8 +108,9 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
     if snapshot.climb_enabled:
         rows = (
             HudRow("阶段", climb.phase if climb is not None and valid else "等待数据"),
-            HudRow("目标 TAS", number(climb.target_tas_mps if usable else None, scale=3.6), "km/h"),
-            HudRow("航迹角", number(climb.target_path_deg if usable else None, 1, True), "°"),
+            HudRow("目标 IAS", number(climb.target_ias_mps if usable else None, scale=3.6), "km/h"),
+            HudRow("当前航迹角", number(climb.actual_path_deg if usable else None, 1, True), "°"),
+            HudRow("目标航迹角", number(climb.target_path_deg if usable else None, 1, True), "°"),
             HudRow("剩余高度", number(climb.remaining_height_m if usable else None), "m"),
         )
     result["climb"] = HudContent("爬升引导", rows, demo, snapshot.climb_enabled,
