@@ -20,6 +20,17 @@ echo Installing the transparent HUD interface. First run requires internet acces
 if errorlevel 1 goto failed
 
 :launch
+for %%A in (%*) do (
+    if /i "%%~A"=="--headless" goto console
+    if /i "%%~A"=="--help" goto console
+    if /i "%%~A"=="-h" goto console
+)
+if not exist ".venv\Scripts\pythonw.exe" goto failed
+start "" ".venv\Scripts\pythonw.exe" -m wt_overlay.windowed %*
+if errorlevel 1 goto failed
+exit /b 0
+
+:console
 ".venv\Scripts\python.exe" -m wt_overlay %*
 if errorlevel 1 goto failed
 exit /b 0

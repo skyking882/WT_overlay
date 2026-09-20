@@ -492,10 +492,8 @@ class OverlayApp:
         self.refresh()
         self.refresh_surface()
         self.app.aboutToQuit.connect(self.close)
-        first_run = not self.preferences.value("configured", False, type=bool)
-        if show_on_start and (not self.can_reopen_settings or (first_run and self.snapshot.mode != "demo")):
+        if show_on_start:
             self.show_settings()
-        self.preferences.setValue("configured", True)
 
     def _setup_tray(self):
         pixmap = QPixmap(32, 32)
@@ -749,7 +747,7 @@ class OverlayApp:
             self.command({"action": "model", "path": path})
 
     def show_settings(self):
-        self.settings_window.show()
+        self.settings_window.showNormal()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
 

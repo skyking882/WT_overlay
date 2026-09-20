@@ -36,9 +36,9 @@ class OverlayTests(unittest.TestCase):
         self.ui = self.make_ui()
         self.app.processEvents()
 
-    def make_ui(self):
+    def make_ui(self, show_on_start=False):
         ui = OverlayApp(lambda: self.snapshot, self.commands.append,
-                        settings=QSettings(self.settings_path, QSettings.Format.IniFormat), show_on_start=False)
+                        settings=QSettings(self.settings_path, QSettings.Format.IniFormat), show_on_start=show_on_start)
         ui.timer.stop()
         ui.surface_timer.stop()
         return ui
@@ -205,6 +205,32 @@ class OverlayTests(unittest.TestCase):
         self.ui.settings_window.mass.setText("23000")
         self.ui.settings_window.apply_mass()
         self.assertEqual(self.commands, [{"action": "mass", "kg": 23000.0}])
+
+    def test_repeat_launch_opens_settings_for_existing_profiles_and_demo(self):
+        self.ui.preferences.setValue("configured", True)
+        self.ui.close()
+        for mode in ("live", "demo"):
+            with self.subTest(mode=mode), patch("wt_overlay.ui.QSystemTrayIcon.isSystemTrayAvailable", return_value=True):
+                self.snapshot = replace(self.snapshot, mode=mode)
+                self.ui = self.make_ui(show_on_start=True)
+                self.app.processEvents()
+                self.assertTrue(self.ui.can_reopen_settings)
+                self.assertTrue(self.ui.settings_window.isVisible())
+                self.ui.settings_window.close()
+                self.assertFalse(self.ui.closed)
+                self.assertFalse(self.ui.settings_window.isVisible())
+                self.ui.show_settings()
+                self.assertTrue(self.ui.settings_window.isVisible())
+                self.ui.close()
+
+    def test_open_settings_restores_a_minimized_window(self):
+        self.ui.settings_window.showMinimized()
+        self.app.processEvents()
+        self.assertTrue(self.ui.settings_window.isMinimized())
+        self.ui.show_settings()
+        self.app.processEvents()
+        self.assertTrue(self.ui.settings_window.isVisible())
+        self.assertFalse(self.ui.settings_window.isMinimized())
 
     def test_mixed_dpi_coordinates_use_monitor_origin_not_global_scaling(self):
         screen = SimpleNamespace(geometry=lambda: QRect(-1920, 0, 1280, 720), devicePixelRatio=lambda: 1.5)
