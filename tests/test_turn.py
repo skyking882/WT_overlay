@@ -227,7 +227,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.session.goal, goal)
         done = self.update(.3, heading_deg=31)
         self.assertEqual(done.phase, "到达")
-        self.assertEqual(done.action, "")
+        self.assertEqual(done.action, "松开机动键")
         self.assertEqual(self.update(.4, heading_deg=5).phase, "到达")
         self.update(.5, valid=False)
         self.assertFalse(self.session.require_restart)
@@ -360,12 +360,15 @@ class SessionTests(unittest.TestCase):
                 self.assertGreater(angle(initial.normal, motion.normal), 30)
         self.assertEqual(result.step_index, 2)
 
-    def test_model_limit_keeps_live_progress_and_missing_pose_marks_last_progress(self):
+    def test_model_limit_follows_live_progress_and_missing_pose_withdraws_cue(self):
         self.settings = replace(self.settings, angle_deg=90)
         self.update(0); self.update(.1)
         result = self.update(.2, heading_deg=20, aoa_deg=35)
-        self.assertFalse(result.available)
-        self.assertEqual(result.phase, "模型范围")
+        self.assertTrue(result.available)
+        self.assertEqual(result.phase, "机动跟随")
+        self.assertEqual(result.action, "保持机动")
+        self.assertIsNone(result.duration_s)
+        self.assertIsNone(result.step_index)
         self.assertAlmostEqual(result.turned_deg, 20)
         self.assertAlmostEqual(result.remaining_deg, 70)
         self.assertFalse(result.progress_stale)
@@ -373,6 +376,87 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(missing.turned_deg, result.turned_deg)
         self.assertTrue(missing.progress_stale)
         self.assertEqual(missing.phase, "缺少姿态")
+        self.assertFalse(missing.available)
+        self.assertEqual(missing.action, "")
+
+    def test_j16_high_aoa_follows_progress_previews_release_and_completes(self):
+        # AoA, bank, pitch, Ny and Vy match the screenshot. Height/speed/heading
+        # are explicit fixture choices because those readings are not in the crop.
+        self.fm = load_aircraft("j_16")
+        self.settings = replace(self.settings, angle_deg=90)
+        def maneuver(t, heading):
+            return self.update(t, aircraft_id="j_16", aoa_deg=21.6, aos_deg=.1,
+                pitch_deg=-8.5, roll_deg=-90.3, normal_load_g=8.3,
+                vertical_speed_mps=-30.9, heading_deg=heading)
+        maneuver(0, 0)
+        first = maneuver(.1, 0)
+        self.assertEqual(first.phase, "机动跟随")
+        self.assertIn("共同失速前", first.reason)
+        self.assertIsNone(self.session.future)
+        for i in range(1, 30):
+            result = maneuver(.1+i*.2, i*3)
+            self.assertTrue(result.available)
+            self.assertEqual(result.phase, "机动跟随")
+            self.assertIsNone(result.duration_s)
+            self.assertIsNone(result.step_index)
+            self.assertIsNone(result.target_throttle_percent)
+            if i == 10:
+                self.assertEqual(result.action, "保持机动")
+        self.assertEqual(result.action, "准备松键")
+        self.assertGreater(result.remaining_deg, 0)
+        reached = maneuver(6.1, 99)
+        self.assertEqual(reached.phase, "到达")
+        self.assertEqual(reached.action, "松开机动键")
+        self.assertEqual(reached.remaining_deg, 0)
+
+    def test_following_detects_no_progress_and_respects_real_height_speed_limits(self):
+        self.settings = replace(self.settings, angle_deg=90)
+        for i in range(6):
+            result = self.update(i*.1, aoa_deg=35)
+        self.assertEqual(result.action, "检查转向")
+        self.assertEqual(result.next_action, "转角未增加")
+        self.assertFalse(self.update(.6, aoa_deg=35, tas_mps=90).available)
+        self.assertEqual(self.update(.7, aoa_deg=35, tas_mps=90).phase, "速度不足")
+        self.assertEqual(self.update(.8, aoa_deg=35, altitude_m=4400).phase, "高度不足")
+
+    def test_fm_load_limit_uses_progress_cues_without_reinterpreting_body_ny(self):
+        self.settings = replace(self.settings, angle_deg=90)
+        self.update(0, tas_mps=400, aoa_deg=10, normal_load_g=8)
+        result = self.update(.1, tas_mps=400, aoa_deg=10, normal_load_g=8)
+        self.assertEqual(result.phase, "机动跟随")
+        self.assertIn("载荷超出", result.reason)
+        self.assertTrue(result.available)
+        self.assertGreater(self.session.model.observed_load(5000, 400, 10), self.settings.max_load)
+        self.assertIsNone(result.duration_s)
+        self.assertIsNone(self.session.future)
+
+    def test_following_continues_while_model_recovers_and_accepts_a_new_sequence(self):
+        self.update(0, aoa_deg=35); self.update(.1, aoa_deg=35)
+        self.assertTrue(self.session.following)
+        # Pending planning must not cancel itself to keep a progress cue visible.
+        future = Future()
+        self.session.future = future
+        self.session.last_submit = .15
+        pending = self.update(.2, aoa_deg=4)
+        self.assertEqual(pending.phase, "机动跟随")
+        self.assertIs(self.session.future, future)
+        self.assertFalse(future.cancelled())
+        v, n = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        candidate = TurnPlan(Motion(5000, v, n, 0, load), Action(1, 1), None, None, False)
+        future.set_result(candidate)
+        with patch("wt_overlay.turn.prepare_execution", side_effect=ValueError("动作序列超出所设限制")):
+            rejected = self.update(.3)
+        self.assertEqual(rejected.phase, "机动跟随")
+        self.assertTrue(rejected.available)
+        self.session.future = Future()
+        self.session.future.set_result(candidate)
+        self.session.last_submit = .35
+        resumed = self.update(.4)
+        self.assertTrue(resumed.available)
+        self.assertEqual(resumed.phase, "转向")
+        self.assertFalse(self.session.following)
+        self.assertEqual(resumed.step_index, 1)
 
 
 class ControllerTests(unittest.TestCase):

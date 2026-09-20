@@ -15,6 +15,23 @@ def sample_snapshot():
 
 
 class HudDataTests(unittest.TestCase):
+    def test_live_following_has_action_and_progress_without_empty_plan_rows(self):
+        turn = KeyboardTurnGuidance(True, "机动跟随", "准备松键", 87.9, 2.1,
+            throttle_percent=110, next_action="到达目标后松开机动键",
+            estimated_pitch_deg=-8.5, estimated_roll_deg=-90.3)
+        snapshot = replace(sample_snapshot(), turn_enabled=True, turn=turn)
+        rows = {row.label: row.value for row in contents(snapshot)["turn"].rows}
+        self.assertEqual(rows["动作"], "准备松键")
+        self.assertEqual(rows["已转角度"], "87.9")
+        self.assertEqual(rows["油门"], "110%")
+        for label in ("动作段", "预计换步", "参考用时"):
+            self.assertNotIn(label, rows)
+        done = replace(snapshot, turn=replace(turn, phase="到达", action="松开机动键", remaining_deg=0))
+        rows = {row.label: row.value for row in contents(done)["turn"].rows}
+        self.assertEqual(rows["动作"], "松开机动键")
+        self.assertNotIn("下一步", rows)
+        self.assertNotIn("油门", rows)
+
     def test_turn_hud_contains_only_cues_and_clears_stale_instructions(self):
         snapshot = replace(sample_snapshot(), turn_enabled=True,
             turn=KeyboardTurnGuidance(True, "转向", "右滚＋拉杆", 25, 65, 4,

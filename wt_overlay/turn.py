@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from bisect import bisect_left
+from collections import deque
 from dataclasses import dataclass, replace
 from functools import lru_cache
 import math
@@ -465,6 +466,48 @@ class TurnSession:
         self.floor = None
         self.turned = self.remaining = None
         self.progress_current = False
+        self.progress_samples = deque(maxlen=12)
+        self.following = self.prepare_release = False
+
+    def record_progress(self, direction, now):
+        self.turned = angle(self.goal.direction, direction)
+        self.remaining = max(0., self.goal.angle_deg-self.turned)
+        self.progress_current = True
+        if self.progress_samples and not 0 < now-self.progress_samples[-1][0] <= .6:
+            self.progress_samples.clear()
+        self.progress_samples.append((now, self.turned))
+        while len(self.progress_samples) > 1 and now-self.progress_samples[0][0] > .6:
+            self.progress_samples.popleft()
+
+    def progress_rate(self):
+        samples = self.progress_samples
+        if len(samples) < 3 or samples[-1][0]-samples[0][0] < .15:
+            return None
+        times = [t-samples[0][0] for t, _ in samples]
+        mean_t = sum(times)/len(times)
+        mean_angle = sum(a for _, a in samples)/len(samples)
+        return sum((t-mean_t)*(a-mean_angle) for t, (_, a) in zip(times, samples))/sum(
+            (t-mean_t)**2 for t in times)
+
+    def follow_guidance(self, state, settings, reason=""):
+        """Measured progress cues only; no FM action sequence or arrival-time claim."""
+        rate = self.progress_rate()
+        lead = max(2., (rate or 0.)*(settings.reaction_s+settings.load_response_s))
+        if rate is not None and rate > .5 and self.remaining <= lead:
+            self.prepare_release = True
+        if self.prepare_release:
+            action, next_action = "准备松键", "到达目标后松开机动键"
+        elif rate is not None and rate <= .5:
+            action, next_action = "检查转向", "转角未增加"
+        else:
+            action, next_action = "保持机动", "接近目标时准备松键"
+        return KeyboardTurnGuidance(True, "机动跟随", action, self.turned, self.remaining,
+            reason=reason, throttle_percent=state.throttle_percent, next_action=next_action)
+
+    def follow_without_model(self, state, settings, reason):
+        self.pause(reason, keep_previous=True, current=True)
+        self.following = True
+        return self.follow_guidance(state, settings, reason)
 
     def invalidate(self, reason="机型或参考设置已改变，请重新开始转向"):
         self.reset(require_restart=self.require_restart or self.goal is not None, reason=reason)
@@ -481,6 +524,9 @@ class TurnSession:
         self.future = self.cancel = self.plan = self.action = self.execution = None
         self.last_submit = -math.inf
         self.rate = None
+        if not current:
+            self.progress_samples.clear()
+            self.prepare_release = False
         if not keep_previous:
             self.previous = None
         return self.status(phase, reason, current=current)
@@ -534,9 +580,7 @@ class TurnSession:
                 self.model = ManeuverModel(fm, mass, afterburner, sweep)
             direction = unit(velocity)
             if self.goal is not None:
-                self.turned = angle(self.goal.direction, direction)
-                self.remaining = max(0., settings.angle_deg-self.turned)
-                self.progress_current = True
+                self.record_progress(direction, state.time_s)
             if not valid_number(state.throttle_percent) or not 0 <= state.throttle_percent <= 110:
                 return self.pause("需要有效油门读数", "缺少油门", current=self.progress_current)
             if self.previous is None:
@@ -556,23 +600,23 @@ class TurnSession:
             if self.goal is None:
                 self.goal = VelocityGoal(direction, settings.angle_deg)
                 self.floor = max(0., state.altitude_m-settings.max_altitude_loss_m)
-                self.turned, self.remaining = 0., settings.angle_deg
-                self.progress_current = True
+                self.record_progress(direction, state.time_s)
             if self.remaining <= .05:
                 self.completed = True
             if self.completed:
                 if self.cancel:
                     self.cancel.set()
                 self.action = self.execution = None
-                return KeyboardTurnGuidance(True, "到达", "", self.turned, 0.)
+                return KeyboardTurnGuidance(True, "到达", "松开机动键", self.turned, 0.)
             if state.altitude_m < self.floor:
-                return self.pause("已低于本次机动高度下限；恢复高度或重新开始", "高度不足", current=True)
+                return self.pause("已低于本次机动高度下限；恢复高度或重新开始", "高度不足",
+                                  keep_previous=True, current=True)
             if state.tas_mps < settings.minimum_tas_mps:
-                return self.pause("当前 TAS 低于所设最低速度", "速度不足", current=True)
+                return self.pause("当前 TAS 低于所设最低速度", "速度不足", keep_previous=True, current=True)
             flight_frame(state)  # Apply the prediction envelope after updating progress.
             load = self.model.observed_load(state.altitude_m, state.tas_mps, state.aoa_deg)
             if not settings.min_load-.2 <= load <= settings.max_load+.2:
-                return self.pause("由迎角估计的载荷超出所设机动限制", "载荷超限", current=True)
+                return self.follow_without_model(state, settings, "由迎角估计的载荷超出所设机动限制")
             if self.engine_throttle is None:
                 self.engine_throttle = state.throttle_percent
             elif previous_time is not None:
@@ -607,8 +651,11 @@ class TurnSession:
                     try:
                         self.execution = prepare_execution(self.model, motion, candidate, self.goal, settings, self.floor)
                     except ValueError as exc:
+                        if self.following:
+                            return self.follow_without_model(state, settings, str(exc))
                         return self.pause(str(exc), "调整动作", keep_previous=True, current=True)
                     self.plan, self.plan_time = candidate, state.time_s
+                    self.following = self.prepare_release = False
                     return self.execution_guidance(motion, state.time_s)
             if self.future is None and state.time_s-self.last_submit >= .8:
                 if self.executor is None:
@@ -616,10 +663,14 @@ class TurnSession:
                 self.cancel = Event()
                 self.last_submit = state.time_s
                 self.future = self.executor.submit(search_turn, self.model, motion, self.goal, settings, self.floor, self.cancel)
+            if self.following:
+                return self.follow_guidance(state, settings, "气动预测恢复，正在计算后续动作")
             return self.status("计算" if self.future else "无可用动作", current=True)
         except Cancelled:
             return self.status("计算", current=self.progress_current)
         except (ValueError, OverflowError) as exc:
+            if self.progress_current:
+                return self.follow_without_model(state, settings, str(exc))
             missing = not valid_number(state.pitch_deg) or not valid_number(state.roll_deg)
             return self.pause(str(exc), "缺少姿态" if missing else "模型范围",
                               current=self.progress_current)
