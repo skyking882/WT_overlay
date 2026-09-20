@@ -66,6 +66,7 @@ class OverlayController:
             raise ValueError("参考后掠必须在 0–100% 之间")
         self.sweep_fraction = float(sweep_fraction)
         self._auto_identity = None
+        self._auto_retry_at = 0.
         self.estimator = EnergyEstimator()
         self._commands: Queue[dict] = Queue(maxsize=32)
         self._lock = Lock()
@@ -159,6 +160,7 @@ class OverlayController:
                 self.estimator.reset()
                 self._identity = None
                 self._auto_identity = None
+                self._auto_retry_at = 0.
                 if self.model_selection == "auto":
                     self.model = None
             elif action == "mass":
@@ -197,6 +199,7 @@ class OverlayController:
                 self.model = None
                 self.model_selection = command["id"]
                 self._auto_identity = None
+                self._auto_retry_at = 0.
                 if self.model_selection != "auto":
                     try:
                         self.model = load_aircraft(self.model_selection)
@@ -207,8 +210,14 @@ class OverlayController:
     def _select_live_aircraft(self, state: FlightState) -> None:
         if self.model_selection != "auto" or self.mode != "live":
             return
-        identity = aircraft_key(state.aircraft_id) if state.valid and state.aircraft_id else ""
-        if identity == self._auto_identity:
+        # An interrupted poll is not an aircraft change. Keep the loaded FM,
+        # while prediction/director gates below suppress use of invalid data.
+        if not state.valid or not state.aircraft_id:
+            return
+        identity = aircraft_key(state.aircraft_id)
+        profile = find_aircraft(identity)
+        if identity == self._auto_identity and (self.model is not None or profile is None
+                                               or state.time_s < self._auto_retry_at):
             return
         self._auto_identity = identity
         self._reset_climb()
@@ -216,12 +225,14 @@ class OverlayController:
         self._last_prediction = -math.inf
         self.model = None
         self._settings_error = ""
-        profile = find_aircraft(identity)
         if profile:
             try:
                 self.model = load_aircraft(profile.id)
             except (OSError, ValueError) as exc:
                 self._settings_error = f"FM 未加载：{exc}"
+                self._auto_retry_at = state.time_s+2.
+        else:
+            self._settings_error = f"未找到机型：{state.aircraft_id}"
 
     def _reset_climb(self):
         if self._plan_cancel is not None:
@@ -310,18 +321,14 @@ class OverlayController:
         if not self.turn_enabled:
             return None
         if not state.valid:
-            self._turn_session.invalidate()
-            return KeyboardTurnGuidance(phase="等待数据")
+            return self._turn_session.pause("等待有效飞行数据")
         if self.model is None:
-            self._turn_session.invalidate()
-            return KeyboardTurnGuidance(phase="选择机型")
+            return self._turn_session.pause(self._settings_error or "等待匹配的机型", "选择机型")
         if self.mode == "live" and not _matches(self.model, state.aircraft_id):
-            self._turn_session.invalidate()
-            return KeyboardTurnGuidance(phase="核对机型")
+            return self._turn_session.pause("等待游戏机型与所选模型匹配", "核对机型")
         mass = self.mass_kg if self.mass_kg is not None else state.mass_kg
         if not valid_number(mass) or mass <= 0:
-            self._turn_session.invalidate()
-            return KeyboardTurnGuidance(phase="设置质量")
+            return self._turn_session.pause("请设置参考总质量", "设置质量")
         return self._turn_session.update(state, self.model, mass, self.afterburner,
                                          self.sweep_fraction, self.turn_settings)
 
@@ -333,8 +340,8 @@ class OverlayController:
                  else self.client.poll(time_s=now))
         self._select_live_aircraft(state)
         energy = self.estimator.update(state)
-        identity = (state.source, state.aircraft_id)
-        if identity != self._identity:
+        identity = (state.source, aircraft_key(state.aircraft_id)) if state.valid and state.aircraft_id else None
+        if identity is not None and identity != self._identity:
             if self._identity is not None:
                 self._turn_session.invalidate()
             self._reset_climb()
@@ -344,7 +351,8 @@ class OverlayController:
         if not state.valid:
             self._advice = None
             self._last_prediction = -math.inf
-        elif now-self._last_prediction >= 1.0:
+        elif (now-self._last_prediction >= 1.0
+              or self.mode == "live" and self.model is not None and not _matches(self.model, state.aircraft_id)):
             self._advice = self._predict(state)
             self._last_prediction = now
         climb = self._climb_guidance(state, energy)
@@ -392,7 +400,7 @@ class OverlayController:
             try:
                 self.tick(started)
             except Exception as exc:
-                self._turn_session.invalidate()
+                self._turn_session.pause(str(exc))
                 self._reset_climb()
                 self.estimator.reset()
                 self._advice = None

@@ -17,7 +17,7 @@ from wt_overlay.turn import (Action, Cancelled, ManeuverModel, Motion, TurnPlan,
 def sample(t=0, **changes):
     return replace(FlightState(t, True, altitude_m=5000, tas_mps=250, ias_mps=200,
         vertical_speed_mps=0, pitch_deg=4, roll_deg=0, heading_deg=0,
-        aoa_deg=4, aos_deg=0, mass_kg=23000, aircraft_id="su_27sm"), **changes)
+        aoa_deg=4, aos_deg=0, mass_kg=23000, aircraft_id="su_27sm", throttle_percent=110), **changes)
 
 
 class GeometryTests(unittest.TestCase):
@@ -90,6 +90,45 @@ class ManeuverTests(unittest.TestCase):
         self.assertAlmostEqual(dot(unit(y.velocity), y.normal), 0, places=10)
         self.assertAlmostEqual(norm(y.normal), 1)
 
+    def test_throttle_ramp_spool_and_force_endpoints(self):
+        military = self.fm.evaluate(PerformanceCondition(5000, 250, 23000, afterburner=False)).thrust_n
+        maximum = self.fm.evaluate(PerformanceCondition(5000, 250, 23000)).thrust_n
+        self.assertEqual(self.model.forces(5000, 250, 1, 0)[0], 0)
+        self.assertAlmostEqual(self.model.forces(5000, 250, 1, 50)[0], military/2)
+        self.assertAlmostEqual(self.model.forces(5000, 250, 1, 100)[0], military)
+        self.assertAlmostEqual(self.model.forces(5000, 250, 1, 110)[0], maximum)
+        reduced = self.model.step(self.initial, Action(0, 0, -1), .1, self.settings)
+        self.assertEqual(reduced.throttle_percent, 105)
+        self.assertGreater(reduced.engine_throttle_percent, reduced.throttle_percent)
+        self.assertLess(reduced.engine_throttle_percent, 110)
+        coast = self.model.step(reduced, Action(0, 0, 0), .1, self.settings)
+        self.assertEqual(coast.throttle_percent, reduced.throttle_percent)
+        self.assertLess(coast.engine_throttle_percent, reduced.engine_throttle_percent)
+        dry = ManeuverModel(self.fm, 23000, afterburner=False)
+        initial = replace(self.initial, throttle_percent=99, engine_throttle_percent=99)
+        self.assertEqual(dry.step(initial, Action(0, 0, 1), .1, self.settings).throttle_percent, 100)
+        idle = replace(self.initial, throttle_percent=1, engine_throttle_percent=20)
+        self.assertEqual(self.model.step(idle, Action(0, 0, -1), .1, self.settings).throttle_percent, 0)
+
+    def test_search_can_choose_reduced_throttle_and_respects_speed_floor(self):
+        # A load-limited, fast case: slowing down can increase angular progress.
+        fast = replace(self.initial, velocity=(0, 400, 0), normal=(1, 0, 0), load=9)
+        s = replace(self.settings, angle_deg=90, horizon_s=12)
+        result = search_turn(self.model, fast, VelocityGoal((0, 1, 0), 90), s, 4500, budget_s=3)
+        self.assertTrue(result.reached)
+        self.assertIsNotNone(result.action)
+        self.assertEqual(result.action.throttle, -1)
+        hold, cut = fast, fast
+        for _ in range(20):
+            hold = self.model.step(hold, Action(0, 1, 0), .15, s)
+            cut = self.model.step(cut, Action(0, 1, -1), .15, s)
+        self.assertLess(cut.speed, hold.speed)
+        self.assertGreater(angle(cut.velocity, fast.velocity), angle(hold.velocity, fast.velocity))
+        self.assertLess(cut.energy, hold.energy)
+        constrained = replace(s, minimum_tas_mps=405)
+        with self.assertRaises(ValueError):
+            search_turn(self.model, fast, VelocityGoal((0, 1, 0), 30), constrained, 4500)
+
     def test_short_step_energy_balance_and_initial_bank_change_trajectory(self):
         dt = 1e-4
         t, d, _, alpha = self.model.forces(5000, 250, 1)
@@ -154,7 +193,7 @@ class SessionTests(unittest.TestCase):
     def update(self, t, **changes):
         return self.session.update(sample(t, **changes), self.fm, 23000, True, 0, self.settings)
 
-    def test_anchoring_angle_completion_latch_and_restart_after_loss(self):
+    def test_anchoring_angle_completion_latch_and_short_loss_recovery(self):
         self.assertEqual(self.update(0).phase, "读取姿态")
         self.update(.1)
         goal = self.session.goal
@@ -165,10 +204,55 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(done.action, "")
         self.assertEqual(self.update(.4, heading_deg=5).phase, "到达")
         self.update(.5, valid=False)
-        self.assertTrue(self.session.require_restart)
-        self.assertEqual(self.update(.6).phase, "重新开始")
+        self.assertFalse(self.session.require_restart)
+        self.assertEqual(self.session.goal, goal)
+        self.assertEqual(self.update(.6).phase, "读取姿态")
+        self.assertEqual(self.update(.7).phase, "到达")
         self.session.reset()
-        self.assertEqual(self.update(.7).phase, "读取姿态")
+        self.assertEqual(self.update(.8).phase, "读取姿态")
+
+    def test_sampling_hiccup_and_invalid_pose_recover_without_moving_origin(self):
+        self.update(0); self.update(.1)
+        goal = self.session.goal
+        self.assertEqual(self.update(.9, heading_deg=5).phase, "读取姿态")
+        self.assertNotEqual(self.update(1., heading_deg=6).phase, "重新开始")
+        bad = self.update(1.1, aoa_deg=None)
+        self.assertFalse(bad.available)
+        self.assertTrue(bad.reason)
+        self.update(1.2)
+        self.assertNotEqual(self.update(1.3).phase, "重新开始")
+        self.assertIs(self.session.goal, goal)
+
+    def test_limits_show_cause_and_resume_without_resetting_altitude_floor(self):
+        self.update(0); self.update(.1)
+        goal, floor = self.session.goal, self.session.floor
+        result = self.update(.2, tas_mps=90)
+        self.assertEqual(result.phase, "速度不足")
+        self.assertTrue(result.reason)
+        self.update(.3)
+        self.assertNotEqual(self.update(.4).phase, "重新开始")
+        self.assertIs(self.session.goal, goal)
+        self.assertEqual(self.session.floor, floor)
+        self.assertEqual(self.update(.5, altitude_m=4400).phase, "高度不足")
+
+    def test_long_data_loss_requires_restart_and_keeps_explanation(self):
+        self.update(0); self.update(.1)
+        self.update(.2, valid=False)
+        result = self.update(3.)
+        self.assertEqual(result.phase, "重新开始")
+        self.assertIn("中断", result.reason)
+        self.assertEqual(self.update(3.1).reason, result.reason)
+        self.session.reset()
+        self.assertEqual(self.update(3.2).phase, "读取姿态")
+        self.assertNotEqual(self.update(3.3).phase, "重新开始")
+
+    def test_missing_throttle_pauses_and_actual_throttle_seeds_plan(self):
+        result = self.update(0, throttle_percent=None)
+        self.assertFalse(result.available)
+        self.assertIn("油门", result.reason)
+        self.update(.1, throttle_percent=70)
+        self.update(.2, throttle_percent=70)
+        self.assertEqual(self.session.engine_throttle, 70)
 
     def test_observed_load_is_not_body_ny_and_mass_does_not_move_origin(self):
         self.update(0, normal_load_g=99)
@@ -202,6 +286,23 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.action, "右滚＋拉杆")
         self.assertEqual(result.duration_s, 4)
 
+    def test_throttle_recommendation_and_stale_throttle_rejection(self):
+        self.update(0); self.update(.1)
+        self.session.cancel.set()
+        velocity, normal = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        future = Future()
+        future.set_result(TurnPlan(Motion(5000, velocity, normal, 0, load), Action(0, 1, -1), 4, -100, True))
+        self.session.future = future
+        result = self.update(.2)
+        self.assertTrue(result.available)
+        self.assertEqual(result.throttle_command, -1)
+        self.assertEqual(result.throttle_percent, 110)
+        self.assertEqual(result.target_throttle_percent, 80)
+        result = self.update(.3, throttle_percent=50)
+        self.assertFalse(result.available)
+        self.assertIsNone(result.target_throttle_percent)
+
 
 class ControllerTests(unittest.TestCase):
     def setUp(self):
@@ -212,7 +313,7 @@ class ControllerTests(unittest.TestCase):
     def poll(self, time_s=None):
         return replace(self.state, time_s=time_s)
 
-    def test_mutually_exclusive_directors_and_disconnect_restart(self):
+    def test_mutually_exclusive_directors_and_disconnect_recovery(self):
         c = self.controller
         c.submit({"action": "climb_enabled", "enabled": True})
         c.tick(0)
@@ -222,10 +323,13 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(snapshot.turn_enabled)
         self.assertIsNone(snapshot.climb)
         self.assertIsNotNone(c._turn_session.goal)
+        model, goal = c.model, c._turn_session.goal
         self.state = replace(self.state, valid=False)
         self.assertFalse(c.tick(.3).turn.available)
         self.state = sample()
-        self.assertEqual(c.tick(.4).turn.phase, "重新开始")
+        self.assertEqual(c.tick(.4).turn.phase, "读取姿态")
+        self.assertIs(c.model, model)
+        self.assertIs(c._turn_session.goal, goal)
         c.submit({"action": "turn_restart"})
         self.assertEqual(c.tick(.5).turn.phase, "读取姿态")
         c.submit({"action": "climb_enabled", "enabled": True})

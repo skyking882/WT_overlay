@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import unittest
+from unittest.mock import patch
 
 from wt_overlay.app import OverlayController
 from wt_overlay.climb import build_climb_plan
@@ -129,7 +130,7 @@ class AutomaticSelectionTests(unittest.TestCase):
     def poll(self, time_s=None):
         return replace(self.state, time_s=time_s)
 
-    def test_auto_switch_unknown_and_disconnect_clear_previous_model(self):
+    def test_auto_switch_unknown_and_disconnect_keep_only_matching_model(self):
         c = self.controller
         first = c.tick(0)
         self.assertTrue(first.advice.available)
@@ -146,7 +147,33 @@ class AutomaticSelectionTests(unittest.TestCase):
         self.assertTrue(c.tick(.3).advice.available)
         self.state = replace(self.state, valid=False)
         self.assertIsNone(c.tick(.4).advice)
-        self.assertIsNone(c.model)
+        self.assertEqual(c.model.info.aircraft_id, "j_11b")
+
+    def test_j16_auto_selection_recovers_after_missing_poll_and_normalized_identity(self):
+        c = self.controller
+        self.state = replace(self.state, aircraft_id="J-16")
+        snapshot = c.tick(0)
+        self.assertEqual(snapshot.model_selection, "auto")
+        self.assertEqual(snapshot.model_name, "歼-16")
+        self.assertTrue(snapshot.advice.available)
+        model = c.model
+        self.state = FlightState(0, False)
+        self.assertIsNone(c.tick(.1).advice)
+        self.assertIs(c.model, model)
+        self.state = FlightState(0, True, altitude_m=5000, tas_mps=250, aircraft_id="j_16")
+        self.assertTrue(c.tick(.2).advice.available)
+        self.assertIs(c.model, model)
+
+    def test_failed_automatic_load_retries_without_aircraft_switch(self):
+        c = self.controller
+        self.state = replace(self.state, aircraft_id="j_16")
+        with patch("wt_overlay.app.load_aircraft", side_effect=OSError("temporary")) as load:
+            self.assertIsNone(c.tick(0).advice)
+            self.assertIn("temporary", c.tick(1).status)
+            self.assertEqual(load.call_count, 1)
+        result = c.tick(2.1)
+        self.assertTrue(result.advice.available)
+        self.assertEqual(result.model_name, "歼-16")
 
     def test_manual_selection_gates_mismatch_then_returns_to_auto(self):
         c = self.controller

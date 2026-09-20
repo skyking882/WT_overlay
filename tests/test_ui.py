@@ -93,6 +93,21 @@ class OverlayTests(unittest.TestCase):
         self.ui.refresh()
         self.assertTrue(window.sweep.isHidden())
 
+    def test_auto_model_status_distinguishes_j16_missing_identity_and_load_failure(self):
+        self.snapshot = replace(self.snapshot, mode="live", model_selection="auto", model_name="歼-16",
+                                state=replace(self.snapshot.state, aircraft_id="J-16"))
+        self.ui.refresh()
+        self.assertIn("自动识别：歼-16", self.ui.settings_window.model_label.text())
+        self.assertIn("J-16", self.ui.settings_window.model_label.text())
+        self.snapshot = replace(self.snapshot, state=replace(self.snapshot.state, valid=False))
+        self.ui.refresh()
+        self.assertIn("等待游戏机型", self.ui.settings_window.model_label.text())
+        self.snapshot = replace(self.snapshot, model_name="未加载 FM",
+                                state=replace(self.snapshot.state, valid=True))
+        self.ui.refresh()
+        self.assertIn("未加载模型", self.ui.settings_window.model_label.text())
+        self.assertIn("J-16", self.ui.settings_window.model_label.text())
+
     def test_layout_drag_is_saved_and_battle_mode_restores_input_transparency(self):
         group = self.ui.groups["energy"]
         self.assertTrue(group.windowFlags() & Qt.WindowType.WindowTransparentForInput)
@@ -170,6 +185,8 @@ class OverlayTests(unittest.TestCase):
         w.turn_angle.setCurrentIndex(w.turn_angle.findData(120))
         w.turn_fields["roll_rate_deg_s"][0].setValue(90)
         w.turn_fields["minimum_tas_mps"][0].setValue(720)
+        w.turn_fields["throttle_rate_percent_s"][0].setValue(30)
+        w.turn_fields["engine_response_s"][0].setValue(1.5)
         self.assertTrue(w.apply_turn_settings())
         self.assertEqual(self.ui.turn_settings.minimum_tas_mps, 200)
         self.ui.close()
@@ -177,6 +194,8 @@ class OverlayTests(unittest.TestCase):
         self.assertFalse(self.ui.turn_enabled)
         self.assertEqual(self.ui.turn_settings.angle_deg, 120)
         self.assertEqual(self.ui.turn_settings.roll_rate_deg_s, 90)
+        self.assertEqual(self.ui.turn_settings.throttle_rate_percent_s, 30)
+        self.assertEqual(self.ui.turn_settings.engine_response_s, 1.5)
 
     def test_climb_is_independent_defaults_off_and_hides_before_worker_acknowledges(self):
         self.assertFalse(self.ui.groups["climb"].isVisible())

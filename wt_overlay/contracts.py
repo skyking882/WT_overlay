@@ -136,6 +136,8 @@ class KeyboardTurnSettings:
     load_response_s: float = .6
     reaction_s: float = .3
     hold_s: float = .6
+    throttle_rate_percent_s: float = 50.
+    engine_response_s: float = 1.
 
 
 @dataclass(frozen=True)
@@ -150,6 +152,10 @@ class KeyboardTurnGuidance:
     roll_command: int = 0
     pitch_command: int = 0
     reason: str = ""
+
+    throttle_command: int = 0
+    throttle_percent: float | None = None
+    target_throttle_percent: float | None = None
 
 
 @dataclass(frozen=True)

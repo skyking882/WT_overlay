@@ -339,7 +339,7 @@ class SettingsWindow(QWidget):
         self.model_label = QLabel("未加载 FM")
         self.model_label.setWordWrap(True)
         form.addRow("当前模型", self.model_label)
-        choose_model = QPushButton("选择 FM 文件…")
+        choose_model = QPushButton("手动载入 FM 文件…")
         choose_model.clicked.connect(owner.choose_model)
         form.addRow(choose_model)
         self.sweep = QSpinBox()
@@ -405,6 +405,8 @@ class SettingsWindow(QWidget):
             ("load_response_s", "载荷响应时间 / s", .1, 3, .1, 1),
             ("reaction_s", "操纵反应时间 / s", 0, 1.5, .05, 1),
             ("hold_s", "动作保持时间 / s", .3, 2, .1, 1),
+            ("throttle_rate_percent_s", "油门变化速度 / %/s", 5, 200, 5, 1),
+            ("engine_response_s", "推力响应时间 / s", .1, 5, .1, 1),
         ):
             widget = QDoubleSpinBox()
             widget.setRange(low, high)
@@ -854,7 +856,19 @@ class OverlayApp:
             self.groups[key].set_content(content)
         window = self.settings_window
         window.status.setText(snapshot.status)
-        window.model_label.setText(snapshot.model_name)
+        if snapshot.model_selection == "auto":
+            state = snapshot.state
+            if snapshot.mode == "demo":
+                model_text = "演示模式：请手动选择机型"
+            elif state is None or not state.valid or not state.aircraft_id:
+                model_text = "自动识别：等待游戏机型"
+            elif snapshot.model_name == "未加载 FM":
+                model_text = f"自动识别：未加载模型（游戏机型：{state.aircraft_id}）"
+            else:
+                model_text = f"自动识别：{snapshot.model_name}（游戏机型：{state.aircraft_id}）"
+        else:
+            model_text = snapshot.model_name
+        window.model_label.setText(model_text)
         if not (window.aircraft_box.hasFocus() or window.aircraft_box.lineEdit().hasFocus()
                 or window.aircraft_box.view().isVisible()):
             window.aircraft_box.blockSignals(True)

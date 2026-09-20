@@ -122,6 +122,9 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
         rows = (
             HudRow("转向", turn.phase if turn is not None and valid else "等待数据"),
             HudRow("动作", turn.action if usable and turn.action else "—", tone="accent"),
+            HudRow("油门", (("收油", "保持", "加油")[turn.throttle_command+1]+
+                f" {number(turn.throttle_percent, 0)} → {number(turn.target_throttle_percent, 0)}%")
+                if usable and turn.throttle_percent is not None and turn.target_throttle_percent is not None else "—"),
             HudRow("目标转角", number(snapshot.turn_settings.angle_deg), "°"),
             HudRow("已转角度", number(turn.turned_deg if valid and turn else None, 1), "°"),
             HudRow("剩余角度", number(turn.remaining_deg if valid and turn else None, 1), "°"),
