@@ -8,9 +8,10 @@ from unittest.mock import patch
 
 from wt_overlay.app import OverlayController
 from wt_overlay.climb import build_climb_plan
-from wt_overlay.contracts import ClimbRequest, FlightState, G, PerformanceCondition
+from wt_overlay.contracts import ClimbRequest, FlightState, G, KeyboardTurnSettings, PerformanceCondition
 from wt_overlay.fm import load_aircraft, load_model
 from wt_overlay.fm.catalog import aircraft_catalog, aircraft_key, find_aircraft
+from wt_overlay.turn import Action, ManeuverModel, Motion
 from wt_overlay.fm.polar import PolarProperties
 
 
@@ -54,6 +55,22 @@ class FleetTests(unittest.TestCase):
                     self.assertGreaterEqual(point.drag_n, 0)
                     self.assertAlmostEqual(point.sep_mps,
                         (point.thrust_n*math.cos(math.radians(point.aoa_deg))-point.drag_n)*speed/(mass*G))
+
+    def test_every_aircraft_evaluates_and_releases_from_high_aoa(self):
+        settings = KeyboardTurnSettings()
+        for profile in aircraft_catalog():
+            with self.subTest(aircraft=profile.id):
+                model = ManeuverModel(load_aircraft(profile.id), reference_mass(profile))
+                for alpha in (-40., 50.):
+                    thrust, drag, lift, _ = model.forces_at_aoa(5000, 250, alpha)
+                    self.assertTrue(all(math.isfinite(x) for x in (thrust, drag, lift)))
+                    self.assertGreaterEqual(drag, 0)
+                    initial = Motion(5000, (0, 250, 0), (0, 0, 1), 0,
+                        lift/(model.mass*G), aoa_deg=alpha)
+                    released = model.step(initial, Action(0, 0), .01, settings)
+                    self.assertLess(abs(released.aoa_deg), abs(alpha))
+                    self.assertLess(abs(released.aoa_deg-alpha), 1)
+                    self.assertTrue(math.isfinite(released.load))
 
     def test_engine_instances_dry_engine_and_lift_engine_exclusion(self):
         for identity, count in (("f_16c_block_50", 1), ("f_15c_golden_eagle", 2),

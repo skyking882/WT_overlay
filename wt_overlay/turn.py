@@ -1,4 +1,4 @@
-"""Keyboard maneuver reference: signed-load point mass with finite roll/load response.
+"""Keyboard maneuver reference: continuous AoA and finite roll/pitch response.
 
 The response constants are explicit user-adjustable assumptions, not recovered
 Instructor physics. No input is sent to the game. See README for the model scope.
@@ -18,6 +18,8 @@ import time
 from .climb import valid_number
 from .contracts import G, KeyboardTurnGuidance, KeyboardTurnSettings
 from .fm import atmosphere
+
+MIN_AOA_DEG, MAX_AOA_DEG = -60., 60.  # Forward-flight query bounds, not stall angles.
 
 
 def dot(a, b):
@@ -87,6 +89,7 @@ class Motion:
     load: float       # Aerodynamic L/W, never telemetry body Ny.
     throttle_percent: float = 110.
     engine_throttle_percent: float = 110.
+    aoa_deg: float | None = None  # Live states always carry AoA, including postcritical branches.
 
     @property
     def speed(self):
@@ -109,7 +112,7 @@ def flight_frame(state, *, enforce_envelope=True):
         raise ValueError("缺少转向读数："+"、".join(missing))
     if state.tas_mps <= 0 or enforce_envelope and state.tas_mps < 50:
         raise ValueError("当前 TAS 低于转向计算下限 180 km/h")
-    if enforce_envelope and (abs(state.aos_deg) > 10 or not -20 <= state.aoa_deg <= 30):
+    if enforce_envelope and (abs(state.aos_deg) > 10 or not MIN_AOA_DEG <= state.aoa_deg <= MAX_AOA_DEG):
         raise ValueError("姿态超出转向参考范围")
     heading, pitch, roll, alpha, beta = map(math.radians,
         (state.heading_deg, state.pitch_deg, state.roll_deg, state.aoa_deg, state.aos_deg))
@@ -168,7 +171,7 @@ ACTIONS = tuple(Action(roll, pitch, throttle) for throttle in (0, -1, 1)
 
 
 class ManeuverModel:
-    """Quasi-steady FM forces, signed lift demand and wind-axis roll response."""
+    """Full static polars at continuous AoA; signed-load targets approximate keys."""
     def __init__(self, model, mass, afterburner=True, sweep=0.):
         if not valid_number(mass) or mass <= 0:
             raise ValueError("需要参考总质量")
@@ -177,19 +180,72 @@ class ManeuverModel:
         self.model, self.mass, self.afterburner, self.sweep = model, mass, afterburner, sweep
         self.max_throttle = 110. if afterburner and any(e.has_wep for e in model.engines) else 100.
         self._context = lru_cache(maxsize=128)(self._make_context)
+        self._curve = lru_cache(maxsize=128)(self._make_curve)
 
     def _make_context(self, altitude, speed):
         rho, sound = atmosphere(altitude)
         if speed < 50 or speed/sound > 2.35:
             raise ValueError("超出模型范围")
         polars = [(p, p.properties.at_mach(speed/sound)) for p in self.model.components_at_sweep(self.sweep)]
-        low = max(-12., *(p.critical_aoa_low-part.incidence_deg+.5 for part, p in polars if not part.vertical))
-        high = min(25., *(p.critical_aoa_high-part.incidence_deg-.5 for part, p in polars if not part.vertical))
-        if low >= high:
-            raise ValueError("无共同失速前迎角区间")
         military = sum(e.thrust_n(altitude, speed, False) for e in self.model.engines)
         maximum = sum(e.thrust_n(altitude, speed, True) for e in self.model.engines)
-        return polars, .5*rho*speed*speed, (military, maximum), low, high
+        return polars, .5*rho*speed*speed, (military, maximum)
+
+    @staticmethod
+    def _lift_area(polars, alpha):
+        return sum(part.area_m2*polar.cl(alpha+part.incidence_deg)*polar.cl_kq
+                   for part, polar in polars if not part.vertical)
+
+    def _make_curve(self, altitude, speed):
+        polars, _, _ = self._context(altitude, speed)
+        angles = set(range(int(MIN_AOA_DEG), int(MAX_AOA_DEG)+1, 2))
+        # Include polar joins as well as the grid so narrow component features
+        # cannot disappear merely because a critical angle lies between samples.
+        for part, p in polars:
+            if part.vertical:
+                continue
+            for a in (p.linear_low, p.linear_high, p.critical_aoa_low, p.critical_aoa_high,
+                      p.critical_aoa_low-p.parab_angle, p.critical_aoa_high+p.parab_angle,
+                      -p.max_distance, p.max_distance, -40., 40.):
+                a -= part.incidence_deg
+                if MIN_AOA_DEG <= a <= MAX_AOA_DEG:
+                    angles.add(a)
+        return tuple((a, self._lift_area(polars, a)) for a in sorted(angles))
+
+    def target_aoa(self, altitude, speed, load, reference_deg=0.):
+        """Bracket each sampled crossing; never bisect the entire nonmonotone polar."""
+        polars, q, _ = self._context(altitude, speed)
+        target = load*self.mass*G/q
+        curve = self._curve(altitude, speed)
+        roots = []
+        for (a, la), (b, lb) in zip(curve, curve[1:]):
+            fa, fb = la-target, lb-target
+            if fa == 0:
+                roots.append(a)
+            if fb == 0:
+                roots.append(b)
+            if fa*fb < 0:
+                for _ in range(12):
+                    mid = (a+b)/2
+                    fm = self._lift_area(polars, mid)-target
+                    if fa*fm <= 0:
+                        b = mid
+                    else:
+                        a, fa = mid, fm
+                roots.append((a+b)/2)
+        if roots:
+            return min(roots, key=lambda a: (abs(a-reference_deg), abs(a)))
+        # Unattainable demand saturates at the closest sampled extremum, with
+        # local refinement. This is a bounded polar search, not a global proof.
+        i = min(range(len(curve)), key=lambda i: (abs(curve[i][1]-target), abs(curve[i][0]-reference_deg)))
+        a, b = curve[max(0, i-1)][0], curve[min(len(curve)-1, i+1)][0]
+        for _ in range(16):
+            left, right = (2*a+b)/3, (a+2*b)/3
+            if abs(self._lift_area(polars, left)-target) < abs(self._lift_area(polars, right)-target):
+                b = right
+            else:
+                a = left
+        return min((curve[i][0], (a+b)/2), key=lambda a: abs(self._lift_area(polars, a)-target))
 
     @staticmethod
     def _forces(polars, dynamic_pressure, alpha):
@@ -203,41 +259,46 @@ class ManeuverModel:
         return lift, drag
 
     def observed_load(self, altitude, speed, alpha):
-        polars, q, _, low, high = self._context(altitude, speed)
-        if not low <= alpha <= high:
-            raise ValueError("迎角超出共同失速前范围")
-        return self._forces(polars, q, alpha)[0]/(self.mass*G)
+        if not valid_number(alpha) or not MIN_AOA_DEG <= alpha <= MAX_AOA_DEG:
+            raise ValueError("迎角超出转向计算范围 ±60°")
+        polars, q, _ = self._context(altitude, speed)
+        return q*self._lift_area(polars, alpha)/(self.mass*G)
 
-    def forces(self, altitude, speed, load, throttle_percent=None):
-        polars, q, thrusts, low, high = self._context(altitude, speed)
+    def forces_at_aoa(self, altitude, speed, alpha, throttle_percent=None):
+        if not valid_number(alpha) or not MIN_AOA_DEG <= alpha <= MAX_AOA_DEG:
+            raise ValueError("迎角超出转向计算范围 ±60°")
+        polars, q, thrusts = self._context(altitude, speed)
         throttle = self.max_throttle if throttle_percent is None else throttle_percent
         military, maximum = thrusts
         # Reference interpolation only: the raw FM supplies full-thrust tables,
         # not a verified partial-throttle/spool law. Leave static SEP untouched.
         thrust = (military*max(0., throttle)/100 if throttle <= 100 else
                   military+(maximum-military)*min(1., (throttle-100)/10))
-        target = load*self.mass*G
-        l0, l1 = self._forces(polars, q, low)[0], self._forces(polars, q, high)[0]
-        if l0 >= l1:
-            raise ValueError("升力区间不可用")
-        target = min(l1, max(l0, target))
-        for _ in range(12):
-            mid = (low+high)/2
-            if self._forces(polars, q, mid)[0] < target:
-                low = mid
-            else:
-                high = mid
-        alpha = (low+high)/2
         lift, drag = self._forces(polars, q, alpha)
         return thrust, drag, lift, math.radians(alpha)
 
+    def forces(self, altitude, speed, load, throttle_percent=None, *, reference_deg=0.):
+        alpha = self.target_aoa(altitude, speed, load, reference_deg)
+        return self.forces_at_aoa(altitude, speed, alpha, throttle_percent)
+
     def step(self, state: Motion, action: Action | None, dt, settings):
-        # None is the human response interval: continue the observed roll/load.
+        # None is the human response interval: continue the observed roll/AoA.
         p_target = state.roll_rate if action is None else math.radians(settings.roll_rate_deg_s)*action.roll
-        n_target = state.load if action is None else (
-            settings.max_load if action.pitch > 0 else settings.min_load if action.pitch < 0 else state.normal[2])
         p = p_target+(state.roll_rate-p_target)*math.exp(-dt/settings.roll_response_s)
-        n = n_target+(state.load-n_target)*math.exp(-dt/settings.load_response_s)
+        alpha0 = state.aoa_deg
+        if alpha0 is None:  # Compatibility for load-only offline initial states.
+            alpha0 = self.target_aoa(state.altitude, state.speed, state.load)
+        if not valid_number(alpha0) or not MIN_AOA_DEG <= alpha0 <= MAX_AOA_DEG:
+            raise ValueError("迎角超出转向计算范围 ±60°")
+        alpha_target = alpha0
+        if action is not None:
+            n_target = settings.max_load if action.pitch > 0 else settings.min_load if action.pitch < 0 else state.normal[2]
+            # Held pitch selects the root nearest current AoA. Releasing pitch
+            # requests the low-AoA branch, reached through a finite response.
+            alpha_target = self.target_aoa(state.altitude, state.speed, n_target,
+                                           alpha0 if action.pitch else 0.)
+        alpha_mid = alpha_target+(alpha0-alpha_target)*math.exp(-dt/(2*settings.load_response_s))
+        alpha_end = alpha_target+(alpha0-alpha_target)*math.exp(-dt/settings.load_response_s)
         throttle = state.throttle_percent
         if action is not None and action.throttle:
             demanded = throttle+action.throttle*settings.throttle_rate_percent_s*dt
@@ -245,20 +306,16 @@ class ManeuverModel:
         engine = throttle+(state.engine_throttle_percent-throttle)*math.exp(-dt/settings.engine_response_s)
         direction = unit(state.velocity)
         normal = rotate(state.normal, direction, (state.roll_rate+p)*dt/4)
-        thrust, drag, lift, alpha = self.forces(state.altitude, state.speed, (state.load+n)/2,
-                                               (state.engine_throttle_percent+engine)/2)
+        thrust, drag, lift, alpha = self.forces_at_aoa(state.altitude, state.speed, alpha_mid,
+                                                      (state.engine_throttle_percent+engine)/2)
         acceleration = add(add(scale(direction, (thrust*math.cos(alpha)-drag)/self.mass),
                                scale(normal, (lift+thrust*math.sin(alpha))/self.mass)), (0., 0., -G))
         velocity = add(state.velocity, scale(acceleration, dt))
         normal = rotate(state.normal, direction, (state.roll_rate+p)*dt/2)
         normal = transport(normal, direction, unit(velocity))
-        # Prevent unavailable lift accumulating as hidden integrator state.
-        achieved = lift/(self.mass*G)
-        requested = (state.load+n)/2
-        if abs(achieved-requested) > .01:
-            n = min(n, achieved) if achieved < requested else max(n, achieved)
-        return Motion(state.altitude+(state.velocity[2]+velocity[2])*dt/2, velocity, normal, p, n,
-                      throttle, engine)
+        altitude = state.altitude+(state.velocity[2]+velocity[2])*dt/2
+        load = self.observed_load(altitude, norm(velocity), alpha_end)
+        return Motion(altitude, velocity, normal, p, load, throttle, engine, alpha_end)
 
 
 @dataclass(frozen=True)
@@ -273,10 +330,14 @@ def append_step(steps, action, duration):
     return (*steps, TurnStep(action, duration))
 
 
-def allowed_motion(s, settings, floor):
+def allowed_motion(s, settings, floor, initial_load=None):
+    # A measured initial overload may recover; no trajectory may exceed its
+    # starting excess. Commanded targets still use the configured load limits.
+    low = min(settings.min_load, initial_load) if initial_load is not None else settings.min_load
+    high = max(settings.max_load, initial_load) if initial_load is not None else settings.max_load
     return (floor <= s.altitude <= 20000 and s.speed >= settings.minimum_tas_mps
             and abs(s.velocity[2])/s.speed < .985
-            and settings.min_load-.2 <= s.load <= settings.max_load+.2)
+            and low-.2 <= s.load <= high+.2)
 
 
 @dataclass(frozen=True)
@@ -303,7 +364,7 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
     validate_settings(settings)
     deadline = time.monotonic()+budget_s
     def allowed(s):
-        return allowed_motion(s, settings, floor)
+        return allowed_motion(s, settings, floor, initial.load)
     if not allowed(initial):
         raise ValueError("当前状态超出所设机动限制")
     if goal.remaining(initial.velocity) == 0:
@@ -389,6 +450,8 @@ def nearby(expected, actual, *, coarse=False):
             and abs(expected.speed-actual.speed) <= 25*factor
             and abs(expected.altitude-actual.altitude) <= 150*factor
             and abs(expected.load-actual.load) <= 2.5*factor
+            and (expected.aoa_deg is None or actual.aoa_deg is None
+                 or abs(expected.aoa_deg-actual.aoa_deg) <= 8*factor)
             and abs(expected.throttle_percent-actual.throttle_percent) <= 20*factor
             and abs(expected.roll_rate-actual.roll_rate) <= math.radians(70*factor))
 
@@ -415,7 +478,9 @@ class Execution:
         return Motion(blend(left.altitude, right.altitude), velocity, normal,
                       blend(left.roll_rate, right.roll_rate), blend(left.load, right.load),
                       blend(left.throttle_percent, right.throttle_percent),
-                      blend(left.engine_throttle_percent, right.engine_throttle_percent))
+                      blend(left.engine_throttle_percent, right.engine_throttle_percent),
+                      blend(left.aoa_deg, right.aoa_deg)
+                      if left.aoa_deg is not None and right.aoa_deg is not None else None)
 
     def index(self, elapsed):
         return min(bisect_left(self.ends, elapsed), len(self.steps)-1)
@@ -424,6 +489,7 @@ class Execution:
 def prepare_execution(model, motion, plan, goal, settings, floor):
     """Rebase the selected sequence on the current measured state before display."""
     requested = plan.steps or (TurnStep(plan.action, settings.hold_s),)
+    initial_load = motion.load
     times, states, steps, ends = [0.], [motion], [], []
     elapsed = 0.
     for action, duration in [(None, settings.reaction_s), *((x.action, x.duration_s) for x in requested)]:
@@ -431,7 +497,7 @@ def prepare_execution(model, motion, plan, goal, settings, floor):
         while dt_left > 1e-9:
             dt = min(.15, dt_left)
             motion = model.step(motion, action, dt, settings)
-            if not allowed_motion(motion, settings, floor):
+            if not allowed_motion(motion, settings, floor, initial_load):
                 raise ValueError("动作序列超出所设限制，重新规划")
             elapsed += dt
             dt_left -= dt
@@ -615,8 +681,6 @@ class TurnSession:
                 return self.pause("当前 TAS 低于所设最低速度", "速度不足", keep_previous=True, current=True)
             flight_frame(state)  # Apply the prediction envelope after updating progress.
             load = self.model.observed_load(state.altitude_m, state.tas_mps, state.aoa_deg)
-            if not settings.min_load-.2 <= load <= settings.max_load+.2:
-                return self.follow_without_model(state, settings, "由迎角估计的载荷超出所设机动限制")
             if self.engine_throttle is None:
                 self.engine_throttle = state.throttle_percent
             elif previous_time is not None:
@@ -624,7 +688,7 @@ class TurnSession:
                 self.engine_throttle = state.throttle_percent+(self.engine_throttle-state.throttle_percent)*math.exp(
                     -elapsed/settings.engine_response_s)
             motion = Motion(state.altitude_m, velocity, normal, self.rate, load,
-                            state.throttle_percent, self.engine_throttle)
+                            state.throttle_percent, self.engine_throttle, state.aoa_deg)
             if self.execution is not None:
                 elapsed = state.time_s-self.plan_time
                 expected = self.execution.reference(elapsed)

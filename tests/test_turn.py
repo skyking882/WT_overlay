@@ -11,7 +11,7 @@ from wt_overlay.contracts import FlightState, G, KeyboardTurnSettings, Performan
 from wt_overlay.fm import load_aircraft
 from wt_overlay.turn import (Action, Cancelled, ManeuverModel, Motion, TurnPlan, TurnSession, TurnStep,
                              VelocityGoal, angle, dot, flight_frame, norm, rotate, search_turn,
-                             transport, unit, validate_settings)
+                             transport, unit, validate_settings, allowed_motion, nearby)
 
 
 def sample(t=0, **changes):
@@ -21,7 +21,8 @@ def sample(t=0, **changes):
 
 
 def telemetry_for_motion(model, motion, t):
-    alpha = model.forces(motion.altitude, motion.speed, motion.load)[3]
+    alpha = (math.radians(motion.aoa_deg) if motion.aoa_deg is not None else
+             model.forces(motion.altitude, motion.speed, motion.load)[3])
     v, n = unit(motion.velocity), motion.normal
     forward = tuple(a*math.cos(alpha)+b*math.sin(alpha) for a, b in zip(v, n))
     up = tuple(-a*math.sin(alpha)+b*math.cos(alpha) for a, b in zip(v, n))
@@ -99,6 +100,76 @@ class ManeuverTests(unittest.TestCase):
             self.assertAlmostEqual(point.lift_n, lift)
             self.assertAlmostEqual(point.thrust_n, thrust)
         self.assertLess(self.model.forces(5000, 250, -2)[2], 0)
+
+    def test_postcritical_forces_match_existing_static_polars(self):
+        for aircraft in ("j_16", "j_11b", "su_27sm", "f_15c_golden_eagle"):
+            fm = load_aircraft(aircraft)
+            model = ManeuverModel(fm, 23000)
+            for alpha in (-30, -22, 21.6, 30, 35, 40):
+                with self.subTest(aircraft=aircraft, alpha=alpha):
+                    thrust, drag, lift, angle_rad = model.forces_at_aoa(5000, 250, alpha)
+                    static = fm.evaluate(PerformanceCondition(5000, 250, 23000, aoa_deg=alpha))
+                    self.assertTrue(static.valid)
+                    self.assertAlmostEqual(thrust, static.thrust_n)
+                    self.assertAlmostEqual(drag, static.drag_n)
+                    self.assertAlmostEqual(lift, static.lift_n)
+                    self.assertAlmostEqual(angle_rad, math.radians(alpha))
+                    self.assertAlmostEqual(model.observed_load(5000, 250, alpha), lift/(23000*G))
+        for alpha in (-61, 61, math.nan):
+            with self.assertRaises(ValueError):
+                self.model.forces_at_aoa(5000, 250, alpha)
+
+    def test_equal_lift_roots_keep_their_aoa_branch_and_unattainable_demand_saturates(self):
+        low = self.model.forces(5000, 250, 13, reference_deg=20)
+        high = self.model.forces(5000, 250, 13, reference_deg=60)
+        self.assertLess(math.degrees(low[3]), 35)
+        self.assertGreater(math.degrees(high[3]), 50)
+        self.assertAlmostEqual(low[2]/(23000*G), 13, delta=.001)
+        self.assertAlmostEqual(high[2]/(23000*G), 13, delta=.001)
+        self.assertNotAlmostEqual(low[1], high[1], delta=100)
+        saturated = self.model.target_aoa(5000, 250, 100)
+        self.assertTrue(35 < saturated < 50)
+        peak = self.model.observed_load(5000, 250, saturated)
+        for alpha in (saturated-1, saturated+1):
+            self.assertGreater(peak, self.model.observed_load(5000, 250, alpha))
+
+    def test_postcritical_state_stays_on_branch_and_releases_continuously(self):
+        for alpha in (-45., 50.):
+            with self.subTest(alpha=alpha):
+                start = replace(self.initial, aoa_deg=alpha,
+                    load=self.model.observed_load(5000, 250, alpha))
+                held = self.model.step(start, None, .1, self.settings)
+                self.assertEqual(held.aoa_deg, alpha)
+                self.assertAlmostEqual(held.load, self.model.observed_load(held.altitude, held.speed, alpha))
+                released = self.model.step(start, Action(0, 0), .01, self.settings)
+                self.assertLess(abs(released.aoa_deg), abs(alpha))
+                self.assertLess(abs(released.aoa_deg-alpha), 1)
+                for _ in range(12):
+                    released = self.model.step(released, Action(0, 0), .1, self.settings)
+                self.assertLess(abs(released.aoa_deg), 10)
+        start = replace(self.initial, normal=(1, 0, 0), aoa_deg=50,
+                        load=self.model.observed_load(5000, 250, 50))
+        thrust, drag, _, alpha = self.model.forces_at_aoa(5000, 250, 50)
+        dt = 1e-5
+        moved = self.model.step(start, None, dt, self.settings)
+        self.assertAlmostEqual((moved.energy-start.energy)/dt,
+                              250*(thrust*math.cos(alpha)-drag)/(23000*G), delta=.02)
+
+    def test_pitch_command_can_cross_wing_critical_angle_and_load_excess_is_bounded(self):
+        state = replace(self.initial, velocity=(0, 170, 0), normal=(1, 0, 0), aoa_deg=5,
+                        load=self.model.observed_load(5000, 170, 5))
+        crossed = False
+        for _ in range(12):
+            state = self.model.step(state, Action(0, 1), .1, self.settings)
+            polars, _, _ = self.model._context(state.altitude, state.speed)
+            wing, polar = polars[0]
+            crossed |= state.aoa_deg+wing.incidence_deg > polar.critical_aoa_high
+            self.assertTrue(allowed_motion(state, self.settings, 4500))
+        self.assertTrue(crossed)
+        self.assertFalse(allowed_motion(replace(state, load=10), self.settings, 4500))
+        self.assertTrue(allowed_motion(replace(state, load=10), self.settings, 4500, initial_load=11))
+        self.assertFalse(allowed_motion(replace(state, load=11.3), self.settings, 4500, initial_load=11))
+        self.assertFalse(nearby(replace(state, aoa_deg=25), replace(state, aoa_deg=55)))
 
     def test_roll_and_load_build_up_and_decay_instead_of_jumping(self):
         x = self.model.step(self.initial, Action(1, 1), .1, self.settings)
@@ -363,7 +434,7 @@ class SessionTests(unittest.TestCase):
     def test_model_limit_follows_live_progress_and_missing_pose_withdraws_cue(self):
         self.settings = replace(self.settings, angle_deg=90)
         self.update(0); self.update(.1)
-        result = self.update(.2, heading_deg=20, aoa_deg=35)
+        result = self.update(.2, heading_deg=20, aoa_deg=65)
         self.assertTrue(result.available)
         self.assertEqual(result.phase, "机动跟随")
         self.assertEqual(result.action, "保持机动")
@@ -379,59 +450,48 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(missing.available)
         self.assertEqual(missing.action, "")
 
-    def test_j16_high_aoa_follows_progress_previews_release_and_completes(self):
-        # AoA, bank, pitch, Ny and Vy match the screenshot. Height/speed/heading
-        # are explicit fixture choices because those readings are not in the crop.
+    def test_j16_high_aoa_is_planned_with_measured_angle_including_postcritical_branch(self):
+        # The first AoA, bank, pitch, Ny and Vy match the screenshot. Height,
+        # speed and heading are fixture choices, absent from the crop.
         self.fm = load_aircraft("j_16")
         self.settings = replace(self.settings, angle_deg=90)
-        def maneuver(t, heading):
-            return self.update(t, aircraft_id="j_16", aoa_deg=21.6, aos_deg=.1,
-                pitch_deg=-8.5, roll_deg=-90.3, normal_load_g=8.3,
-                vertical_speed_mps=-30.9, heading_deg=heading)
-        maneuver(0, 0)
-        first = maneuver(.1, 0)
-        self.assertEqual(first.phase, "机动跟随")
-        self.assertIn("共同失速前", first.reason)
-        self.assertIsNone(self.session.future)
-        for i in range(1, 30):
-            result = maneuver(.1+i*.2, i*3)
-            self.assertTrue(result.available)
-            self.assertEqual(result.phase, "机动跟随")
-            self.assertIsNone(result.duration_s)
-            self.assertIsNone(result.step_index)
-            self.assertIsNone(result.target_throttle_percent)
-            if i == 10:
-                self.assertEqual(result.action, "保持机动")
-        self.assertEqual(result.action, "准备松键")
-        self.assertGreater(result.remaining_deg, 0)
-        reached = maneuver(6.1, 99)
-        self.assertEqual(reached.phase, "到达")
-        self.assertEqual(reached.action, "松开机动键")
-        self.assertEqual(reached.remaining_deg, 0)
+        for alpha in (21.6, 35., 50.):
+            with self.subTest(alpha=alpha):
+                self.session.reset()
+                def maneuver(t):
+                    return self.update(t, aircraft_id="j_16", aoa_deg=alpha, aos_deg=.1,
+                        pitch_deg=-8.5, roll_deg=-90.3, normal_load_g=8.3,
+                        vertical_speed_mps=-30.9, heading_deg=0)
+                maneuver(0)
+                first = maneuver(.1)
+                self.assertEqual(first.phase, "计算")
+                future = self.session.future
+                plan = future.result(timeout=4)
+                self.assertEqual(plan.initial.aoa_deg, alpha)
+                self.assertIsNotNone(plan.action)
+                guidance = maneuver(.2)
+                self.assertTrue(guidance.available, guidance.reason)
+                self.assertEqual(guidance.phase, "转向")
+                self.assertIsNotNone(guidance.step_index)
+                self.assertEqual(self.session.execution.states[0].aoa_deg, alpha)
+                self.assertTrue(all(x.aoa_deg is not None for x in self.session.execution.states))
+                # The observed model load is retained even above the command
+                # limit; it is neither clamped to 9 nor replaced by body Ny.
+                initial = self.session.execution.states[0]
+                self.assertAlmostEqual(initial.load, self.session.model.observed_load(5000, 250, alpha))
 
     def test_following_detects_no_progress_and_respects_real_height_speed_limits(self):
         self.settings = replace(self.settings, angle_deg=90)
         for i in range(6):
-            result = self.update(i*.1, aoa_deg=35)
+            result = self.update(i*.1, aoa_deg=65)
         self.assertEqual(result.action, "检查转向")
         self.assertEqual(result.next_action, "转角未增加")
-        self.assertFalse(self.update(.6, aoa_deg=35, tas_mps=90).available)
-        self.assertEqual(self.update(.7, aoa_deg=35, tas_mps=90).phase, "速度不足")
-        self.assertEqual(self.update(.8, aoa_deg=35, altitude_m=4400).phase, "高度不足")
-
-    def test_fm_load_limit_uses_progress_cues_without_reinterpreting_body_ny(self):
-        self.settings = replace(self.settings, angle_deg=90)
-        self.update(0, tas_mps=400, aoa_deg=10, normal_load_g=8)
-        result = self.update(.1, tas_mps=400, aoa_deg=10, normal_load_g=8)
-        self.assertEqual(result.phase, "机动跟随")
-        self.assertIn("载荷超出", result.reason)
-        self.assertTrue(result.available)
-        self.assertGreater(self.session.model.observed_load(5000, 400, 10), self.settings.max_load)
-        self.assertIsNone(result.duration_s)
-        self.assertIsNone(self.session.future)
+        self.assertFalse(self.update(.6, aoa_deg=65, tas_mps=90).available)
+        self.assertEqual(self.update(.7, aoa_deg=65, tas_mps=90).phase, "速度不足")
+        self.assertEqual(self.update(.8, aoa_deg=65, altitude_m=4400).phase, "高度不足")
 
     def test_following_continues_while_model_recovers_and_accepts_a_new_sequence(self):
-        self.update(0, aoa_deg=35); self.update(.1, aoa_deg=35)
+        self.update(0, aoa_deg=65); self.update(.1, aoa_deg=65)
         self.assertTrue(self.session.following)
         # Pending planning must not cancel itself to keep a progress cue visible.
         future = Future()

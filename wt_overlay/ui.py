@@ -413,7 +413,7 @@ class SettingsWindow(QWidget):
             ("min_load", "负向载荷下限 / g", -5, 0, .5, 1),
             ("roll_rate_deg_s", "满滚转参考速度 / °/s", 10, 360, 10, 1),
             ("roll_response_s", "滚转响应时间 / s", .1, 2, .05, 1),
-            ("load_response_s", "载荷响应时间 / s", .1, 3, .1, 1),
+            ("load_response_s", "俯仰响应时间 / s", .1, 3, .1, 1),
             ("reaction_s", "操纵反应时间 / s", 0, 1.5, .05, 1),
             ("hold_s", "每段最短时间 / s", .8, 3, .1, 1),
             ("throttle_rate_percent_s", "油门变化速度 / %/s", 5, 200, 5, 1),
