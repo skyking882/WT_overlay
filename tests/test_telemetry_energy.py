@@ -28,6 +28,10 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(sample.normal_load_g, 4.0)
         self.assertAlmostEqual(sample.thrust_n, 100 * G + 1000)
 
+    def test_8111_kgs_thrust_is_kilogram_force(self):
+        sample = self.sample(**{'thrust 1, kgs': 13881, 'thrust 2, kgs': 13881})
+        self.assertAlmostEqual(sample.thrust_n, 2*13881*G)
+
     def test_ambiguous_thrust_is_not_converted(self):
         self.assertIsNone(self.sample(**{'thrust 1': 100, 'thrust 2, kG': 100}).thrust_n)
 

@@ -71,6 +71,8 @@ class PerformanceCondition:
     gear_fraction: float = 0.0
     airbrake_fraction: float = 0.0
     sweep_fraction: float = 0.0  # Fixed reference wing sweep; not an automatic control law.
+    # Game throttle 0–110 %. When set it replaces throttle/afterburner as the thrust setting.
+    throttle_percent: float | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,7 @@ class KeyboardTurnGuidance:
     progress_stale: bool = False
     estimated_pitch_deg: float | None = None
     estimated_roll_deg: float | None = None
+    airbrake_command: int | None = None
 
 
 @dataclass(frozen=True)
@@ -204,3 +207,6 @@ class OverlaySnapshot:
     turn_settings: KeyboardTurnSettings = field(default_factory=KeyboardTurnSettings)
     turn: KeyboardTurnGuidance | None = None
     attitude_status: str = ""
+    reference_mass_kg: float | None = None  # Mass used by the model this sample.
+    mass_source: str = ""  # 手动 / 遥测 / 估算
+    payload_kg: float = 0.0

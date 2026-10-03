@@ -194,13 +194,36 @@ class ClimbControllerTests(unittest.TestCase):
         self.assertTrue(c.tick(.1).climb.available)
         with patch("wt_overlay.app.time.monotonic", return_value=c._published_at+3):
             self.assertIsNone(c.get_snapshot().climb.path_error_deg)
+        # Fuel burn / throttle moves refresh the plan in the background; the
+        # previous plan keeps guiding until the replacement is ready.
         self.state = replace(self.state, mass_kg=24000)
-        self.assertEqual(c.tick(.2).climb.phase, "计算")
+        self.assertTrue(c.tick(.2).climb.available)
+        c._plan_future.result(timeout=2)
+        self.assertTrue(c.tick(.25).climb.available)
+        self.assertEqual(c._plan.condition.mass_kg, 24000)
+        self.assertIsNone(c._plan_future)
         self.state = replace(self.state, aircraft_id="other")
         self.assertEqual(c.tick(.3).climb.phase, "核对机型")
         self.assertIsNone(c._plan_future)
         self.state = replace(self.state, valid=False)
         self.assertEqual(c.tick(.4).climb.phase, "等待数据")
+
+    def test_throttle_change_replans_with_live_throttle(self):
+        c = self.controller
+        self.state = replace(self.state, throttle_percent=110)
+        c.submit({"action": "climb_enabled", "enabled": True})
+        c.tick(0)
+        c._plan_future.result(timeout=2)
+        self.assertTrue(c.tick(.1).climb.available)
+        self.assertEqual(c._plan.condition.throttle_percent, 110)
+        self.state = replace(self.state, throttle_percent=106)
+        c.tick(.2)
+        self.assertIsNone(c._plan_future)  # Small move inside the afterburner range.
+        self.state = replace(self.state, throttle_percent=100)  # Crosses back to dry thrust.
+        self.assertTrue(c.tick(.3).climb.available)
+        c._plan_future.result(timeout=2)
+        c.tick(.4)
+        self.assertEqual(c._plan.condition.throttle_percent, 100)
 
     def test_target_validation_and_model_failure_remove_old_guidance(self):
         c = self.controller

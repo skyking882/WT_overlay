@@ -135,12 +135,39 @@ class StaticPerformanceTests(unittest.TestCase):
         self.assertEqual(p.aoa_deg, 0)
         self.assertGreater(abs(p.lift_n-self.condition.mass_kg*G), 10000)
 
+    def test_airbrake_params_are_fuselage_extra_cd_not_static_evaluate(self):
+        self.assertTrue(self.model.has_airbrake)
+        self.assertAlmostEqual(self.model.airbrake_cd, .07)
+        self.assertAlmostEqual(self.model.airbrake_speed, .5)
+        fuse = next(part.area_m2 for part in self.model.components if part.name == "FuselagePlane")
+        self.assertAlmostEqual(self.model.airbrake_ref_area_m2, fuse)
+        self.assertAlmostEqual(fuse, 62.)
+        blocked = self.model.evaluate(dataclasses.replace(self.condition, airbrake_fraction=1))
+        self.assertFalse(blocked.valid)
+        self.assertIn("干净构型", blocked.reason)
+
     def test_afterburner_increases_sep_without_changing_aero(self):
         mil = self.model.evaluate(dataclasses.replace(self.condition, afterburner=False))
         wep = self.model.evaluate(self.condition)
         self.assertTrue(mil.valid and wep.valid)
         self.assertGreater(wep.sep_mps, mil.sep_mps)
         self.assertAlmostEqual(wep.drag_n, mil.drag_n)
+
+    def test_live_throttle_follows_mode_table(self):
+        mil = self.model.evaluate(dataclasses.replace(self.condition, afterburner=False))
+        wep = self.model.evaluate(self.condition)
+        at = lambda percent: self.model.evaluate(dataclasses.replace(self.condition, throttle_percent=percent))
+        self.assertAlmostEqual(at(100).thrust_n, mil.thrust_n)
+        self.assertAlmostEqual(at(110).thrust_n, wep.thrust_n)
+        # Su-27SM Mode3: 90 % throttle gives 0.852 of military thrust.
+        self.assertAlmostEqual(at(90).thrust_n, .852*mil.thrust_n)
+        self.assertAlmostEqual(at(105).thrust_n, (mil.thrust_n+wep.thrust_n)/2)
+        # Drag and AoA do not depend on throttle; SEP falls with it.
+        self.assertAlmostEqual(at(90).drag_n, mil.drag_n)
+        self.assertLess(at(90).sep_mps, mil.sep_mps)
+        for bad in (-1, 111, float("nan")):
+            self.assertFalse(at(bad).valid)
+        self.assertEqual(self.model.empty_mass_kg, 16700)
 
     def test_infeasible_lift_returns_invalid(self):
         p = self.model.evaluate(dataclasses.replace(self.condition, tas_mps=20, load_factor=9))

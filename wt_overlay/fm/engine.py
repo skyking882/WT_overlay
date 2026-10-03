@@ -1,6 +1,7 @@
 """WTAPC jet thrust adaptation; see THIRD_PARTY_NOTICES.md.
 
-Only steady full military / full WEP operation is supported. The upstream
+Full military / full WEP follow WTAPC. Partial throttle is a project
+interpolation of the FM Mode table (see thrust_at_throttle). The upstream
 calculator itself warns jet thrust can be incorrect; no game-validation claim.
 """
 from __future__ import annotations
@@ -53,14 +54,17 @@ class JetEngine:
                 modes.append((finite(value.get("Throttle"), key+" throttle"),
                               finite(value.get("ThrustMult"), key+" multiplier")))
         military = [x for x in modes if x[0] <= 1]
-        wep = [x[1] for x in modes if x[0] > 1]
+        wep = [x for x in modes if x[0] > 1]
         if not military or max(military)[0] != 1:
             raise ValueError("explicit full military mode required")
         self.military = max(military)[1]
         self.has_wep = bool(wep)
-        self.wep = max(wep) if wep else self.military
+        # Full WEP is the strongest mode; its throttle ends the afterburner ramp.
+        self.wep_throttle, self.wep = max(wep, key=lambda x: x[1]) if wep else (1., self.military)
         if min(self.military, self.wep) <= 0:
             raise ValueError("invalid thrust mode multiplier")
+        # Reverse-thrust modes (negative throttle) are outside forward flight.
+        self.dry_modes = sorted(x for x in military if x[0] >= 0)
 
     def thrust_n(self, altitude_m: float, tas_mps: float, afterburner: bool) -> float:
         h = finite(altitude_m, "altitude")
@@ -81,3 +85,35 @@ class JetEngine:
         else:
             thrust *= self.military
         return thrust*G
+
+    def military_fraction(self, throttle_percent: float) -> float:
+        """Mode ThrustMult at a dry throttle, relative to full military (piecewise linear)."""
+        t = finite(throttle_percent, "throttle")/100
+        modes = self.dry_modes
+        if not modes[0][0] <= t <= 1:
+            raise ValueError("油门超出 FM 油门模式表；不外推")
+        i = min(max(bisect_right([x[0] for x in modes], t)-1, 0), len(modes)-2)
+        (a, fa), (b, fb) = modes[i], modes[i+1]
+        return (fa+(fb-fa)*(t-a)/(b-a))/self.military
+
+    def blend(self, military_n: float, maximum_n: float, throttle_percent: float) -> float:
+        """Steady thrust at a game throttle percent from full military / full WEP thrust.
+
+        Dry range follows the Mode table; above 100 % thrust ramps linearly to
+        full WEP at its mode throttle. Neither law is validated in game, and
+        spool transients are not modelled.
+        """
+        t = finite(throttle_percent, "throttle")
+        if not 0 <= t <= 110:
+            raise ValueError("油门须在 0–110% 之间")
+        if t <= 100:
+            return military_n*self.military_fraction(t)
+        if not self.has_wep:
+            return military_n
+        return military_n+(maximum_n-military_n)*min(1., (t-100)/(100*self.wep_throttle-100))
+
+    def thrust_at_throttle(self, altitude_m: float, tas_mps: float, throttle_percent: float) -> float:
+        military = self.thrust_n(altitude_m, tas_mps, False)
+        if throttle_percent <= 100 or not self.has_wep:
+            return self.blend(military, military, throttle_percent)
+        return self.blend(military, self.thrust_n(altitude_m, tas_mps, True), throttle_percent)

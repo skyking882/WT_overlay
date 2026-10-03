@@ -25,7 +25,8 @@ LIMITATIONS = (
     "仅干净构型；不计武器/挂架、损伤、改装、起落架、襟翼、减速板及额外整机阻力项。",
     "不求力矩配平；未提供迎角时仅求 L = n·m·g，n 定义为 L/W；未施加完整法向运动平衡。",
     "推力沿机身纵轴近似，忽略喷口安装偏角；WTAPC 推力算法作者提示喷气推力可能不准确。",
-    "仅稳定全军推/全加力；无部分油门、发动机瞬态、操纵限制、力矩或三维机动预测。",
+    "部分油门按 FM 油门模式表插值推力倍率，加力段在全军推与全加力间线性过渡；未经游戏验证，不含发动机转速瞬态。",
+    "无操纵限制、力矩或三维机动预测。",
 )
 
 
@@ -91,6 +92,12 @@ class StaticModel:
             raise ValueError("no forward-flight jet engines")
         self.engines = tuple(engines)
         self.engine, self.engine_count = engines[0], len(engines)
+        mass = raw.get("Mass") or {}
+        empty = mass.get("EmptyMass")
+        # Airframe only: fuel and loadout are added from telemetry / settings.
+        self.empty_mass_kg = float(empty) if isinstance(empty, (int, float)) and not isinstance(empty, bool) and isfinite(empty) and empty > 0 else None
+        self.has_airbrake, self.airbrake_cd, self.airbrake_speed, self.airbrake_ref_area_m2 = (
+            _airbrake_params(raw, raw["Aerodynamics"], self.components))
 
     def matches_aircraft(self, identity: str | None) -> bool:
         return bool(identity and any(aircraft_key(identity) == aircraft_key(x) for x in self.aircraft_ids))
@@ -126,7 +133,9 @@ class StaticModel:
             if type(c.afterburner) is not bool:
                 raise ValueError("afterburner must be boolean")
             if c.throttle != 1.:
-                raise ValueError("部分油门未实现；仅支持 throttle=1 的全军推/全加力")
+                raise ValueError("部分油门请用 throttle_percent 指定；throttle 仅支持 1")
+            if c.throttle_percent is not None:
+                finite(c.throttle_percent, "throttle_percent")
             if not 0 <= c.sweep_fraction <= 1:
                 raise ValueError("后掠设置必须在 0–1 之间")
             if any(getattr(c, k) != 0 for k in ("flap_fraction", "gear_fraction", "airbrake_fraction")):
@@ -135,7 +144,11 @@ class StaticModel:
             mach = c.tas_mps/sound_speed
             if mach > 2.35:
                 raise ValueError("超过此研究模型 Mach 2.35 查询边界")
-            thrust = sum(engine.thrust_n(c.altitude_m, c.tas_mps, c.afterburner) for engine in self.engines)
+            if c.throttle_percent is None:
+                thrust = sum(engine.thrust_n(c.altitude_m, c.tas_mps, c.afterburner) for engine in self.engines)
+            else:
+                thrust = sum(engine.thrust_at_throttle(c.altitude_m, c.tas_mps, c.throttle_percent)
+                             for engine in self.engines)
             polars = [(part, part.properties.at_mach(mach)) for part in self.components_at_sweep(c.sweep_fraction)]
             q = .5*density*c.tas_mps**2
 
@@ -191,6 +204,28 @@ class StaticModel:
             return PerformancePoint(c, True, thrust, drag, lift, aoa, sep, notes=tuple(notes))
         except (ValueError, OverflowError) as exc:
             return PerformancePoint(condition, False, reason=str(exc), notes=LIMITATIONS)
+
+
+def _airbrake_params(raw: dict, aero: dict, components: tuple[Component, ...]):
+    """Extra parasitic Cd on fuselage area; not polar CdMin and not a lift surface.
+
+    AirbrakesShift (focus) and AirbrakeToThrust are unused: the former is a moment,
+    and catalog thrust couplings are zero.
+    """
+    has = bool((raw.get("AvailableControls") or {}).get("hasAirbrake"))
+    cd = aero.get("AirbrakeCd", 0.)
+    cd = finite(cd, "AirbrakeCd") if cd else 0.
+    if cd < 0:
+        raise ValueError("AirbrakeCd must be nonnegative")
+    speed = raw.get("AirBrakeSpeed", .5)
+    if isinstance(speed, list):
+        speed = speed[0] if speed else .5
+    speed = finite(speed, "AirBrakeSpeed")
+    if speed < 0:
+        raise ValueError("AirBrakeSpeed must be nonnegative")
+    fuse = next((part.area_m2 for part in components if part.name == "FuselagePlane"),
+                components[0].area_m2)
+    return has, cd, speed, fuse
 
 
 def _component(name: str, block: dict) -> Component:

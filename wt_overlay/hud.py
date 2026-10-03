@@ -33,9 +33,9 @@ INDICATORS = (
     Indicator("kinetic", "energy", "动能变化率", "m/s", "TAS²/(2g) 的变化率；与爬升率相加等于 SEP。"),
     Indicator("acceleration", "energy", "加速度", "m/s²", "TAS 的平滑变化率；不是过载或完整三维加速度。"),
     Indicator("fuel", "engine", "燃油", "kg", "8111 燃油质量，不等于飞机总质量。"),
-    Indicator("thrust", "engine", "推力", "kN", "8111 明确标记 N 或 kgf 的各发动机推力之和；缺失或其他单位不猜测。"),
-    Indicator("throttle", "engine", "油门 1", "%", "8111 第一台发动机油门。", False),
-    Indicator("mass", "engine", "总质量", "kg", "只显示明确的 mass, kg 遥测字段；不使用手动参考质量代替。", False),
+    Indicator("thrust", "engine", "推力", "kN", "8111 明确标记 N、kgf 或 kgs（即 kgf）的各发动机推力之和；缺失或其他单位不猜测。"),
+    Indicator("throttle", "engine", "油门 1", "%", "8111 第一台发动机油门；参考 SEP 与爬升规划按此油门计算。"),
+    Indicator("mass", "engine", "总质量", "kg", "模型使用的总质量：手动 > 遥测 mass, kg > FM 空重 + 燃油 + 挂载估算（标“估”）。"),
     Indicator("reference_sep", "reference", "参考 SEP", "m/s", "当前速度下的静态模型值：同高、1g、干净构型，未配平、未经游戏验证。"),
     Indicator("reference_tas", "reference", "参考峰值 TAS", "km/h", "局部采样中最高 SEP 对应的真空速，不是全程最优爬升速度。"),
     Indicator("reference_peak", "reference", "参考峰值 SEP", "m/s", "局部采样的最高静态 SEP，不代表当前机动的可用 SEP。"),
@@ -86,7 +86,9 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
         "vy": flight("vertical_speed_mps", 1, True), "ias": flight("ias_mps", 0, scale=3.6),
         "altitude": flight("altitude_m", 0), "mach": flight("mach", 2),
         "fuel": flight("fuel_kg", 0), "thrust": flight("thrust_n", 1, scale=0.001),
-        "throttle": flight("throttle_percent", 0), "mass": flight("mass_kg", 0),
+        "throttle": flight("throttle_percent", 0),
+        "mass": number(snapshot.reference_mass_kg if valid else None)
+                + (" 估" if valid and snapshot.mass_source == "估算" else ""),
         "sep": number(sep, 1, True),
         "energy_height": number(energy.energy_height_m if valid and energy else None),
         "climb": number(energy.climb_mps if ready else None, 1, True),
@@ -131,6 +133,8 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
                 f" {number(turn.throttle_percent, 0)} → {number(turn.target_throttle_percent, 0)}%")
                 if usable and turn.throttle_percent is not None and turn.target_throttle_percent is not None else
                 f"{number(turn.throttle_percent, 0)}%" if usable and turn.throttle_percent is not None else "—"),
+            *((HudRow("减速板", "展开" if turn.airbrake_command else "收起"),)
+              if usable and turn.airbrake_command is not None else ()),
             HudRow("目标转角", number(snapshot.turn_settings.angle_deg), "°"),
             HudRow("最近转角" if stale_progress else "已转角度", number(turn.turned_deg if turn else None, 1), "°"),
             HudRow("最近余角" if stale_progress else "剩余角度", number(turn.remaining_deg if turn else None, 1), "°"),
@@ -141,7 +145,7 @@ def contents(snapshot: OverlaySnapshot, enabled=None) -> dict[str, HudContent]:
                 f"俯仰 {number(turn.estimated_pitch_deg, 1, True)}°／滚转 {number(turn.estimated_roll_deg, 1, True)}°"), rows[-1])
         if compact:
             rows = tuple(row for row in rows if row.label != "参考用时" and
-                         not (turn.phase == "到达" and row.label in ("下一步", "油门")))
+                         not (turn.phase == "到达" and row.label in ("下一步", "油门", "减速板")))
     result["turn"] = HudContent("转向引导", rows, demo)
     return result
 

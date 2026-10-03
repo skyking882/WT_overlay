@@ -60,18 +60,19 @@ def parse_telemetry(state: Mapping, indicators: Mapping, time_s: float) -> Fligh
     ias = _number(state, 'IAS, km/h')
     fuel = _number(state, 'Mfuel, kg')
     mass = _number(state, 'mass, kg')
-    # A unit must be explicit. A bare "thrust" or ambiguous "kG" is not converted.
+    # A unit must be explicit. A bare "thrust" or ambiguous "kG" is not converted;
+    # "kgs" is the 8111 label for kilogram-force (e.g. "thrust 1, kgs").
     thrusts: list[float] = []
     for key in state:
         if not isinstance(key, str):
             continue
-        match = re.fullmatch(r'thrust \d+, (N|kgf)', key)
+        match = re.fullmatch(r'thrust \d+, (N|kgf|kgs)', key)
         if match:
             value = _number(state, key)
             if value is None:
                 thrusts = []
                 break
-            thrusts.append(value * (G if match[1] == 'kgf' else 1.0))
+            thrusts.append(value * (1.0 if match[1] == 'N' else G))
     try:
         thrust = math.fsum(thrusts) if thrusts else None
     except OverflowError:

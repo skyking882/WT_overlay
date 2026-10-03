@@ -40,6 +40,11 @@ class HudDataTests(unittest.TestCase):
         self.assertEqual(rows[1].value, "右滚＋拉杆")
         self.assertEqual(rows[-1].value, "4.0")
         self.assertEqual(next(row.value for row in rows if row.label == "油门"), "收油 110 → 80%")
+        self.assertFalse(any(row.label == "减速板" for row in rows))
+        with_brake = replace(snapshot, turn=replace(snapshot.turn, airbrake_command=1))
+        self.assertEqual(next(row.value for row in contents(with_brake)["turn"].rows if row.label == "减速板"), "展开")
+        retracted = replace(snapshot, turn=replace(snapshot.turn, airbrake_command=0))
+        self.assertEqual(next(row.value for row in contents(retracted)["turn"].rows if row.label == "减速板"), "收起")
         self.assertNotIn("模型", " ".join(row.value for row in rows))
         stale = replace(snapshot, state=replace(snapshot.state, valid=False))
         rows = contents(stale)["turn"].rows

@@ -44,7 +44,9 @@ def snapshot_json(snapshot) -> dict:
         "reference_sep_mps": current.sep_mps if current and current.valid else None,
         "reference_best_tas_mps": best.condition.tas_mps if best else None,
         "reference_best_sep_mps": best.sep_mps if best else None,
-        "reference_mass_kg": current.condition.mass_kg if current else snapshot.mass_override_kg,
+        "reference_mass_kg": current.condition.mass_kg if current else snapshot.reference_mass_kg,
+        "reference_mass_source": snapshot.mass_source or None,
+        "reference_throttle_percent": current.condition.throttle_percent if current else None,
         "reference_afterburner": snapshot.afterburner,
         "reference_scope": "same-altitude 1g clean; untrimmed and not game-validated",
         "reference_reason": advice.reason if advice else "FM 未加载",
@@ -67,7 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     selection.add_argument("--aircraft", help="机型 ID；留空则按 8111 自动选择")
     parser.add_argument("--sweep", type=float, default=0., help="固定参考后掠百分比，0–100；仅变后掠翼机型")
     parser.add_argument("--mass-kg", type=_positive, help="静态模型参考总质量（kg）")
-    parser.add_argument("--military", action="store_true", help="静态模型用全军推；默认全加力")
+    parser.add_argument("--payload-kg", type=float, default=0., help="估算总质量时加上的挂载与弹药质量（kg）")
+    parser.add_argument("--military", action="store_true", help="无油门读数时静态模型用全军推；默认全加力")
     parser.add_argument("--headless", action="store_true", help="输出 JSON 行，不创建窗口")
     parser.add_argument("--duration", type=_positive, default=5.0, help="无窗口运行秒数，默认 5")
     parser.add_argument("--climb-altitude", type=_positive, help="开启爬升引导，目标高度（m）")
@@ -84,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         controller = OverlayController(mode="demo" if args.demo else "live", base_url=args.url,
                                        model_path=args.model, mass_kg=args.mass_kg,
                                        afterburner=not args.military, aircraft=args.aircraft,
-                                       sweep_fraction=args.sweep/100)
+                                       sweep_fraction=args.sweep/100, payload_kg=args.payload_kg)
         if args.climb_altitude is not None:
             controller.submit({"action": "climb_target", "altitude_m": args.climb_altitude,
                                "minimum_tas_mps": args.arrival_speed_kmh/3.6 if args.arrival_speed_kmh else None})

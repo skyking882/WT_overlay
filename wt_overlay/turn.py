@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass, replace
-from functools import lru_cache
 import math
 from threading import Event
 import time
@@ -18,8 +17,13 @@ import time
 from .climb import valid_number
 from .contracts import G, KeyboardTurnGuidance, KeyboardTurnSettings
 from .fm import atmosphere
+from .fm.aero_table import AeroForceTable, QUERY_AOA_MAX, QUERY_AOA_MIN
 
-MIN_AOA_DEG, MAX_AOA_DEG = -60., 60.  # Forward-flight query bounds, not stall angles.
+MIN_AOA_DEG, MAX_AOA_DEG = QUERY_AOA_MIN, QUERY_AOA_MAX  # Forward-flight query bounds, not stall angles.
+COMMIT_LOCK_S = .25
+REPLACE_REMAINING_DEG = 2.
+STALE_RESULT_S = 2.5
+REPLAN_S = .8
 
 
 def dot(a, b):
@@ -90,6 +94,7 @@ class Motion:
     throttle_percent: float = 110.
     engine_throttle_percent: float = 110.
     aoa_deg: float | None = None  # Live states always carry AoA, including postcritical branches.
+    airbrake_fraction: float = 0.  # Internal opening; 8111 does not report it.
 
     @property
     def speed(self):
@@ -158,6 +163,7 @@ class Action:
     roll: int
     pitch: int
     throttle: int = 0
+    airbrake: int = 0  # 0 retract / hold in, 1 deploy; player switch, not a polar axis.
 
     @property
     def label(self):
@@ -171,7 +177,7 @@ ACTIONS = tuple(Action(roll, pitch, throttle) for throttle in (0, -1, 1)
 
 
 class ManeuverModel:
-    """Full static polars at continuous AoA; signed-load targets approximate keys."""
+    """Full static polars at continuous AoA via a Mach–AoA L/q, D/q table."""
     def __init__(self, model, mass, afterburner=True, sweep=0.):
         if not valid_number(mass) or mass <= 0:
             raise ValueError("需要参考总质量")
@@ -179,107 +185,81 @@ class ManeuverModel:
             raise ValueError("机型不支持转向参考")
         self.model, self.mass, self.afterburner, self.sweep = model, mass, afterburner, sweep
         self.max_throttle = 110. if afterburner and any(e.has_wep for e in model.engines) else 100.
-        self._context = lru_cache(maxsize=128)(self._make_context)
-        self._curve = lru_cache(maxsize=128)(self._make_curve)
+        self._aero = AeroForceTable.from_aircraft(model, sweep)
+        self._aoa_cache = {}
+        self._thrust_cache = {}
+        has = bool(getattr(model, "has_airbrake", False))
+        cd = getattr(model, "airbrake_cd", 0.) or 0.
+        area = getattr(model, "airbrake_ref_area_m2", 0.) or 0.
+        self.airbrake_dq = area*cd if has and cd > 0 else 0.
+        speed = getattr(model, "airbrake_speed", .5)
+        self.airbrake_speed = speed if valid_number(speed) and speed >= 0 else .5
 
-    def _make_context(self, altitude, speed):
+    def _atmosphere(self, altitude, speed):
         rho, sound = atmosphere(altitude)
         if speed < 50 or speed/sound > 2.35:
             raise ValueError("超出模型范围")
-        polars = [(p, p.properties.at_mach(speed/sound)) for p in self.model.components_at_sweep(self.sweep)]
-        military = sum(e.thrust_n(altitude, speed, False) for e in self.model.engines)
-        maximum = sum(e.thrust_n(altitude, speed, True) for e in self.model.engines)
-        return polars, .5*rho*speed*speed, (military, maximum)
+        return .5*rho*speed*speed, speed/sound
 
-    @staticmethod
-    def _lift_area(polars, alpha):
-        return sum(part.area_m2*polar.cl(alpha+part.incidence_deg)*polar.cl_kq
-                   for part, polar in polars if not part.vertical)
-
-    def _make_curve(self, altitude, speed):
-        polars, _, _ = self._context(altitude, speed)
-        angles = set(range(int(MIN_AOA_DEG), int(MAX_AOA_DEG)+1, 2))
-        # Include polar joins as well as the grid so narrow component features
-        # cannot disappear merely because a critical angle lies between samples.
-        for part, p in polars:
-            if part.vertical:
-                continue
-            for a in (p.linear_low, p.linear_high, p.critical_aoa_low, p.critical_aoa_high,
-                      p.critical_aoa_low-p.parab_angle, p.critical_aoa_high+p.parab_angle,
-                      -p.max_distance, p.max_distance, -40., 40.):
-                a -= part.incidence_deg
-                if MIN_AOA_DEG <= a <= MAX_AOA_DEG:
-                    angles.add(a)
-        return tuple((a, self._lift_area(polars, a)) for a in sorted(angles))
+    def _thrusts(self, altitude, speed):
+        key = (int(altitude), int(speed*2))
+        cached = self._thrust_cache.get(key)
+        if cached is not None:
+            return cached
+        thrusts = tuple((e, e.thrust_n(altitude, speed, False), e.thrust_n(altitude, speed, True))
+                        for e in self.model.engines)
+        if len(self._thrust_cache) > 4096:
+            self._thrust_cache.clear()
+        self._thrust_cache[key] = thrusts
+        return thrusts
 
     def target_aoa(self, altitude, speed, load, reference_deg=0.):
         """Bracket each sampled crossing; never bisect the entire nonmonotone polar."""
-        polars, q, _ = self._context(altitude, speed)
-        target = load*self.mass*G/q
-        curve = self._curve(altitude, speed)
-        roots = []
-        for (a, la), (b, lb) in zip(curve, curve[1:]):
-            fa, fb = la-target, lb-target
-            if fa == 0:
-                roots.append(a)
-            if fb == 0:
-                roots.append(b)
-            if fa*fb < 0:
-                for _ in range(12):
-                    mid = (a+b)/2
-                    fm = self._lift_area(polars, mid)-target
-                    if fa*fm <= 0:
-                        b = mid
-                    else:
-                        a, fa = mid, fm
-                roots.append((a+b)/2)
-        if roots:
-            return min(roots, key=lambda a: (abs(a-reference_deg), abs(a)))
-        # Unattainable demand saturates at the closest sampled extremum, with
-        # local refinement. This is a bounded polar search, not a global proof.
-        i = min(range(len(curve)), key=lambda i: (abs(curve[i][1]-target), abs(curve[i][0]-reference_deg)))
-        a, b = curve[max(0, i-1)][0], curve[min(len(curve)-1, i+1)][0]
-        for _ in range(16):
-            left, right = (2*a+b)/3, (a+2*b)/3
-            if abs(self._lift_area(polars, left)-target) < abs(self._lift_area(polars, right)-target):
-                b = right
-            else:
-                a = left
-        return min((curve[i][0], (a+b)/2), key=lambda a: abs(self._lift_area(polars, a)-target))
-
-    @staticmethod
-    def _forces(polars, dynamic_pressure, alpha):
-        lift = drag = 0.
-        for part, polar in polars:
-            effective = part.incidence_deg if part.vertical else alpha+part.incidence_deg
-            cd, cl = polar.coefficients(effective)
-            drag += dynamic_pressure*part.area_m2*cd
-            if not part.vertical:
-                lift += dynamic_pressure*part.area_m2*cl
-        return lift, drag
+        q, mach = self._atmosphere(altitude, speed)
+        key = (int(mach*500), int(q), round(load, 2), int(reference_deg*2))
+        cached = self._aoa_cache.get(key)
+        if cached is not None:
+            return cached
+        alpha = self._aero.target_aoa(mach, load*self.mass*G/q, reference_deg)
+        if len(self._aoa_cache) > 4096:
+            self._aoa_cache.clear()
+        self._aoa_cache[key] = alpha
+        return alpha
 
     def observed_load(self, altitude, speed, alpha):
         if not valid_number(alpha) or not MIN_AOA_DEG <= alpha <= MAX_AOA_DEG:
             raise ValueError("迎角超出转向计算范围 ±60°")
-        polars, q, _ = self._context(altitude, speed)
-        return q*self._lift_area(polars, alpha)/(self.mass*G)
+        q, mach = self._atmosphere(altitude, speed)
+        return q*self._aero.lookup(mach, alpha)[0]/(self.mass*G)
 
-    def forces_at_aoa(self, altitude, speed, alpha, throttle_percent=None):
+    def forces_at_aoa(self, altitude, speed, alpha, throttle_percent=None, airbrake_fraction=0.):
         if not valid_number(alpha) or not MIN_AOA_DEG <= alpha <= MAX_AOA_DEG:
             raise ValueError("迎角超出转向计算范围 ±60°")
-        polars, q, thrusts = self._context(altitude, speed)
+        q, mach = self._atmosphere(altitude, speed)
         throttle = self.max_throttle if throttle_percent is None else throttle_percent
-        military, maximum = thrusts
-        # Reference interpolation only: the raw FM supplies full-thrust tables,
-        # not a verified partial-throttle/spool law. Leave static SEP untouched.
-        thrust = (military*max(0., throttle)/100 if throttle <= 100 else
-                  military+(maximum-military)*min(1., (throttle-100)/10))
-        lift, drag = self._forces(polars, q, alpha)
-        return thrust, drag, lift, math.radians(alpha)
+        # Same steady throttle law as static SEP; spool lag is applied by the caller.
+        thrust = sum(engine.blend(military, maximum, min(110., max(0., throttle)))
+                     for engine, military, maximum in self._thrusts(altitude, speed))
+        lift_q, drag_q = self._aero.lookup(mach, alpha)
+        opening = 0. if not valid_number(airbrake_fraction) else min(1., max(0., airbrake_fraction))
+        drag_q += self.airbrake_dq*opening
+        return thrust, drag_q*q, lift_q*q, math.radians(alpha)
 
-    def forces(self, altitude, speed, load, throttle_percent=None, *, reference_deg=0.):
+    def forces(self, altitude, speed, load, throttle_percent=None, *, reference_deg=0.,
+               airbrake_fraction=0.):
         alpha = self.target_aoa(altitude, speed, load, reference_deg)
-        return self.forces_at_aoa(altitude, speed, alpha, throttle_percent)
+        return self.forces_at_aoa(altitude, speed, alpha, throttle_percent, airbrake_fraction)
+
+    def _airbrake_opening(self, current, action, dt):
+        if action is None or self.airbrake_dq <= 0:
+            return current
+        target = 1. if action.airbrake else 0.
+        if self.airbrake_speed <= 0:
+            return target
+        step = self.airbrake_speed*dt
+        if target > current:
+            return min(target, current+step)
+        return max(target, current-step)
 
     def step(self, state: Motion, action: Action | None, dt, settings):
         # None is the human response interval: continue the observed roll/AoA.
@@ -304,10 +284,13 @@ class ManeuverModel:
             demanded = throttle+action.throttle*settings.throttle_rate_percent_s*dt
             throttle = max(0., demanded) if action.throttle < 0 else min(self.max_throttle, demanded)
         engine = throttle+(state.engine_throttle_percent-throttle)*math.exp(-dt/settings.engine_response_s)
+        opening0 = state.airbrake_fraction
+        opening = self._airbrake_opening(opening0, action, dt)
         direction = unit(state.velocity)
         normal = rotate(state.normal, direction, (state.roll_rate+p)*dt/4)
         thrust, drag, lift, alpha = self.forces_at_aoa(state.altitude, state.speed, alpha_mid,
-                                                      (state.engine_throttle_percent+engine)/2)
+                                                      (state.engine_throttle_percent+engine)/2,
+                                                      (opening0+opening)/2)
         acceleration = add(add(scale(direction, (thrust*math.cos(alpha)-drag)/self.mass),
                                scale(normal, (lift+thrust*math.sin(alpha))/self.mass)), (0., 0., -G))
         velocity = add(state.velocity, scale(acceleration, dt))
@@ -315,7 +298,7 @@ class ManeuverModel:
         normal = transport(normal, direction, unit(velocity))
         altitude = state.altitude+(state.velocity[2]+velocity[2])*dt/2
         load = self.observed_load(altitude, norm(velocity), alpha_end)
-        return Motion(altitude, velocity, normal, p, load, throttle, engine, alpha_end)
+        return Motion(altitude, velocity, normal, p, load, throttle, engine, alpha_end, opening)
 
 
 @dataclass(frozen=True)
@@ -355,7 +338,76 @@ class Cancelled(Exception):
     pass
 
 
-def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=.8, beam_width=27):
+def _replay_steps(model, initial, start, delay, steps, goal, settings, allowed, expansions):
+    state, elapsed = start, delay
+    built = ()
+    for step in steps:
+        t = 0.
+        while t < step.duration_s-1e-9:
+            dt = min(.15, step.duration_s-t)
+            try:
+                state = model.step(state, step.action, dt, settings)
+            except (ValueError, OverflowError):
+                return None
+            if not allowed(state):
+                return None
+            t += dt
+            elapsed += dt
+            if goal.remaining(state.velocity) == 0:
+                done = append_step(built, step.action, t)
+                return TurnPlan(initial, done[0].action, elapsed, state.energy-initial.energy,
+                                True, expansions, done), 0.
+        built = append_step(built, step.action, step.duration_s)
+    remaining = goal.remaining(state.velocity)
+    return TurnPlan(initial, built[0].action if built else None,
+                    elapsed if remaining == 0 else None, state.energy-initial.energy,
+                    remaining == 0, expansions, built), remaining
+
+
+def _airbrake_schedules(steps, lock_first=False):
+    if not steps:
+        return []
+    if lock_first:
+        if len(steps) < 2:
+            return []
+        first, second, *rest = steps
+        flipped = replace(second.action, airbrake=0 if second.action.airbrake else 1)
+        return [(first, TurnStep(flipped, second.duration_s), *rest)]
+    first = steps[0]
+    variants = [(TurnStep(replace(first.action, airbrake=1), first.duration_s), *steps[1:])]
+    if len(steps) >= 2:
+        second = steps[1]
+        variants.append((first, TurnStep(replace(second.action, airbrake=1), second.duration_s), *steps[2:]))
+        variants.append((TurnStep(replace(first.action, airbrake=1), first.duration_s),
+                         TurnStep(replace(second.action, airbrake=1), second.duration_s), *steps[2:]))
+    return variants
+
+
+def _prefer_airbrake(model, initial, start, delay, plan, goal, settings, allowed, expansions,
+                     lock_first=False):
+    if model.airbrake_dq <= 0 or plan.action is None:
+        return plan
+    steps = plan.steps or (TurnStep(plan.action, settings.hold_s),)
+    baseline = _replay_steps(model, initial, start, delay, steps, goal, settings, allowed, expansions)
+    if baseline is None:
+        return plan
+    best, remaining = baseline
+    best_key = (0 if best.reached else 1, best.duration_s if best.reached else remaining,
+                -(best.energy_change_m or 0))
+    for variant in _airbrake_schedules(steps, lock_first):
+        replayed = _replay_steps(model, initial, start, delay, variant, goal, settings, allowed, expansions)
+        if replayed is None:
+            continue
+        cand, rem = replayed
+        key = (0 if cand.reached else 1, cand.duration_s if cand.reached else rem,
+               -(cand.energy_change_m or 0))
+        if key < best_key:
+            best, best_key = cand, key
+    return best
+
+
+def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=.8, beam_width=27,
+                skip_reaction=False, commit=None):
     """Bounded beam search over held actions; no global-optimality guarantee.
 
     Keeps different initial actions alive so early rolling/unloading is not
@@ -369,20 +421,55 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
         raise ValueError("当前状态超出所设机动限制")
     if goal.remaining(initial.velocity) == 0:
         return TurnPlan(initial, None, 0., 0., True)
-    state, delay = initial, 0.
-    while delay < settings.reaction_s-1e-9:
-        if cancel is not None and cancel.is_set():
-            raise Cancelled
-        dt = min(.1, settings.reaction_s-delay)
-        state = model.step(state, None, dt, settings)
-        if not allowed(state):
-            return TurnPlan(initial, None, None, None, False)
-        delay += dt
-    if goal.remaining(state.velocity) == 0:
-        return TurnPlan(initial, Action(0, 0), delay, state.energy-initial.energy, True)
-    beam = [(state, ())]
+    state, delay, expansions = initial, 0., 0
+    if not skip_reaction:
+        while delay < settings.reaction_s-1e-9:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled
+            dt = min(.1, settings.reaction_s-delay)
+            state = model.step(state, None, dt, settings)
+            if not allowed(state):
+                return TurnPlan(initial, None, None, None, False)
+            delay += dt
+        if goal.remaining(state.velocity) == 0:
+            return TurnPlan(initial, Action(0, 0), delay, state.energy-initial.energy, True)
+    start = state
+    if commit is not None:
+        t, trial, held = 0., start, True
+        while t < commit.duration_s-1e-9:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled
+            if time.monotonic() >= deadline:
+                return TurnPlan(initial, commit.action, None, None, False, expansions, (commit,))
+            dt = min(.15, commit.duration_s-t)
+            try:
+                trial = model.step(trial, commit.action, dt, settings)
+            except (ValueError, OverflowError):
+                held = False
+                break
+            expansions += 1
+            if not allowed(trial):
+                held = False
+                break
+            t += dt
+            if goal.remaining(trial.velocity) == 0:
+                done = (TurnStep(commit.action, t),)
+                return TurnPlan(initial, commit.action, delay+t, trial.energy-initial.energy,
+                                True, expansions, done)
+        if held:
+            start, delay = trial, delay+commit.duration_s
+            beam = [(start, (commit,))]
+        else:
+            commit = None
+            beam = [(start, ())]
+    else:
+        beam = [(start, ())]
+    reacted = start
     best = None
-    elapsed, expansions = delay, 0
+    elapsed = delay
+    def finish(plan):
+        return _prefer_airbrake(model, initial, reacted, delay, plan, goal, settings, allowed, expansions,
+                                lock_first=commit is not None)
     while elapsed < settings.horizon_s-1e-9:
         candidates, reached = [], []
         segment = min(settings.hold_s, settings.horizon_s-elapsed)
@@ -397,8 +484,8 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
                     raise Cancelled
                 if time.monotonic() >= deadline:
                     if reached:
-                        return min(reached, key=lambda p: (p.duration_s, -p.energy_change_m))
-                    return best or TurnPlan(initial, None, None, None, False, expansions)
+                        return finish(min(reached, key=lambda p: (p.duration_s, -p.energy_change_m)))
+                    return finish(best or TurnPlan(initial, None, None, None, False, expansions))
                 trial, t = current, 0.
                 command = steps[0].action if steps else action
                 feasible = True
@@ -424,7 +511,7 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
                 if feasible:
                     candidates.append((trial, append_step(steps, action, segment)))
         if reached:
-            return min(reached, key=lambda p: (p.duration_s, -p.energy_change_m))
+            return finish(min(reached, key=lambda p: (p.duration_s, -p.energy_change_m)))
         if not candidates:
             break
         candidates.sort(key=lambda x: (goal.remaining(x[0].velocity), len(x[1]), -x[0].energy))
@@ -440,7 +527,44 @@ def search_turn(model, initial, goal, settings, floor, cancel=None, *, budget_s=
                 if len(beam) >= beam_width:
                     break
         elapsed += segment
-    return best or TurnPlan(initial, None, None, None, False, expansions)
+    return finish(best or TurnPlan(initial, None, None, None, False, expansions))
+
+
+def remaining_steps(execution, elapsed):
+    if not execution.steps or elapsed >= execution.ends[-1]-1e-9:
+        return ()
+    i = execution.index(elapsed)
+    leftover = execution.ends[i]-elapsed
+    rest = execution.steps[i+1:]
+    if leftover > 1e-9:
+        return (TurnStep(execution.steps[i].action, leftover), *rest)
+    return rest
+
+
+def truncate_steps(steps, horizon):
+    if horizon <= 1e-9:
+        return ()
+    out, t = [], 0.
+    for step in steps:
+        if t >= horizon-1e-9:
+            break
+        take = min(step.duration_s, horizon-t)
+        if take > 1e-9:
+            out.append(TurnStep(step.action, take))
+        t += take
+    return tuple(out)
+
+
+def replay_from(model, motion, steps, goal, settings, floor):
+    """Integrate steps from the latest observation. None if a constraint fails."""
+    if not steps:
+        return True, goal.remaining(motion.velocity), None
+    allowed = lambda s: allowed_motion(s, settings, floor, motion.load)
+    result = _replay_steps(model, motion, motion, 0., steps, goal, settings, allowed, 0)
+    if result is None:
+        return False, None, None
+    plan, remaining = result
+    return True, remaining, plan
 
 
 def nearby(expected, actual, *, coarse=False):
@@ -480,19 +604,21 @@ class Execution:
                       blend(left.throttle_percent, right.throttle_percent),
                       blend(left.engine_throttle_percent, right.engine_throttle_percent),
                       blend(left.aoa_deg, right.aoa_deg)
-                      if left.aoa_deg is not None and right.aoa_deg is not None else None)
+                      if left.aoa_deg is not None and right.aoa_deg is not None else None,
+                      blend(left.airbrake_fraction, right.airbrake_fraction))
 
     def index(self, elapsed):
         return min(bisect_left(self.ends, elapsed), len(self.steps)-1)
 
 
-def prepare_execution(model, motion, plan, goal, settings, floor):
+def prepare_execution(model, motion, plan, goal, settings, floor, *, include_reaction=True):
     """Rebase the selected sequence on the current measured state before display."""
     requested = plan.steps or (TurnStep(plan.action, settings.hold_s),)
     initial_load = motion.load
     times, states, steps, ends = [0.], [motion], [], []
     elapsed = 0.
-    for action, duration in [(None, settings.reaction_s), *((x.action, x.duration_s) for x in requested)]:
+    lead = ((None, settings.reaction_s),) if include_reaction else ()
+    for action, duration in (*lead, *((x.action, x.duration_s) for x in requested)):
         dt_left = duration
         while dt_left > 1e-9:
             dt = min(.15, dt_left)
@@ -511,7 +637,7 @@ def prepare_execution(model, motion, plan, goal, settings, floor):
 
 
 class TurnSession:
-    """Commit to a readable sequence; validate against its moving trajectory."""
+    """Commit to a readable sequence; replan the tail from the latest observation."""
     def __init__(self):
         self.executor = None
         self.reset()
@@ -534,6 +660,9 @@ class TurnSession:
         self.progress_current = False
         self.progress_samples = deque(maxlen=12)
         self.following = self.prepare_release = False
+        self.incumbent_ok = False
+        self._schedule_mark = None
+        self._shown_elapsed = 0.
 
     def record_progress(self, direction, now):
         self.turned = angle(self.goal.direction, direction)
@@ -603,14 +732,118 @@ class TurnSession:
             self.executor.shutdown(wait=False, cancel_futures=True)
             self.executor = None
 
-    def execution_guidance(self, motion, now):
+    def _elapsed(self, now):
+        return max(0., now-self.plan_time)
+
+    def _schedule_elapsed(self, now, motion):
+        """Advance the displayed step only while the observation still matches the plan."""
+        if self.execution is None:
+            self._schedule_mark = None
+            self._shown_elapsed = 0.
+            return 0.
+        wall = min(self._elapsed(now), self.execution.ends[-1])
+        if self._schedule_mark is not self.execution or wall+1e-9 < self._shown_elapsed:
+            self._schedule_mark = self.execution
+            self._shown_elapsed = 0.
+        if wall > self._shown_elapsed+1e-9 and nearby(self.execution.reference(wall), motion, coarse=True):
+            self._shown_elapsed = wall
+        return self._shown_elapsed
+
+    def _refresh_incumbent(self, motion, settings, shown):
+        if self.execution is None:
+            self.incumbent_ok = False
+            return
+        rem = remaining_steps(self.execution, shown)
+        if not rem:
+            self.incumbent_ok = False
+            return
+        ok, end_rem, _ = replay_from(self.model, motion, rem[:1], self.goal, settings, self.floor)
+        now_rem = self.goal.remaining(motion.velocity)
+        reverse = ok and end_rem is not None and end_rem > now_rem+3.
+        self.incumbent_ok = ok and not reverse
+
+    def _commit_step(self, shown):
+        if self.execution is None or not self.incumbent_ok:
+            return None
+        leftover = remaining_steps(self.execution, shown)
+        if leftover and leftover[0].duration_s > COMMIT_LOCK_S:
+            return leftover[0]
+        return None
+
+    def _take_completed_search(self, motion, state, settings, shown):
+        future, self.future = self.future, None
+        try:
+            candidate = future.result()
+        except Cancelled:
+            return
+        if candidate.action is None:
+            return
+        age = state.time_s-self.last_submit
+        if not math.isfinite(self.last_submit) or not 0 <= age <= STALE_RESULT_S:
+            return
+        rem = remaining_steps(self.execution, shown) if self.execution else ()
+        steps = candidate.steps or (TurnStep(candidate.action, settings.hold_s),)
+        if rem and steps[0].action == rem[0].action and rem[0].duration_s > 1e-9:
+            shrink = max(0., state.time_s-self.last_submit)
+            duration = max(rem[0].duration_s, steps[0].duration_s-shrink)
+            steps = (TurnStep(steps[0].action, duration), *steps[1:])
+            candidate = replace(candidate, steps=steps)
+        include_reaction = self.execution is None
+        try:
+            execution = prepare_execution(self.model, motion, candidate, self.goal, settings, self.floor,
+                                          include_reaction=include_reaction)
+        except ValueError:
+            return
+        if not self._should_replace(execution, motion, settings, shown):
+            return
+        self.execution = execution
+        self.plan, self.plan_time = candidate, state.time_s
+        self.following = self.prepare_release = False
+        self.incumbent_ok = True
+
+    def _should_replace(self, execution, motion, settings, shown):
+        if self.execution is None or not self.incumbent_ok:
+            return True
+        rem = remaining_steps(self.execution, shown)
+        new_first = execution.steps[0].action
+        old_first = rem[0].action if rem else self.execution.steps[-1].action
+        if new_first == old_first:
+            return True
+        if not rem:
+            return True
+        if rem[0].duration_s > COMMIT_LOCK_S:
+            return False
+        horizon = sum(step.duration_s for step in rem)
+        ok_old, old_rem, _ = replay_from(self.model, motion, rem, self.goal, settings, self.floor)
+        ok_new, new_rem, _ = replay_from(self.model, motion, truncate_steps(execution.steps, horizon),
+                                         self.goal, settings, self.floor)
+        if not ok_new or new_rem is None:
+            return False
+        if not ok_old or old_rem is None:
+            return True
+        if new_rem <= .05 < old_rem:
+            return True
+        return old_rem-new_rem >= REPLACE_REMAINING_DEG
+
+    def _submit_search(self, motion, settings, now, commit):
+        if self.executor is None:
+            self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wt-turn")
+        self.cancel = Event()
+        self.last_submit = now
+        self.future = self.executor.submit(
+            search_turn, self.model, motion, self.goal, settings, self.floor, self.cancel,
+            skip_reaction=self.execution is not None, commit=commit)
+
+    def execution_guidance(self, motion, now, shown=None):
         execution = self.execution
-        elapsed = max(0., now-self.plan_time)
+        elapsed = self._elapsed(now) if shown is None else shown
         i = execution.index(elapsed)
         self.execution_index = i
         action = self.action = execution.steps[i].action
+        uses_brake = any(step.action.airbrake for step in execution.steps)
         next_action = (execution.steps[i+1].action.label+"／"+
-            ("收油", "保持油门", "加油")[execution.steps[i+1].action.throttle+1]
+            ("收油", "保持油门", "加油")[execution.steps[i+1].action.throttle+1]+
+            (("／展开减速板" if execution.steps[i+1].action.airbrake else "／收起减速板") if uses_brake else "")
             if i+1 < len(execution.steps) else "达到目标后松键" if execution.reached else "继续规划")
         endpoint = execution.reference(execution.ends[i])
         return KeyboardTurnGuidance(True, "转向", action.label, self.turned, self.remaining,
@@ -619,7 +852,8 @@ class TurnSession:
             throttle_command=action.throttle, throttle_percent=motion.throttle_percent,
             target_throttle_percent=endpoint.throttle_percent, next_action=next_action,
             step_index=i+1, step_count=len(execution.steps),
-            step_remaining_s=max(0., execution.ends[i]-elapsed))
+            step_remaining_s=max(0., execution.ends[i]-elapsed),
+            airbrake_command=action.airbrake if uses_brake else None)
 
     def update(self, state, fm, mass, afterburner, sweep, settings):
         self.progress_current = False
@@ -689,44 +923,19 @@ class TurnSession:
                     -elapsed/settings.engine_response_s)
             motion = Motion(state.altitude_m, velocity, normal, self.rate, load,
                             state.throttle_percent, self.engine_throttle, state.aoa_deg)
-            if self.execution is not None:
-                elapsed = state.time_s-self.plan_time
-                expected = self.execution.reference(elapsed)
-                index = self.execution.index(elapsed)
-                if (not nearby(expected, motion, coarse=True)
-                        or index != self.execution_index and not nearby(expected, motion)):
-                    self.pause("执行轨迹偏离预测，正在调整后续动作", "调整动作", keep_previous=True, current=True)
-                elif elapsed >= self.execution.ends[-1]:
-                    self.pause("本段完成，继续规划", "更新计划", keep_previous=True, current=True)
-                else:
-                    return self.execution_guidance(motion, state.time_s)
+            shown = self._schedule_elapsed(state.time_s, motion)
+            self._refresh_incumbent(motion, settings, shown)
             if self.future is not None and self.future.done():
-                future, self.future = self.future, None
-                candidate = future.result()
-                # During computation no new cue was visible. Project the observed
-                # motion through that latency, then rebase the selected sequence.
-                expected, elapsed = candidate.initial, 0.
-                latency = max(0., state.time_s-self.last_submit)
-                while elapsed < min(latency, 2.5)-1e-9:
-                    step = min(.15, latency-elapsed)
-                    expected = self.model.step(expected, None, step, settings)
-                    elapsed += step
-                if latency <= 2.5 and nearby(expected, motion) and candidate.action is not None:
-                    try:
-                        self.execution = prepare_execution(self.model, motion, candidate, self.goal, settings, self.floor)
-                    except ValueError as exc:
-                        if self.following:
-                            return self.follow_without_model(state, settings, str(exc))
-                        return self.pause(str(exc), "调整动作", keep_previous=True, current=True)
-                    self.plan, self.plan_time = candidate, state.time_s
-                    self.following = self.prepare_release = False
-                    return self.execution_guidance(motion, state.time_s)
-            if self.future is None and state.time_s-self.last_submit >= .8:
-                if self.executor is None:
-                    self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wt-turn")
-                self.cancel = Event()
-                self.last_submit = state.time_s
-                self.future = self.executor.submit(search_turn, self.model, motion, self.goal, settings, self.floor, self.cancel)
+                before = self.execution
+                self._take_completed_search(motion, state, settings, shown)
+                if self.execution is not before:
+                    shown = self._schedule_elapsed(state.time_s, motion)
+                    self._refresh_incumbent(motion, settings, shown)
+            commit = self._commit_step(shown)
+            if self.future is None and (not self.incumbent_ok or state.time_s-self.last_submit >= REPLAN_S):
+                self._submit_search(motion, settings, state.time_s, commit)
+            if self.execution is not None:
+                return self.execution_guidance(motion, state.time_s, shown)
             if self.following:
                 return self.follow_guidance(state, settings, "气动预测恢复，正在计算后续动作")
             return self.status("计算" if self.future else "无可用动作", current=True)

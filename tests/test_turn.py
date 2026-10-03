@@ -8,10 +8,11 @@ from unittest.mock import patch
 
 from wt_overlay.app import OverlayController
 from wt_overlay.contracts import FlightState, G, KeyboardTurnSettings, PerformanceCondition
-from wt_overlay.fm import load_aircraft
+from wt_overlay.fm import atmosphere, load_aircraft
 from wt_overlay.turn import (Action, Cancelled, ManeuverModel, Motion, TurnPlan, TurnSession, TurnStep,
-                             VelocityGoal, angle, dot, flight_frame, norm, rotate, search_turn,
-                             transport, unit, validate_settings, allowed_motion, nearby)
+                             VelocityGoal, _airbrake_schedules, angle, dot, flight_frame, norm, rotate,
+                             search_turn, transport, unit, validate_settings, allowed_motion, nearby,
+                             remaining_steps, REPLAN_S)
 
 
 def sample(t=0, **changes):
@@ -96,9 +97,10 @@ class ManeuverTests(unittest.TestCase):
             self.assertTrue(all(math.isfinite(v) for v in (thrust, drag, lift, alpha)))
             point = self.fm.evaluate(PerformanceCondition(5000, 250, 23000, aoa_deg=math.degrees(alpha)))
             self.assertTrue(point.valid)
-            self.assertAlmostEqual(point.drag_n, drag)
-            self.assertAlmostEqual(point.lift_n, lift)
             self.assertAlmostEqual(point.thrust_n, thrust)
+            # Table lookup vs live polar; interpolation is bounded in test_aero_table.
+            self.assertAlmostEqual(point.drag_n, drag, delta=max(20., abs(point.drag_n)*1e-3))
+            self.assertAlmostEqual(point.lift_n, lift, delta=max(20., abs(point.lift_n)*1e-3))
         self.assertLess(self.model.forces(5000, 250, -2)[2], 0)
 
     def test_postcritical_forces_match_existing_static_polars(self):
@@ -111,8 +113,8 @@ class ManeuverTests(unittest.TestCase):
                     static = fm.evaluate(PerformanceCondition(5000, 250, 23000, aoa_deg=alpha))
                     self.assertTrue(static.valid)
                     self.assertAlmostEqual(thrust, static.thrust_n)
-                    self.assertAlmostEqual(drag, static.drag_n)
-                    self.assertAlmostEqual(lift, static.lift_n)
+                    self.assertAlmostEqual(drag, static.drag_n, delta=max(20., abs(static.drag_n)*1e-3))
+                    self.assertAlmostEqual(lift, static.lift_n, delta=max(20., abs(static.lift_n)*1e-3))
                     self.assertAlmostEqual(angle_rad, math.radians(alpha))
                     self.assertAlmostEqual(model.observed_load(5000, 250, alpha), lift/(23000*G))
         for alpha in (-61, 61, math.nan):
@@ -161,7 +163,9 @@ class ManeuverTests(unittest.TestCase):
         crossed = False
         for _ in range(12):
             state = self.model.step(state, Action(0, 1), .1, self.settings)
-            polars, _, _ = self.model._context(state.altitude, state.speed)
+            _, sound = atmosphere(state.altitude)
+            polars = [(p, p.properties.at_mach(state.speed/sound))
+                      for p in self.model.model.components_at_sweep(self.model.sweep)]
             wing, polar = polars[0]
             crossed |= state.aoa_deg+wing.incidence_deg > polar.critical_aoa_high
             self.assertTrue(allowed_motion(state, self.settings, 4500))
@@ -186,10 +190,15 @@ class ManeuverTests(unittest.TestCase):
     def test_throttle_ramp_spool_and_force_endpoints(self):
         military = self.fm.evaluate(PerformanceCondition(5000, 250, 23000, afterburner=False)).thrust_n
         maximum = self.fm.evaluate(PerformanceCondition(5000, 250, 23000)).thrust_n
-        self.assertEqual(self.model.forces(5000, 250, 1, 0)[0], 0)
-        self.assertAlmostEqual(self.model.forces(5000, 250, 1, 50)[0], military/2)
+        # Su-27SM Mode table: 0 % → 0.05, 30 % → 0.2, 60 % → 0.5 of military.
+        self.assertAlmostEqual(self.model.forces(5000, 250, 1, 0)[0], military*.05)
+        self.assertAlmostEqual(self.model.forces(5000, 250, 1, 50)[0], military*.4)
         self.assertAlmostEqual(self.model.forces(5000, 250, 1, 100)[0], military)
+        self.assertAlmostEqual(self.model.forces(5000, 250, 1, 105)[0], (military+maximum)/2)
         self.assertAlmostEqual(self.model.forces(5000, 250, 1, 110)[0], maximum)
+        for percent in (0, 50, 105, 110):
+            point = self.fm.evaluate(PerformanceCondition(5000, 250, 23000, throttle_percent=percent))
+            self.assertAlmostEqual(point.thrust_n, self.model.forces(5000, 250, 1, percent)[0])
         reduced = self.model.step(self.initial, Action(0, 0, -1), .1, self.settings)
         self.assertEqual(reduced.throttle_percent, 105)
         self.assertGreater(reduced.engine_throttle_percent, reduced.throttle_percent)
@@ -210,7 +219,7 @@ class ManeuverTests(unittest.TestCase):
         result = search_turn(self.model, fast, VelocityGoal((0, 1, 0), 90), s, 4500, budget_s=3)
         self.assertTrue(result.reached)
         self.assertIsNotNone(result.action)
-        self.assertEqual(result.action.throttle, -1)
+        self.assertTrue(result.action.throttle == -1 or result.action.airbrake == 1)
         hold, cut = fast, fast
         for _ in range(20):
             hold = self.model.step(hold, Action(0, 1, 0), .15, s)
@@ -221,6 +230,29 @@ class ManeuverTests(unittest.TestCase):
         constrained = replace(s, minimum_tas_mps=405)
         with self.assertRaises(ValueError):
             search_turn(self.model, fast, VelocityGoal((0, 1, 0), 30), constrained, 4500)
+
+    def test_airbrake_adds_fuselage_cd_outside_polar_and_ramps(self):
+        q = .5*atmosphere(5000)[0]*250**2
+        clean = self.model.forces_at_aoa(5000, 250, 8)
+        braked = self.model.forces_at_aoa(5000, 250, 8, airbrake_fraction=1)
+        self.assertAlmostEqual(clean[2], braked[2], places=6)
+        self.assertAlmostEqual(braked[1]-clean[1], q*self.fm.airbrake_ref_area_m2*self.fm.airbrake_cd, delta=1)
+        opened = self.model.step(self.initial, Action(0, 1, 0, 1), 1., self.settings)
+        self.assertAlmostEqual(opened.airbrake_fraction, self.fm.airbrake_speed, places=6)
+        held = self.model.step(opened, None, .4, self.settings)
+        self.assertEqual(held.airbrake_fraction, opened.airbrake_fraction)
+        shut = self.model.step(opened, Action(0, 0), 1., self.settings)
+        self.assertAlmostEqual(shut.airbrake_fraction, 0., places=6)
+        pulled = self.model.step(self.initial, Action(0, 1), .2, self.settings)
+        dumped = self.model.step(replace(self.initial, airbrake_fraction=1), Action(0, 1, 0, 1), .2, self.settings)
+        self.assertLess(dumped.energy, pulled.energy)
+        self.assertLess(dumped.speed, pulled.speed)
+        fast = replace(self.initial, velocity=(0, 400, 0), normal=(1, 0, 0), load=9, aoa_deg=8)
+        hold, dump = fast, fast
+        for _ in range(16):
+            hold = self.model.step(hold, Action(0, 1), .15, self.settings)
+            dump = self.model.step(dump, Action(0, 1, 0, 1), .15, self.settings)
+        self.assertGreater(angle(dump.velocity, fast.velocity), angle(hold.velocity, fast.velocity))
 
     def test_short_step_energy_balance_and_initial_bank_change_trajectory(self):
         dt = 1e-4
@@ -261,6 +293,17 @@ class ManeuverTests(unittest.TestCase):
         for change in ({"hold_s": .01}, {"max_load": math.nan}, {"angle_deg": 60}, {"min_load": 1}):
             with self.assertRaises(ValueError):
                 validate_settings(replace(self.settings, **change))
+
+    def test_receding_search_skips_reaction_and_holds_commit(self):
+        commit = TurnStep(Action(1, 1), .5)
+        result = search_turn(self.model, self.initial, VelocityGoal((0, 1, 0), 30), self.settings, 4500,
+                             budget_s=3, skip_reaction=True, commit=commit)
+        self.assertIsNotNone(result.action)
+        self.assertEqual(result.steps[0].action, Action(1, 1))
+        self.assertGreaterEqual(result.steps[0].duration_s, .5-1e-8)
+        none = search_turn(self.model, self.initial, VelocityGoal((0, 1, 0), 30), self.settings, 4500,
+                           budget_s=0, skip_reaction=True)
+        self.assertFalse(none.reached)
 
     def test_receding_search_completes_from_different_initial_attitudes(self):
         # Closed-loop surrogate test, not an in-game maneuver validation.
@@ -366,6 +409,7 @@ class SessionTests(unittest.TestCase):
         future = Future()
         future.set_result(TurnPlan(Motion(5000, velocity, normal, 0, 2), Action(1, 1), 4, -100, True))
         self.session.future = future
+        self.session.last_submit = -10
         result = self.update(.2, heading_deg=20)
         self.assertFalse(result.available)
         self.assertEqual(result.action, "")
@@ -399,8 +443,9 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.throttle_percent, 110)
         self.assertEqual(result.target_throttle_percent, 50)
         result = self.update(.3, throttle_percent=50)
-        self.assertFalse(result.available)
-        self.assertIsNone(result.target_throttle_percent)
+        self.assertTrue(result.available)
+        self.assertEqual(result.throttle_command, -1)
+        self.assertEqual(result.throttle_percent, 50)
 
     def test_normal_rolling_follows_committed_sequence_and_previews_next_action(self):
         self.settings = replace(self.settings, angle_deg=120)
@@ -416,6 +461,7 @@ class SessionTests(unittest.TestCase):
         result = self.update(.2)
         self.assertTrue(result.available)
         self.assertIn("停止滚转", result.next_action)
+        self.session.last_submit = 100
         execution, origin = self.session.execution, self.session.goal
         for i in range(1, 18):
             elapsed = i*.1
@@ -423,9 +469,7 @@ class SessionTests(unittest.TestCase):
             state = telemetry_for_motion(self.session.model, motion, .2+elapsed)
             result = self.session.update(state, self.fm, 23000, True, 0, self.settings)
             self.assertTrue(result.available, (elapsed, result))
-            self.assertIs(self.session.execution, execution)
             self.assertIs(self.session.goal, origin)
-            self.assertIsNone(self.session.future)
             self.assertEqual(result.roll_command, 1 if elapsed < 1.5-1e-8 else 0)
             if i == 11:
                 self.assertGreater(angle(initial.normal, motion.normal), 30)
@@ -517,6 +561,122 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(resumed.phase, "转向")
         self.assertFalse(self.session.following)
         self.assertEqual(resumed.step_index, 1)
+
+    def test_remaining_steps_drop_elapsed_prefix(self):
+        from wt_overlay.turn import Execution
+        steps = (TurnStep(Action(1, 1), 1.2), TurnStep(Action(0, 1), 1.2))
+        dummy = Motion(5000, (0, 250, 0), (0, 0, 1), 0, 1)
+        execution = Execution(steps, (1.2, 2.4), (0., 1.2, 2.4), (dummy, dummy, dummy), False)
+        self.assertEqual(remaining_steps(execution, 0.)[0].action, Action(1, 1))
+        self.assertAlmostEqual(remaining_steps(execution, .4)[0].duration_s, .8)
+        self.assertEqual(remaining_steps(execution, 1.2)[0].action, Action(0, 1))
+        self.assertEqual(remaining_steps(execution, 2.4), ())
+
+    def test_speed_mismatch_keeps_command_and_replans(self):
+        self.update(0); self.update(.1)
+        self.session.cancel.set()
+        v, n = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        future = Future()
+        future.set_result(TurnPlan(Motion(5000, v, n, 0, load), Action(1, 1), None, None, False,
+                                   steps=(TurnStep(Action(1, 1), 1.2),)))
+        self.session.future = future
+        self.assertTrue(self.update(.2).available)
+        result = self.update(.3, tas_mps=180)
+        self.assertTrue(result.available)
+        self.assertEqual(result.phase, "转向")
+        self.assertEqual(result.action, "右滚＋拉杆")
+        self.session.last_submit = .3-REPLAN_S
+        looking = self.update(.4, tas_mps=180)
+        self.assertTrue(looking.available)
+        self.assertIsNotNone(self.session.future)
+
+    def test_first_action_stays_while_committed(self):
+        self.update(0); self.update(.1)
+        self.session.cancel.set()
+        v, n = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        future = Future()
+        future.set_result(TurnPlan(Motion(5000, v, n, 0, load), Action(1, 1), None, None, False,
+                                   steps=(TurnStep(Action(1, 1), 1.2),)))
+        self.session.future = future
+        self.assertEqual(self.update(.2).roll_command, 1)
+        better = Future()
+        better.set_result(TurnPlan(Motion(5000, v, n, 0, load), Action(-1, 1), 3, -50, True,
+                                   steps=(TurnStep(Action(-1, 1), 1.2),)))
+        self.session.future = better
+        self.session.last_submit = .2
+        held = self.update(.3)
+        self.assertTrue(held.available)
+        self.assertEqual(held.roll_command, 1)
+
+    def test_same_first_action_updates_tail(self):
+        self.update(0); self.update(.1)
+        self.session.cancel.set()
+        v, n = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        future = Future()
+        future.set_result(TurnPlan(Motion(5000, v, n, 0, load), Action(1, 1), None, None, False,
+                                   steps=(TurnStep(Action(1, 1), 1.2),)))
+        self.session.future = future
+        self.assertEqual(self.update(.2).next_action, "继续规划")
+        tail = Future()
+        tail.set_result(TurnPlan(Motion(5000, v, n, 0, load), Action(1, 1), None, None, False,
+                                 steps=(TurnStep(Action(1, 1), 1.2), TurnStep(Action(0, 1), 1.2))))
+        self.session.future = tail
+        self.session.last_submit = .2
+        updated = self.update(.3)
+        self.assertTrue(updated.available)
+        self.assertEqual(updated.roll_command, 1)
+        self.assertIn("停止滚转", updated.next_action)
+        self.assertEqual(updated.step_count, 2)
+
+    def test_unfollowed_clock_does_not_advance_the_displayed_step(self):
+        self.update(0); self.update(.1)
+        self.session.cancel.set()
+        v, n = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        future = Future()
+        steps = (TurnStep(Action(1, 1), 1.2), TurnStep(Action(0, 1), 1.2))
+        future.set_result(TurnPlan(Motion(5000, v, n, 0, load), steps[0].action, None, None, False, steps=steps))
+        self.session.future = future
+        self.assertEqual(self.update(.2).step_index, 1)
+        self.session.last_submit = 100
+        held = self.update(.7, tas_mps=180)
+        self.assertEqual(held.step_index, 1)
+        self.assertEqual(held.action, "右滚＋拉杆")
+        later = self.update(1.2, tas_mps=180)
+        self.assertEqual(later.step_index, 1)
+        self.assertEqual(later.roll_command, 1)
+
+    def test_same_action_extension_is_kept(self):
+        self.update(0); self.update(.1)
+        self.session.cancel.set()
+        v, n = flight_frame(sample())
+        load = self.session.model.observed_load(5000, 250, 4)
+        future = Future()
+        future.set_result(TurnPlan(Motion(5000, v, n, 0, load), Action(1, 1), None, None, False,
+                                   steps=(TurnStep(Action(1, 1), 1.2),)))
+        self.session.future = future
+        self.assertTrue(self.update(.2).available)
+        longer = Future()
+        longer.set_result(TurnPlan(Motion(5000, v, n, 0, load), Action(1, 1), None, None, False,
+                                   steps=(TurnStep(Action(1, 1), 3.), TurnStep(Action(0, 1), 1.2))))
+        self.session.future = longer
+        self.session.last_submit = .25
+        updated = self.update(.3)
+        self.assertEqual(updated.roll_command, 1)
+        self.assertGreater(updated.step_remaining_s, 2.5)
+        self.assertIn("停止滚转", updated.next_action)
+
+    def test_locked_replan_only_changes_later_airbrake(self):
+        steps = (TurnStep(Action(0, 1), 1.2), TurnStep(Action(0, 1), 1.2))
+        locked = _airbrake_schedules(steps, lock_first=True)
+        self.assertEqual(len(locked), 1)
+        self.assertEqual(locked[0][0].action.airbrake, 0)
+        self.assertEqual(locked[0][1].action.airbrake, 1)
+        open_first = _airbrake_schedules(steps, lock_first=False)
+        self.assertEqual(open_first[0][0].action.airbrake, 1)
 
 
 class ControllerTests(unittest.TestCase):

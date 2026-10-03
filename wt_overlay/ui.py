@@ -352,14 +352,21 @@ class SettingsWindow(QWidget):
         form.addRow(self.sweep_label, self.sweep)
         row = QHBoxLayout()
         self.mass = QLineEdit()
-        self.mass.setPlaceholderText("手动指定参考总质量")
+        self.mass.setPlaceholderText("留空：空重 + 燃油 + 挂载自动估算")
         self.mass.returnPressed.connect(self.apply_mass)
         row.addWidget(self.mass)
         apply_mass = QPushButton("应用")
         apply_mass.clicked.connect(self.apply_mass)
         row.addWidget(apply_mass)
         form.addRow("总质量 / kg", row)
-        self.afterburner_box = QCheckBox("模型使用最大推力（关闭则使用全军推）")
+        self.payload = QSpinBox()
+        self.payload.setRange(0, 50000)
+        self.payload.setSingleStep(100)
+        self.payload.setKeyboardTracking(False)
+        self.payload.setToolTip("自动估算总质量时加上的武器、吊舱与弹药质量；8111 不提供这些数据。")
+        self.payload.valueChanged.connect(lambda value: owner.command({"action": "payload", "kg": float(value)}))
+        form.addRow("挂载 / kg", self.payload)
+        self.afterburner_box = QCheckBox("允许最大推力（无油门读数时按此档计算；关闭则为全军推）")
         self.afterburner_box.toggled.connect(lambda enabled: owner.command({"action": "afterburner", "enabled": enabled}))
         form.addRow(self.afterburner_box)
         climb = QGroupBox("爬升引导")
@@ -463,6 +470,9 @@ class SettingsWindow(QWidget):
             self.owner.preferences.setValue("turn/pose_sign", sign)
 
     def apply_mass(self):
+        if not self.mass.text().strip():
+            self.owner.command({"action": "mass", "kg": None})
+            return
         try:
             value = float(self.mass.text().strip())
             if not math.isfinite(value) or value <= 0:
@@ -906,6 +916,10 @@ class OverlayApp:
         self._checked(window.afterburner_box, snapshot.afterburner)
         if not window.mass.text() and snapshot.mass_override_kg is not None:
             window.mass.setText(f"{snapshot.mass_override_kg:g}")
+        if not window.payload.hasFocus():
+            window.payload.blockSignals(True)
+            window.payload.setValue(round(snapshot.payload_kg))
+            window.payload.blockSignals(False)
         note_text = details(snapshot)
         if window.notes.toPlainText() != note_text:
             window.notes.setPlainText(note_text)

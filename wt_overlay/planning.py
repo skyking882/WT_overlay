@@ -27,6 +27,9 @@ def _condition_error(c: PerformanceCondition) -> str:
         return "Negative load demand is unsupported by this static planner."
     if abs(c.flight_path_deg) > 90:
         return "Flight path angle must lie in [-90, 90] degrees."
+    if c.throttle_percent is not None and (not _finite(c.throttle_percent)
+                                           or not 0 <= c.throttle_percent <= 110):
+        return "Throttle percent must lie in [0, 110]."
     if c.aoa_deg is not None and not _finite(c.aoa_deg):
         return "AoA must be finite when supplied."
     if any(not 0 <= getattr(c, n) <= 1 for n in

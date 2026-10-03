@@ -41,6 +41,41 @@ class AppIntegrationTests(unittest.TestCase):
                                snapshot.energy.climb_mps+snapshot.energy.kinetic_sep_mps)
         self.assertIsNone(snapshot.advice)
 
+    def test_mass_is_estimated_from_fm_empty_mass_fuel_and_payload(self):
+        controller = self.controller(model_path=SAMPLE, payload_kg=500)
+        self.client.state = replace(self.client.state, fuel_kg=4000, throttle_percent=100)
+        snapshot = controller.tick(0)
+        self.assertEqual(snapshot.mass_source, "估算")
+        self.assertEqual(snapshot.reference_mass_kg, 16700+4000+500)
+        self.assertEqual(snapshot.advice.current.condition.mass_kg, 21200)
+        self.assertEqual(snapshot.advice.current.condition.throttle_percent, 100)
+        # Explicit telemetry total mass wins over the estimate; manual wins over both.
+        self.client.state = replace(self.client.state, mass_kg=25000)
+        self.assertEqual(controller.tick(1.1).reference_mass_kg, 25000)
+        controller.submit({"action": "mass", "kg": 23000})
+        self.assertEqual(controller.tick(2.2).mass_source, "手动")
+        controller.submit({"action": "mass", "kg": None})
+        self.client.state = replace(self.client.state, mass_kg=None, fuel_kg=3000)
+        snapshot = controller.tick(3.3)
+        self.assertEqual((snapshot.reference_mass_kg, snapshot.mass_source), (20200, "估算"))
+        # No estimate for a different aircraft or without a fuel reading.
+        self.client.state = replace(self.client.state, fuel_kg=None)
+        self.assertIsNone(controller.tick(4.4).reference_mass_kg)
+        for bad in (-1, math.nan, True, 60000):
+            with self.assertRaises(ValueError):
+                controller.submit({"action": "payload", "kg": bad})
+
+    def test_reference_sep_uses_live_throttle(self):
+        controller = self.controller(model_path=SAMPLE, mass_kg=23000)
+        self.client.state = replace(self.client.state, throttle_percent=80)
+        partial = controller.tick(0).advice.current
+        self.assertEqual(partial.condition.throttle_percent, 80)
+        self.client.state = replace(self.client.state, throttle_percent=None)
+        full = controller.tick(1.1).advice.current
+        self.assertIsNone(full.condition.throttle_percent)
+        self.assertTrue(full.condition.afterburner)
+        self.assertLess(partial.thrust_n, full.thrust_n)
+
     def test_live_failure_clears_energy_and_prediction_without_demo(self):
         controller = self.controller(model_path=SAMPLE, mass_kg=23000)
         start = controller._started_at
