@@ -28,17 +28,25 @@ from .contracts import ClimbRequest, OverlaySnapshot, KeyboardTurnSettings
 from .climb import CUE_DEADBAND_DEG, CUE_RANGE_DEG, validate_request
 from .fm.catalog import aircraft_catalog
 from .hud import INDICATORS, HudContent, contents, details
+from .offense import RoseLibrary, available, course_for_blip_direction
 from .windows import GameWindow, WindowsDesktop
 from .turn import validate_settings
 
 
 GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考",
-          "climb": "爬升引导", "turn": "转向引导"}
+          "climb": "爬升引导", "turn": "转向引导", "rose": "进攻动向图"}
 DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
                      "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65),
-                     "turn": (0.42, 0.65)}
+                     "turn": (0.42, 0.65), "rose": (0.80, 0.78)}
 HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导",
-           "T": "开关转向引导", "R": "重新开始转向", "A": "平翼校准"}
+           "T": "开关转向引导", "R": "重新开始转向", "A": "平翼校准", "K": "开关进攻动向图"}
+# Seconds the target has to react, if fired now: below 3 s red, below 6 s amber, else grey.
+ROSE_BANDS = ((3.0, QColor(226, 75, 74, 190)), (6.0, QColor(239, 159, 39, 170)))
+ROSE_SLOW = QColor(95, 94, 90, 140)
+ROSE_UNREACHABLE = QColor(44, 44, 42, 120)
+MISSILE_NAMES = {"cn_pl12": "PL-12", "cn_pl12a": "PL-12A", "su_r_77": "R-77", "su_r_77_1": "R-77-1",
+                 "us_aim_120a": "AIM-120A", "us_aim_120b": "AIM-120B", "us_aim_120c_5": "AIM-120C-5",
+                 "us_aim_120c_7": "AIM-120C-7", "us_aim_120d": "AIM-120D"}
 
 
 def game_geometry(game: GameWindow, screen) -> QRect:
@@ -225,6 +233,99 @@ class HudGroup(QWidget):
             event.accept()
 
 
+class RoseGroup(HudGroup):
+    """Kill rose: rings are launch range, sectors the blip's motion on the B-scope
+    (down = target hot), colour the target's reaction time if fired now.
+
+    An annulus shows its outer ring's value, so a target between two rings is
+    drawn with the longer (more conservative) reaction time.
+    """
+
+    def __init__(self, key: str, font: QFont, color: str):
+        self.rose = None
+        self.caption = ""
+        super().__init__(key, font, color)
+
+    def set_rose(self, rose, caption=""):
+        if rose != self.rose or caption != self.caption:
+            self.rose, self.caption = rose, caption
+            self._measure()
+            self.update()
+
+    def has_data(self):
+        return self.rose is not None
+
+    def _measure(self):
+        super()._measure()
+        self.radius = max(60, round(self.metrics.height() * 5.5))
+        self.label_height = self.small_metrics.height() + 4
+        width = max(2 * self.radius + 24, self.small_metrics.horizontalAdvance(self.caption) + 24)
+        height = 8 + self.header_height + 2 * self.label_height + 2 * self.radius + 8
+        if self.caption:
+            height += self.label_height
+        self.resize(min(width, max(100, self.viewport.width())), height)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if self.editing:
+            painter.fillRect(self.rect(), QColor(12, 22, 30, 110))
+            painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 5, 5)
+        header = self._header()
+        if header:
+            self._text(painter, 12, 8 + self.small_metrics.ascent(), header, self.small_font,
+                       "#ffce79" if self.content.demo else self.accent)
+        top = 8 + self.header_height
+        cx, cy = self.width() / 2, top + self.label_height + self.radius
+        self._label(painter, cx, top + self.small_metrics.ascent(), "↑ 背离")
+        if self.rose is not None:
+            ranges = self.rose.ranges_m
+            scale = self.radius / ranges[-1]
+            painter.setPen(QPen(QColor(0, 0, 0, 170), 1))
+            for i, range_m in enumerate(ranges):
+                outer, inner = range_m * scale, (ranges[i-1] * scale if i else 0.0)
+                for k in range(12):
+                    seconds = self.rose.at(range_m, course_for_blip_direction(30.0 * k))
+                    color = (ROSE_UNREACHABLE if math.isinf(seconds) else
+                             next((c for limit, c in ROSE_BANDS if seconds < limit), ROSE_SLOW))
+                    # Qt angles are counter-clockwise from 3 o'clock; 270° is straight down.
+                    start, span = 270.0 + 30.0 * k - 15.0, 30.0
+                    path = QPainterPath()
+                    outer_rect = QRect(round(cx - outer), round(cy - outer), round(2 * outer), round(2 * outer))
+                    if inner > 0:
+                        inner_rect = QRect(round(cx - inner), round(cy - inner), round(2 * inner), round(2 * inner))
+                        path.arcMoveTo(outer_rect, start)
+                        path.arcTo(outer_rect, start, span)
+                        path.arcTo(inner_rect, start + span, -span)
+                    else:
+                        path.moveTo(cx, cy)
+                        path.arcTo(outer_rect, start, span)
+                    path.closeSubpath()
+                    painter.setBrush(color)
+                    painter.drawPath(path)
+            for range_m in ranges:
+                self._text(painter, cx + 3, cy - range_m * scale + self.small_metrics.ascent(),
+                           f"{range_m / 1000:g}", self.small_font, "#f1f5f8")
+        else:
+            painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPoint(round(cx), round(cy)), self.radius, self.radius)
+        bottom = cy + self.radius + 4
+        self._label(painter, cx, bottom + self.small_metrics.ascent(), "↓ 迎头")
+        if self.caption:
+            self._label(painter, cx, bottom + self.label_height + self.small_metrics.ascent(), self.caption)
+        painter.end()
+
+    def _label(self, painter, center_x, baseline, text):
+        x = center_x - self.small_metrics.horizontalAdvance(text) / 2
+        self._text(painter, x, baseline, text, self.small_font, "#d2dee5")
+
+
 class SettingsWindow(QWidget):
     def __init__(self, owner):
         super().__init__()
@@ -263,7 +364,7 @@ class SettingsWindow(QWidget):
         self.group_boxes = {}
         group_row = QHBoxLayout()
         for key, caption in GROUPS.items():
-            if key in ("climb", "turn"):
+            if key in ("climb", "turn", "rose"):
                 continue
             check = QCheckBox(caption)
             check.setChecked(owner.group_enabled[key])
@@ -439,6 +540,28 @@ class SettingsWindow(QWidget):
         restart_turn = QPushButton("重新开始转向 · Ctrl+Alt+R")
         restart_turn.clicked.connect(owner.restart_turn)
         form.addRow(restart_turn)
+        offense = QGroupBox("进攻动向图")
+        form = QFormLayout(offense)
+        layout.addWidget(offense)
+        self.rose_box = QCheckBox("显示进攻动向图 · Ctrl+Alt+K")
+        self.rose_box.setChecked(owner.rose_enabled)
+        self.rose_box.toggled.connect(owner.set_rose_enabled)
+        form.addRow(self.rose_box)
+        self.rose_table = QComboBox()
+        for missile, evader, chaff in available():
+            label = (f"{MISSILE_NAMES.get(missile, missile)} · 规避方 {evader} · "
+                     + ("有箔条（RCS 比 {:g}）".format(chaff) if chaff > 0 else "无箔条"))
+            self.rose_table.addItem(label, f"{missile}|{evader}|{chaff:g}")
+        self.rose_table.setCurrentIndex(max(0, self.rose_table.findData(owner.rose_choice)))
+        self.rose_table.currentIndexChanged.connect(
+            lambda i: owner.set_rose_choice(self.rose_table.itemData(i)))
+        form.addRow("导弹与假设", self.rose_table)
+        rose_help = QLabel("方向 = 目标光点在 B 显上的移动方向（往下冲 = 迎头），圈 = 发射距离，"
+                           "颜色 = 现在发射时对方能用来反应的秒数：红 < 3 s，黄 3–6 s，灰更久。"
+                           "光点正弯向笔直往下时比图上更好打，弯向横向时更难打。"
+                           "离线表按本机高度与真空速插值；对方速度 1000 km/h、同高度、9 g、箔条比值均为假设。")
+        rose_help.setWordWrap(True)
+        form.addRow(rose_help)
         self.error = QLabel()
         self.error.setWordWrap(True)
         self.error.setStyleSheet("color: #ce562e")
@@ -584,9 +707,14 @@ class OverlayApp:
             self.color = "#71e3ce"
         self.indicator_enabled = {item.key: self.preferences.value(
             f"indicators/{item.key}", item.enabled, type=bool) for item in INDICATORS}
+        self.rose_enabled = self.preferences.value("offense/enabled", False, type=bool)
+        choices = [f"{m}|{e}|{c:g}" for m, e, c in available()]
+        saved_choice = self.preferences.value("offense/table", "", type=str)
+        self.rose_choice = saved_choice if saved_choice in choices else (choices[0] if choices else "")
+        self.rose_library = None
         self.groups, self.group_enabled = {}, {}
         for key in GROUPS:
-            group = HudGroup(key, self.hud_font, self.color)
+            group = (RoseGroup if key == "rose" else HudGroup)(key, self.hud_font, self.color)
             x, y = DEFAULT_POSITIONS[key]
             position = (self.preferences.value(f"groups/{key}/x", x, type=float),
                         self.preferences.value(f"groups/{key}/y", y, type=float))
@@ -599,6 +727,7 @@ class OverlayApp:
         self.game = None
         self.snapshot = OverlaySnapshot("live", "等待飞行数据")
         self.settings_window = SettingsWindow(self)
+        self._load_rose_library()
         self._setup_tray()
         self._setup_hotkeys()
         if climb_request is None and self.preferences.contains("climb/altitude_m"):
@@ -646,6 +775,9 @@ class OverlayApp:
         self.turn_action = QAction("转向引导", self.tray_menu, checkable=True)
         self.turn_action.toggled.connect(self.set_turn_enabled)
         self.tray_menu.addAction(self.turn_action)
+        self.rose_action = QAction("进攻动向图", self.tray_menu, checkable=True, checked=self.rose_enabled)
+        self.rose_action.toggled.connect(self.set_rose_enabled)
+        self.tray_menu.addAction(self.rose_action)
         self.tray_menu.addAction("重新开始转向", self.restart_turn)
         self.tray_menu.addAction("设置…", self.show_settings)
         self.tray_menu.addSeparator()
@@ -661,7 +793,8 @@ class OverlayApp:
                      "L": lambda: self.set_editing(not self.editing), "S": self.show_settings,
                      "C": lambda: self.set_climb_enabled(not self.climb_enabled),
                      "T": lambda: self.set_turn_enabled(not self.turn_enabled), "R": self.restart_turn,
-                     "A": self.settings_window.apply_pose_calibration}
+                     "A": self.settings_window.apply_pose_calibration,
+                     "K": lambda: self.set_rose_enabled(not self.rose_enabled)}
         active, failures = {}, []
         self.settings_hotkey_available = False
         if self.desktop:
@@ -761,6 +894,44 @@ class OverlayApp:
         if self.turn_enabled:
             self.command({"action": "turn_restart"})
 
+    def set_rose_enabled(self, enabled):
+        self.rose_enabled = enabled
+        self.preferences.setValue("offense/enabled", enabled)
+        self._checked(self.settings_window.rose_box, enabled)
+        self._checked(self.rose_action, enabled)
+        self._sync_surface()
+
+    def set_rose_choice(self, choice):
+        self.rose_choice = choice or ""
+        self.preferences.setValue("offense/table", self.rose_choice)
+        self._load_rose_library()
+        self.refresh()
+
+    def _load_rose_library(self):
+        self.rose_library = None
+        if not self.rose_choice:
+            return
+        try:
+            missile, evader, chaff = self.rose_choice.split("|")
+            self.rose_library = RoseLibrary(missile, evader, float(chaff))
+        except (OSError, ValueError) as exc:
+            self.settings_window.error.setText(f"进攻动向图数据不可用：{exc}")
+
+    def _update_rose(self, snapshot):
+        group, library, state = self.groups["rose"], self.rose_library, snapshot.state
+        group.set_content(HudContent(GROUPS["rose"], (), demo=snapshot.mode == "demo"))
+        if (library is None or state is None or not state.valid or state.altitude_m is None
+                or state.tas_mps is None or not math.isfinite(state.altitude_m) or not math.isfinite(state.tas_mps)):
+            group.set_rose(None)
+            return
+        rose = library.rose(state.altitude_m, state.tas_mps)
+        caption = MISSILE_NAMES.get(library.missile, library.missile)
+        if rose.altitude_clamped or rose.tas_clamped:
+            caption += " · 本机状态超出表格"
+        elif rose.nearest_only:
+            caption += " · 网格未完整，取最近状态"
+        group.set_rose(rose, caption)
+
     def set_indicator_enabled(self, key, enabled):
         self.indicator_enabled[key] = enabled
         self.preferences.setValue(f"indicators/{key}", enabled)
@@ -849,8 +1020,9 @@ class OverlayApp:
         for key, group in self.groups.items():
             group.place(viewport)
             enabled = (self.climb_enabled if key == "climb" else self.turn_enabled if key == "turn"
-                       else self.group_enabled[key])
-            visible = allowed and enabled and (bool(group.content.rows) or self.editing)
+                       else self.rose_enabled if key == "rose" else self.group_enabled[key])
+            has_data = group.has_data() if key == "rose" else bool(group.content.rows)
+            visible = allowed and enabled and (has_data or self.editing)
             if group.isVisible() != visible:
                 group.setVisible(visible)
         status = ("布局模式 · 拖动边框，Ctrl+Alt+L 完成" if self.editing else
@@ -883,6 +1055,7 @@ class OverlayApp:
         enabled = {key for key, value in self.indicator_enabled.items() if value}
         for key, content in contents(snapshot, enabled).items():
             self.groups[key].set_content(content)
+        self._update_rose(snapshot)
         window = self.settings_window
         window.status.setText(snapshot.status)
         window.pose_status.setText(snapshot.attitude_status or "等待姿态数据")

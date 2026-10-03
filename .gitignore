@@ -7,3 +7,6 @@ Desktop.ini
 .env
 .env.*
 !.env.example
+
+# Offline analysis outputs
+outputs/

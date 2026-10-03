@@ -23,6 +23,14 @@ from wt_overlay.contracts import (ClimbGuidance, ClimbRequest, EnergyMetrics, Fl
                                   KeyboardTurnGuidance, KeyboardTurnSettings, OverlaySnapshot)
 
 
+def write_rose_table(folder, alt, kmh):
+    """Synthetic kill-rose table: 5 km ring < 3 s, 10 km ring > 6 s."""
+    cells = [dict(range_m=r, course_deg=c, turn_g=0., reaction_s=1. if r == 5000. else 8.)
+             for r in (5000., 10000.) for c in (0., 30., 60., 90., 120., 150., 180.)]
+    meta = dict(missile="m", evader="e", launch_altitude_m=alt, launch_speed_kmh=kmh, chaff_rcs_ratio=1.)
+    (Path(folder) / f"m__e__{int(alt)}m_{int(kmh)}kmh__chaff1.json").write_text(json.dumps(dict(meta=meta, cells=cells)))
+
+
 @unittest.skipUnless(HAS_QT, "PySide6 is optional for backend-only tests")
 class OverlayTests(unittest.TestCase):
     @classmethod
@@ -49,6 +57,54 @@ class OverlayTests(unittest.TestCase):
         self.ui.close()
         self.app.processEvents()
         self.temp.cleanup()
+
+    def make_rose_ui(self, enabled):
+        folder = Path(self.temp.name) / "offense"
+        folder.mkdir(exist_ok=True)
+        for alt in (4000., 8000.):
+            for kmh in (900., 1300.):
+                write_rose_table(folder, alt, kmh)
+        settings = QSettings(self.settings_path, QSettings.Format.IniFormat)
+        settings.setValue("offense/enabled", enabled)
+        self.ui.close()
+        with patch("wt_overlay.offense.DATA_DIR", folder):
+            self.ui = self.make_ui()
+        self.snapshot = replace(self.snapshot, mode="live")
+        self.ui.refresh()
+        return self.ui.groups["rose"]
+
+    def test_rose_is_off_by_default_and_draws_coloured_sectors_when_enabled(self):
+        self.assertFalse(self.ui.rose_enabled)
+        self.assertFalse(self.ui.groups["rose"].isVisible())
+        group = self.make_rose_ui(True)
+        self.assertTrue(group.has_data())
+        self.assertTrue(group.isVisible())
+        self.assertEqual(group._header(), "")
+        image = group.grab().toImage()
+        self.assertEqual(image.pixelColor(0, 0).alpha(), 0)
+        reds = sum(1 for y in range(0, image.height(), 2) for x in range(0, image.width(), 2)
+                   if image.pixelColor(x, y).red() > 150 and image.pixelColor(x, y).green() < 120)
+        self.assertGreater(reds, 20)  # The 5 km ring of the synthetic table is under 3 s.
+        self.snapshot = replace(self.snapshot, state=FlightState(2, False))
+        self.ui.refresh()
+        self.assertFalse(group.has_data())
+        self.assertFalse(group.isVisible())
+
+    def test_rose_hotkey_and_choice_persist(self):
+        group = self.make_rose_ui(False)
+        self.assertFalse(group.isVisible())
+        registrations = []
+        self.ui.desktop = SimpleNamespace(register_hotkey=lambda identifier, letter:
+            registrations.append((identifier, letter)) or True, close=lambda: None)
+        self.ui._setup_hotkeys()
+        self.assertIn((0x5747, "K"), registrations)
+        self.ui.desktop = None  # No game window under the stub would hide every group.
+        self.ui.hotkey_filter.callbacks[0x5747]()
+        self.assertTrue(self.ui.rose_enabled and group.isVisible())
+        self.assertEqual(self.ui.rose_choice, "m|e|1")
+        self.ui.close()
+        self.ui = self.make_ui()
+        self.assertTrue(self.ui.rose_enabled)
 
     def test_background_is_zero_alpha_while_text_remains_opaque(self):
         group = self.ui.groups["energy"]
@@ -136,12 +192,12 @@ class OverlayTests(unittest.TestCase):
         game = GameWindow(True, False, (0, 0, 1280, 720), (0, 0), self.app.primaryScreen().name())
         self.ui.game = game
         self.ui._sync_surface()
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn")))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose")))
         self.ui.game = replace(game, foreground=False)
         self.ui._sync_surface()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_editing(True)
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn")))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose")))
         self.ui.set_visible(False)
         self.assertFalse(self.ui.editing)
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
@@ -149,7 +205,7 @@ class OverlayTests(unittest.TestCase):
         self.ui.refresh()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_visible(True)
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn")))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose")))
 
     def test_turn_toggle_restart_hotkeys_and_mutual_exclusion(self):
         self.assertFalse(self.ui.groups["turn"].isVisible())
