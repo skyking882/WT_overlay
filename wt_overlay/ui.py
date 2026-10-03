@@ -28,22 +28,28 @@ from .contracts import ClimbRequest, OverlaySnapshot, KeyboardTurnSettings
 from .climb import CUE_DEADBAND_DEG, CUE_RANGE_DEG, validate_request
 from .fm.catalog import aircraft_catalog
 from .hud import INDICATORS, HudContent, contents, details
-from .offense import RoseLibrary, available, course_for_blip_direction
+from .offense import EnvelopeLibrary, RoseLibrary, available, course_for_blip_direction
 from .windows import GameWindow, WindowsDesktop
 from .turn import validate_settings
 
 
 GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考",
-          "climb": "爬升引导", "turn": "转向引导", "rose": "进攻动向图"}
+          "climb": "爬升引导", "turn": "转向引导", "rose": "进攻动向图", "scope": "B 显发射区"}
 DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
                      "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65),
-                     "turn": (0.42, 0.65), "rose": (0.80, 0.78)}
+                     "turn": (0.42, 0.65), "rose": (0.80, 0.78), "scope": (0.80, 0.40)}
 HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导",
-           "T": "开关转向引导", "R": "重新开始转向", "A": "平翼校准", "K": "开关进攻动向图"}
+           "T": "开关转向引导", "R": "重新开始转向", "A": "平翼校准", "K": "开关进攻动向图",
+           "B": "开关 B 显发射区"}
 # Seconds the target has to react, if fired now: below 3 s red, below 6 s amber, else grey.
 ROSE_BANDS = ((3.0, QColor(226, 75, 74, 190)), (6.0, QColor(239, 159, 39, 170)))
 ROSE_SLOW = QColor(95, 94, 90, 140)
 ROSE_UNREACHABLE = QColor(44, 44, 42, 120)
+# (line, label, colour, dashed): ranges from data/envelope tables.
+SCOPE_LINES = (("rmax_hot", "Rmax 迎头", "#EF9F27", False), ("rmax_cold", "Rmax 背离", "#EF9F27", True),
+               ("r3_hot", "3 s", "#E24B4A", True), ("rne_hot", "无逃逸", "#E24B4A", False))
+SCOPE_RANGES_KM = (10, 20, 40, 80, 160)
+SCOPE_AZIMUTHS_DEG = (30, 45, 60, 70)
 MISSILE_NAMES = {"cn_pl12": "PL-12", "cn_pl12a": "PL-12A", "su_r_77": "R-77", "su_r_77_1": "R-77-1",
                  "us_aim_120a": "AIM-120A", "us_aim_120b": "AIM-120B", "us_aim_120c_5": "AIM-120C-5",
                  "us_aim_120c_7": "AIM-120C-7", "us_aim_120d": "AIM-120D"}
@@ -326,6 +332,127 @@ class RoseGroup(HudGroup):
         self._text(painter, x, baseline, text, self.small_font, "#d2dee5")
 
 
+class ScopeGroup(HudGroup):
+    """Launch-envelope lines over the game's B-scope: x = azimuth, y = range up from the bottom.
+
+    The user sizes and places the box on the radar display in layout mode
+    (drag to move, bottom-right corner to resize); range scale and azimuth
+    limit come from settings and must match the game's radar. Only the
+    straight-flight, co-altitude lines are drawn.
+    """
+    GRIP = 16
+
+    def __init__(self, key: str, font: QFont, color: str):
+        self.envelope = None
+        self.scale_m, self.half_azimuth_deg = 40000.0, 60.0
+        self.box = (260, 260)
+        self._resize = None
+        super().__init__(key, font, color)
+
+    def set_envelope(self, envelope, scale_m, half_azimuth_deg):
+        if (envelope, scale_m, half_azimuth_deg) != (self.envelope, self.scale_m, self.half_azimuth_deg):
+            self.envelope, self.scale_m, self.half_azimuth_deg = envelope, scale_m, half_azimuth_deg
+            self.update()
+
+    def set_box(self, width, height):
+        self.box = (max(80, int(width)), max(80, int(height)))
+        self._measure()
+        self.update()
+
+    def has_data(self):
+        return self.envelope is not None
+
+    def _measure(self):
+        super()._measure()
+        self.resize(*self.box)
+
+    def _point(self, azimuth_deg, range_m):
+        # Unclamped: lines beyond the range scale fall above the box and are clipped away.
+        return QPoint(round((azimuth_deg / self.half_azimuth_deg + 1) / 2 * self.width()),
+                      round(self.height() - range_m / self.scale_m * self.height()))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if self.editing:
+            painter.fillRect(self.rect(), QColor(12, 22, 30, 110))
+            painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            painter.setBrush(QColor(self.accent))
+            w, h, g = self.width(), self.height(), self.GRIP
+            painter.drawPolygon([QPoint(w - 1, h - g), QPoint(w - 1, h - 1), QPoint(w - g, h - 1)])
+            self._text(painter, 8, 8 + self.small_metrics.ascent(),
+                       f"{self.content.title} · {self.scale_m / 1000:g} km · ±{self.half_azimuth_deg:g}°",
+                       self.small_font, self.accent)
+        if self.envelope is not None:
+            painter.setClipRect(self.rect())
+            labels = []
+            for name, label, color, dashed in SCOPE_LINES:
+                points = [(az, r) for az, r in self.envelope.line(name) if r is not None]
+                if len(points) < 2:
+                    continue
+                polyline = [self._point(az, r) for az, r in points]
+                painter.setPen(QPen(QColor(0, 0, 0, 200), 4))
+                painter.drawPolyline(polyline)
+                painter.setPen(QPen(QColor(color), 2, Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+                painter.drawPolyline(polyline)
+                center = dict(points).get(0.0)
+                if center is not None:
+                    above = center > self.scale_m
+                    labels.append((("↑ " if above else "") + f"{label} {center / 1000:.0f}", color,
+                                   self.small_metrics.ascent() + 2 if above else self._point(0.0, center).y() - 3))
+            self._draw_labels(painter, labels)
+            env = self.envelope
+            if env.altitude_clamped or env.tas_clamped or env.nearest_only:
+                note = "本机状态超出表格" if env.altitude_clamped or env.tas_clamped else "网格未完整，取最近状态"
+                self._text(painter, 4, self.height() - 6, note, self.small_font, "#ffce79")
+        painter.end()
+
+    def _draw_labels(self, painter, labels):
+        """Place each label right of centre, else on the left or right edge, avoiding overlaps."""
+        placed, height = [], self.small_metrics.height()
+        for text, color, baseline in labels:
+            width = self.small_metrics.horizontalAdvance(text)
+            baseline = max(self.small_metrics.ascent() + 2, min(self.height() - 4, baseline))
+            for x in (self.width() / 2 + 4, 4, self.width() - width - 4):
+                box = QRect(round(x), round(baseline - self.small_metrics.ascent()), width, height)
+                if not any(box.intersects(other) for other in placed):
+                    break
+            placed.append(box)
+            self._text(painter, box.x(), baseline, text, self.small_font, color)
+
+    def mousePressEvent(self, event):
+        position = event.position().toPoint()
+        if (self.editing and event.button() == Qt.MouseButton.LeftButton
+                and position.x() >= self.width() - self.GRIP and position.y() >= self.height() - self.GRIP):
+            self._resize = (event.globalPosition().toPoint(), self.width(), self.height())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._resize is not None:
+            origin, width, height = self._resize
+            delta = event.globalPosition().toPoint() - origin
+            self.set_box(width + delta.x(), height + delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resize is not None:
+            self._resize = None
+            self.fraction = position_fraction(self.pos(), self.size(), self.viewport)
+            self.moved.emit(self.key)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class SettingsWindow(QWidget):
     def __init__(self, owner):
         super().__init__()
@@ -364,7 +491,7 @@ class SettingsWindow(QWidget):
         self.group_boxes = {}
         group_row = QHBoxLayout()
         for key, caption in GROUPS.items():
-            if key in ("climb", "turn", "rose"):
+            if key in ("climb", "turn", "rose", "scope"):
                 continue
             check = QCheckBox(caption)
             check.setChecked(owner.group_enabled[key])
@@ -540,7 +667,7 @@ class SettingsWindow(QWidget):
         restart_turn = QPushButton("重新开始转向 · Ctrl+Alt+R")
         restart_turn.clicked.connect(owner.restart_turn)
         form.addRow(restart_turn)
-        offense = QGroupBox("进攻动向图")
+        offense = QGroupBox("进攻辅助")
         form = QFormLayout(offense)
         layout.addWidget(offense)
         self.rose_box = QCheckBox("显示进攻动向图 · Ctrl+Alt+K")
@@ -556,6 +683,29 @@ class SettingsWindow(QWidget):
         self.rose_table.currentIndexChanged.connect(
             lambda i: owner.set_rose_choice(self.rose_table.itemData(i)))
         form.addRow("导弹与假设", self.rose_table)
+        self.scope_box = QCheckBox("显示 B 显发射区 · Ctrl+Alt+B")
+        self.scope_box.setChecked(owner.scope_enabled)
+        self.scope_box.toggled.connect(owner.set_scope_enabled)
+        form.addRow(self.scope_box)
+        self.scope_scale = QComboBox()
+        for km in SCOPE_RANGES_KM:
+            self.scope_scale.addItem(f"{km} km", km)
+        self.scope_scale.setCurrentIndex(max(0, self.scope_scale.findData(owner.scope_scale_km)))
+        self.scope_scale.currentIndexChanged.connect(
+            lambda i: owner.set_scope_geometry(self.scope_scale.itemData(i), owner.scope_half_azimuth_deg))
+        form.addRow("B 显量程（与游戏一致）", self.scope_scale)
+        self.scope_azimuth = QComboBox()
+        for deg in SCOPE_AZIMUTHS_DEG:
+            self.scope_azimuth.addItem(f"±{deg}°", deg)
+        self.scope_azimuth.setCurrentIndex(max(0, self.scope_azimuth.findData(owner.scope_half_azimuth_deg)))
+        self.scope_azimuth.currentIndexChanged.connect(
+            lambda i: owner.set_scope_geometry(owner.scope_scale_km, self.scope_azimuth.itemData(i)))
+        form.addRow("B 显方位范围", self.scope_azimuth)
+        scope_help = QLabel("B 显发射区：进入布局模式，把框拖到游戏 B 显上，拖右下角调整到同样大小。"
+                            "橙实线 = 迎头 Rmax，橙虚线 = 背离 Rmax，红虚线 = 迎头对方不足 3 s，红实线 = 迎头无逃逸。"
+                            "目标假设为同高度直线飞行；量程切换需在这里同步。")
+        scope_help.setWordWrap(True)
+        form.addRow(scope_help)
         rose_help = QLabel("方向 = 目标光点在 B 显上的移动方向（往下冲 = 迎头），圈 = 发射距离，"
                            "颜色 = 现在发射时对方能用来反应的秒数：红 < 3 s，黄 3–6 s，灰更久。"
                            "光点正弯向笔直往下时比图上更好打，弯向横向时更难打。"
@@ -712,9 +862,19 @@ class OverlayApp:
         saved_choice = self.preferences.value("offense/table", "", type=str)
         self.rose_choice = saved_choice if saved_choice in choices else (choices[0] if choices else "")
         self.rose_library = None
+        self.envelope_library = None
+        self.scope_enabled = self.preferences.value("offense/scope_enabled", False, type=bool)
+        self.scope_scale_km = self.preferences.value("offense/scope_scale_km", 40, type=int)
+        self.scope_scale_km = self.scope_scale_km if self.scope_scale_km in SCOPE_RANGES_KM else 40
+        self.scope_half_azimuth_deg = self.preferences.value("offense/scope_half_azimuth_deg", 60, type=int)
+        if self.scope_half_azimuth_deg not in SCOPE_AZIMUTHS_DEG:
+            self.scope_half_azimuth_deg = 60
         self.groups, self.group_enabled = {}, {}
         for key in GROUPS:
-            group = (RoseGroup if key == "rose" else HudGroup)(key, self.hud_font, self.color)
+            group = {"rose": RoseGroup, "scope": ScopeGroup}.get(key, HudGroup)(key, self.hud_font, self.color)
+            if key == "scope":
+                group.set_box(self.preferences.value("groups/scope/w", 260, type=int),
+                              self.preferences.value("groups/scope/h", 260, type=int))
             x, y = DEFAULT_POSITIONS[key]
             position = (self.preferences.value(f"groups/{key}/x", x, type=float),
                         self.preferences.value(f"groups/{key}/y", y, type=float))
@@ -778,6 +938,9 @@ class OverlayApp:
         self.rose_action = QAction("进攻动向图", self.tray_menu, checkable=True, checked=self.rose_enabled)
         self.rose_action.toggled.connect(self.set_rose_enabled)
         self.tray_menu.addAction(self.rose_action)
+        self.scope_action = QAction("B 显发射区", self.tray_menu, checkable=True, checked=self.scope_enabled)
+        self.scope_action.toggled.connect(self.set_scope_enabled)
+        self.tray_menu.addAction(self.scope_action)
         self.tray_menu.addAction("重新开始转向", self.restart_turn)
         self.tray_menu.addAction("设置…", self.show_settings)
         self.tray_menu.addSeparator()
@@ -794,7 +957,8 @@ class OverlayApp:
                      "C": lambda: self.set_climb_enabled(not self.climb_enabled),
                      "T": lambda: self.set_turn_enabled(not self.turn_enabled), "R": self.restart_turn,
                      "A": self.settings_window.apply_pose_calibration,
-                     "K": lambda: self.set_rose_enabled(not self.rose_enabled)}
+                     "K": lambda: self.set_rose_enabled(not self.rose_enabled),
+                     "B": lambda: self.set_scope_enabled(not self.scope_enabled)}
         active, failures = {}, []
         self.settings_hotkey_available = False
         if self.desktop:
@@ -901,6 +1065,19 @@ class OverlayApp:
         self._checked(self.rose_action, enabled)
         self._sync_surface()
 
+    def set_scope_enabled(self, enabled):
+        self.scope_enabled = enabled
+        self.preferences.setValue("offense/scope_enabled", enabled)
+        self._checked(self.settings_window.scope_box, enabled)
+        self._checked(self.scope_action, enabled)
+        self._sync_surface()
+
+    def set_scope_geometry(self, scale_km, half_azimuth_deg):
+        self.scope_scale_km, self.scope_half_azimuth_deg = int(scale_km), int(half_azimuth_deg)
+        self.preferences.setValue("offense/scope_scale_km", self.scope_scale_km)
+        self.preferences.setValue("offense/scope_half_azimuth_deg", self.scope_half_azimuth_deg)
+        self.refresh()
+
     def set_rose_choice(self, choice):
         self.rose_choice = choice or ""
         self.preferences.setValue("offense/table", self.rose_choice)
@@ -908,14 +1085,29 @@ class OverlayApp:
         self.refresh()
 
     def _load_rose_library(self):
-        self.rose_library = None
+        """Kill-rose and B-scope envelope tables for the chosen missile and assumptions."""
+        self.rose_library = self.envelope_library = None
         if not self.rose_choice:
             return
+        missile, evader, chaff = self.rose_choice.split("|")
         try:
-            missile, evader, chaff = self.rose_choice.split("|")
             self.rose_library = RoseLibrary(missile, evader, float(chaff))
         except (OSError, ValueError) as exc:
             self.settings_window.error.setText(f"进攻动向图数据不可用：{exc}")
+        try:
+            self.envelope_library = EnvelopeLibrary(missile, evader, float(chaff))
+        except (OSError, ValueError):
+            pass  # Envelope tables are optional; the scope stays hidden without them.
+
+    def _update_scope(self, snapshot):
+        group, library, state = self.groups["scope"], self.envelope_library, snapshot.state
+        group.set_content(HudContent(GROUPS["scope"], (), demo=snapshot.mode == "demo"))
+        if (library is None or state is None or not state.valid or state.altitude_m is None
+                or state.tas_mps is None or not math.isfinite(state.altitude_m) or not math.isfinite(state.tas_mps)):
+            group.set_envelope(None, self.scope_scale_km * 1000., float(self.scope_half_azimuth_deg))
+            return
+        group.set_envelope(library.envelope(state.altitude_m, state.tas_mps),
+                           self.scope_scale_km * 1000., float(self.scope_half_azimuth_deg))
 
     def _update_rose(self, snapshot):
         group, library, state = self.groups["rose"], self.rose_library, snapshot.state
@@ -941,6 +1133,10 @@ class OverlayApp:
         x, y = self.groups[key].fraction
         self.preferences.setValue(f"groups/{key}/x", x)
         self.preferences.setValue(f"groups/{key}/y", y)
+        if key == "scope":
+            width, height = self.groups[key].box
+            self.preferences.setValue("groups/scope/w", width)
+            self.preferences.setValue("groups/scope/h", height)
         self.preferences.sync()
 
     def reset_positions(self):
@@ -1020,8 +1216,9 @@ class OverlayApp:
         for key, group in self.groups.items():
             group.place(viewport)
             enabled = (self.climb_enabled if key == "climb" else self.turn_enabled if key == "turn"
-                       else self.rose_enabled if key == "rose" else self.group_enabled[key])
-            has_data = group.has_data() if key == "rose" else bool(group.content.rows)
+                       else self.rose_enabled if key == "rose" else self.scope_enabled if key == "scope"
+                       else self.group_enabled[key])
+            has_data = group.has_data() if key in ("rose", "scope") else bool(group.content.rows)
             visible = allowed and enabled and (has_data or self.editing)
             if group.isVisible() != visible:
                 group.setVisible(visible)
@@ -1056,6 +1253,7 @@ class OverlayApp:
         for key, content in contents(snapshot, enabled).items():
             self.groups[key].set_content(content)
         self._update_rose(snapshot)
+        self._update_scope(snapshot)
         window = self.settings_window
         window.status.setText(snapshot.status)
         window.pose_status.setText(snapshot.attitude_status or "等待姿态数据")

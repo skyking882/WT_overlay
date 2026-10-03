@@ -64,6 +64,32 @@ def _reaction(rows, step, max_gap_s=0.):
     return reaction, sum(inside)/len(inside)
 
 
+def _scan_cell(payload):
+    """Evasion starts from 0 until the reaction window provably ends (same answer as a full sweep).
+
+    Drag is only tried when beam is hit at that start; the scan stops at an
+    immediate-reaction hit or once the hit gap exceeds ``max_gap_s``.
+    """
+    scenario, horizon, step, max_gap_s, pilot = payload
+    rows, gap, k = [], 0., 0
+    while k*step <= horizon+1e-9:
+        start = round(k*step, 6)
+        escaped = False
+        for kind in KINDS:
+            row = ew._run((scenario, replace(pilot, kind=kind, start_s=start), 2.))
+            rows.append(row)
+            if row["escaped"]:
+                escaped = True
+                break
+        if start == 0. and not escaped:
+            break
+        gap = 0. if escaped else gap+step
+        if gap > max_gap_s+1e-9:
+            break
+        k += 1
+    return rows
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--missile", required=True)
@@ -84,6 +110,8 @@ def main(argv=None):
     parser.add_argument("--max-time-s", type=float, default=60.)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--scan", choices=("early", "full"), default="early",
+                        help="early: stop each cell once its reaction window ends; full: sweep every start")
     args = parser.parse_args(argv)
 
     ranges = [float(x)*1000 for x in args.ranges_km.split(",")]
@@ -97,22 +125,25 @@ def main(argv=None):
     cells = [(rng, course, turn) for rng in ranges for course in courses for turn in turns]
     with ProcessPoolExecutor(args.workers, initializer=ew._init, initargs=init) as pool:
         bases = list(pool.map(ew._run, [(ew._scenario(_cell_args(args, c, g), r), None, 2.) for r, c, g in cells]))
-        jobs, owners = [], []
-        for cell, base in zip(cells, bases):
-            r, c, g = cell
-            if base["escaped"]:
-                continue  # Misses without evading; nothing to sweep.
-            n = int(base["flight_time_s"]/args.step_s)
-            for kind in KINDS:
-                for k in range(n+1):
-                    jobs.append((ew._scenario(_cell_args(args, c, g), r), replace(pilot, kind=kind, start_s=k*args.step_s), 2.))
-                    owners.append(cell)
-        results = list(pool.map(ew._run, jobs, chunksize=8))
+        by_cell = {cell: [] for cell in cells}
+        swept = [(cell, base) for cell, base in zip(cells, bases) if not base["escaped"]]  # Misses need no sweep.
+        if args.scan == "early":
+            payloads = [(ew._scenario(_cell_args(args, c, g), r), base["flight_time_s"], args.step_s,
+                         args.max_gap_s, pilot) for (r, c, g), base in swept]
+            for (cell, _), rows in zip(swept, pool.map(_scan_cell, payloads)):
+                by_cell[cell] = rows
+        else:
+            jobs, owners = [], []
+            for (r, c, g), base in swept:
+                for kind in KINDS:
+                    for k in range(int(base["flight_time_s"]/args.step_s)+1):
+                        jobs.append((ew._scenario(_cell_args(args, c, g), r),
+                                     replace(pilot, kind=kind, start_s=k*args.step_s), 2.))
+                        owners.append((r, c, g))
+            for cell, row in zip(owners, pool.map(ew._run, jobs, chunksize=8)):
+                by_cell[cell].append(row)
     elapsed = time.perf_counter()-began
-
-    by_cell = {cell: [] for cell in cells}
-    for cell, row in zip(owners, results):
-        by_cell[cell].append(row)
+    runs = len(cells)+sum(len(rows) for rows in by_cell.values())
     table = []
     for cell, base in zip(cells, bases):
         r, c, g = cell
@@ -130,14 +161,14 @@ def main(argv=None):
                 evader=dict(max_load=pilot.max_load, alpha_max_deg=pilot.alpha_max_deg,
                             roll_rate_deg_s=pilot.roll_rate_deg_s, dive_deg=pilot.dive_deg),
                 step_s=args.step_s, max_gap_s=args.max_gap_s, turn_sign="+ turns a crossing target further from hot, - back toward hot",
-                created=time.strftime("%Y-%m-%d %H:%M:%S"), runs=len(jobs)+len(cells), elapsed_s=round(elapsed, 1))
+                scan=args.scan, created=time.strftime("%Y-%m-%d %H:%M:%S"), runs=runs, elapsed_s=round(elapsed, 1))
     out = args.out or ew.ROOT/"data"/"offense"/(
         f"{args.missile}__{args.aircraft}__{int(args.launch_altitude_m)}m_{int(args.launch_speed_kmh)}kmh"
         f"__chaff{args.chaff_rcs_ratio:g}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(dict(meta=meta, cells=table), ensure_ascii=False, indent=1))
 
-    print(f"{len(jobs)+len(cells)} runs in {elapsed:.0f} s -> {out}")
+    print(f"{runs} runs in {elapsed:.0f} s -> {out}")
     print("reaction_s (s)   course: " + "  ".join(f"{c:>5g}" for c in courses))
     for g in turns:
         for r in ranges:

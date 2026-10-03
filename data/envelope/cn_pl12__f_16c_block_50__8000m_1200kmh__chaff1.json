@@ -1,0 +1,66 @@
+{
+ "meta": {
+  "missile": "cn_pl12",
+  "evader_aircraft": "f_16c_block_50",
+  "evader_mass_kg": 12000.0,
+  "launch_altitude_m": 8000.0,
+  "launch_speed_kmh": 1200.0,
+  "target_speed_kmh": 1000.0,
+  "chaff_rcs_ratio": 1.0,
+  "reaction_limit_s": 3.0,
+  "max_gap_s": 0.5,
+  "step_s": 0.25,
+  "range_bracket_km": [
+   2.0,
+   120.0
+  ],
+  "tolerance_km": 0.25,
+  "clutter": "geometric_mainlobe",
+  "perception": "rwr",
+  "target": "straight, course 0 hot / 180 cold",
+  "created": "2026-10-04 00:00:21",
+  "elapsed_s": 76.6
+ },
+ "rows": [
+  {
+   "azimuth_deg": 0.0,
+   "alt_diff_m": 0.0,
+   "rmax_hot": 74562.5,
+   "rmax_cold": 23750.0,
+   "r3_hot": 10250.0,
+   "rne_hot": 6250.0
+  },
+  {
+   "azimuth_deg": 15.0,
+   "alt_diff_m": 0.0,
+   "rmax_hot": 74187.5,
+   "rmax_cold": 23250.0,
+   "r3_hot": 10250.0,
+   "rne_hot": 6250.0
+  },
+  {
+   "azimuth_deg": 30.0,
+   "alt_diff_m": 0.0,
+   "rmax_hot": 73062.5,
+   "rmax_cold": 21000.0,
+   "r3_hot": 10250.0,
+   "rne_hot": 6000.0
+  },
+  {
+   "azimuth_deg": 45.0,
+   "alt_diff_m": 0.0,
+   "rmax_hot": 69500.0,
+   "rmax_cold": 20250.0,
+   "r3_hot": 11500.0,
+   "rne_hot": 5750.0
+  },
+  {
+   "azimuth_deg": 60.0,
+   "alt_diff_m": 0.0,
+   "rmax_hot": 65187.5,
+   "rmax_cold": 18875.0,
+   "r3_hot": 9437.5,
+   "rne_hot": 3750.0
+  }
+ ]
+}

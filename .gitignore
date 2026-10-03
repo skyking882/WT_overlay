@@ -10,3 +10,5 @@ Desktop.ini
 
 # Offline analysis outputs
 outputs/
+data/offense_next/
+data/envelope_next/
