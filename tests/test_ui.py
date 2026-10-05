@@ -155,6 +155,47 @@ class OverlayTests(unittest.TestCase):
         self.ui._setup_hotkeys()
         self.assertIn((0x5748, "B"), registrations)
 
+    def test_scope_low_target_band_follows_pitch_and_text_style(self):
+        folder = Path(self.temp.name) / "lowalt_window"
+        folder.mkdir()
+        # One ownship state (5000 m, 300 m/s): window 4-11 km at pitch 0, 5-13 km at 30 deg; 20 m reaches 6 km further.
+        rows = [dict(pitch_deg=p, azimuth_deg=az, worst=[near * 1000, far * 1000], reference=[near * 1000, (far + 6) * 1000])
+                for p, near, far in ((0., 4., 11.), (30., 5., 13.)) for az in (0., 30., 60.)]
+        meta = dict(missile="m", launch_altitude_m=5000., launch_speed_kmh=1080., reference_height_m=20.)
+        (folder / "m__5000m_1080kmh.json").write_text(json.dumps(dict(meta=meta, rows=rows)))
+        lowalt_patch = patch("wt_overlay.lowalt.DATA_DIR", folder)
+        lowalt_patch.start()
+        self.addCleanup(lowalt_patch.stop)
+        settings = QSettings(self.settings_path, QSettings.Format.IniFormat)
+        settings.setValue("offense/lowalt_enabled", True)
+        settings.sync()
+        self.snapshot = replace(self.snapshot, state=replace(self.snapshot.state, pitch_deg=0.))
+        self.make_rose_ui(True)
+        scope = self.ui.groups["scope"]
+        self.assertEqual(scope._lowalt_text(), "贴地 4–11 km · 20 m 时 4–17 km")
+        blue = lambda c: c.alpha() > 200 and c.blue() > 200 and 150 < c.green() < 215 and 100 < c.red() < 170  # noqa: E731
+        def blue_rows():
+            image = scope.grab().toImage()
+            return {y for y in range(0, 230) for x in range(0, image.width(), 3) if blue(image.pixelColor(x, y))}
+        self.assertTrue(any(abs(y - 188) <= 3 for y in blue_rows()))  # 11 of 40 km up from the bottom of 260 px.
+        self.snapshot = replace(self.snapshot, state=replace(self.snapshot.state, pitch_deg=30.))
+        self.ui.refresh()
+        self.assertEqual(scope._lowalt_text(), "贴地 5–13 km · 20 m 时 5–19 km")
+        self.assertTrue(any(abs(y - 175) <= 3 for y in blue_rows()))
+        self.ui.set_lowalt_style("band_worst")
+        self.assertEqual(scope._lowalt_text(), "贴地 5–13 km")
+        self.ui.set_lowalt_style("text_only")
+        self.assertFalse(any(y < 200 for y in blue_rows()))
+        self.ui.close()
+        self.ui = self.make_ui()
+        self.assertTrue(self.ui.lowalt_enabled)
+        self.assertEqual(self.ui.lowalt_style, "text_only")
+        lowalt_patch.stop()
+        with patch("wt_overlay.lowalt.DATA_DIR", Path(self.temp.name) / "none"):
+            self.ui.set_offense_option("missile", "m")
+            self.ui.refresh()
+        self.assertIn("没有贴地表", self.ui.groups["scope"]._lowalt_text())
+
     def test_side_view_is_off_by_default_and_draws_the_envelope_profile(self):
         self.assertFalse(self.ui.side_enabled)
         self.assertFalse(self.ui.groups["side"].isVisible())

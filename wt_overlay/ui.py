@@ -30,6 +30,7 @@ from .climb import CUE_DEADBAND_DEG, CUE_RANGE_DEG, validate_request
 from . import pk
 from .fm.catalog import aircraft_catalog, find_aircraft
 from .hud import INDICATORS, HudContent, contents, details
+from .lowalt import LowAltLibrary
 from .offense import MODES, REACH_P, SKILLS, OffenseAdvisor, available, course_for_blip_direction
 from .windows import GameWindow, WindowsDesktop
 from .turn import validate_settings
@@ -50,6 +51,10 @@ ROSE_UNREACHABLE = QColor(44, 44, 42, 120)
 # (line, label, colour, dashed): ranges from data/envelope tables.
 SCOPE_LINES = (("rmax_hot", "Rmax 迎头", "#EF9F27", False), ("rmax_cold", "Rmax 背离", "#EF9F27", True),
                ("pk25_hot", "命中 25%", "#E24B4A", True), ("pk50_hot", "命中 50%", "#E24B4A", False))
+# Low-target mode on the B-scope: band colour and the text-line styles offered in settings.
+LOWALT_COLOR = "#85B7EB"
+LOWALT_STYLES = {"band_reference": "带 + 最差距离 + 20 m 参考", "band_worst": "带 + 只写最差距离",
+                 "text_only": "只写文字，不画带"}
 # Enemy types offered as the assumed target (first = default) and their assumed speeds.
 ENEMY_AIRCRAFT = ("f_16c_block_50", "su_27sm", "j_11b", "su_30sm", "mig_29_9_13", "f_15c_msip2", "j_10c",
                   "ef_2000_typhoon_aesa", "rafale_c_f3", "saab_jas39c", "fa_18c_late", "mirage_2000_5f")
@@ -371,11 +376,18 @@ class ScopeGroup(HudGroup):
         self.scale_m, self.half_azimuth_deg = 40000.0, 60.0
         self.box = (260, 260)
         self._resize = None
+        self.lowalt, self.lowalt_style, self.lowalt_note = None, "band_reference", ""
         super().__init__(key, font, color)
 
     def set_envelope(self, envelope, scale_m, half_azimuth_deg):
         if (envelope, scale_m, half_azimuth_deg) != (self.envelope, self.scale_m, self.half_azimuth_deg):
             self.envelope, self.scale_m, self.half_azimuth_deg = envelope, scale_m, half_azimuth_deg
+            self.update()
+
+    def set_lowalt(self, window, style, note=""):
+        """Low-target mode: the window from wt_overlay.lowalt (None = off) and how to show it."""
+        if (window, style, note) != (self.lowalt, self.lowalt_style, self.lowalt_note):
+            self.lowalt, self.lowalt_style, self.lowalt_note = window, style, note
             self.update()
 
     def set_box(self, width, height):
@@ -384,7 +396,7 @@ class ScopeGroup(HudGroup):
         self.update()
 
     def has_data(self):
-        return self.envelope is not None
+        return self.envelope is not None or self.lowalt is not None or bool(self.lowalt_note)
 
     def _measure(self):
         super()._measure()
@@ -412,9 +424,11 @@ class ScopeGroup(HudGroup):
             self._text(painter, 8, 8 + self.small_metrics.ascent(),
                        f"{self.content.title} · {self.scale_m / 1000:g} km · ±{self.half_azimuth_deg:g}°",
                        self.small_font, self.accent)
+        labels = []
+        painter.setClipRect(self.rect())
+        if self.lowalt is not None and self.lowalt_style != "text_only":
+            self._draw_lowalt_band(painter, labels)
         if self.envelope is not None:
-            painter.setClipRect(self.rect())
-            labels = []
             for name, label, color, dashed in SCOPE_LINES:
                 points = [(az, r) for az, r in self.envelope.line(name) if r is not None]
                 if len(points) < 2:
@@ -430,8 +444,49 @@ class ScopeGroup(HudGroup):
                     value = ">45" if self.envelope.is_capped(name) else f"{center / 1000:.0f}"
                     labels.append((("↑ " if above else "") + f"{label} {value}", color,
                                    self.small_metrics.ascent() + 2 if above else self._point(0.0, center).y() - 3))
-            self._draw_labels(painter, labels)
+        self._draw_labels(painter, labels)
+        text = self._lowalt_text()
+        if text:
+            self._draw_lowalt_text(painter, text)
         painter.end()
+
+    def _draw_lowalt_band(self, painter, labels):
+        """Shade the low-target window: solid far edge (multipath), dashed near edge (dive limit)."""
+        band = self.lowalt.band()
+        if len(band) < 2:
+            return
+        far = [QPointF(self._point(az, r)) for az, _, r in band]
+        near = [QPointF(self._point(az, r)) for az, r, _ in band]
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(133, 183, 235, 45))
+        painter.drawPolygon(QPolygonF(far + near[::-1]))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for points, width, style in ((far, 2.5, Qt.PenStyle.SolidLine), (near, 1.5, Qt.PenStyle.DashLine)):
+            painter.setPen(QPen(QColor(0, 0, 0, 200), width + 2))
+            painter.drawPolyline(points)
+            painter.setPen(QPen(QColor(LOWALT_COLOR), width, style))
+            painter.drawPolyline(points)
+        center = self.lowalt.center()
+        if center is not None and center[1] <= self.scale_m:
+            labels.append((f"贴地 {center[1] / 1000:.0f}", LOWALT_COLOR, self._point(0.0, center[1]).y() - 3))
+
+    def _lowalt_text(self):
+        if self.lowalt is None:
+            return self.lowalt_note
+        km = lambda w: "打不到" if w is None else f"{round(w[0] / 500) / 2:g}–{round(w[1] / 500) / 2:g} km"  # noqa: E731
+        text = f"贴地 {km(self.lowalt.center())}"
+        if self.lowalt_style != "band_worst":
+            text += f" · {self.lowalt.reference_height_m:g} m 时 {km(self.lowalt.center('reference'))}"
+        return text + (" · 超出表格" if self.lowalt.clamped else "")
+
+    def _draw_lowalt_text(self, painter, text):
+        small = self.small_metrics
+        box = QRectF(4, self.height() - small.height() - 8, small.horizontalAdvance(text) + 10, small.height() + 4)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 150))
+        painter.drawRoundedRect(box, 3, 3)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        self._text(painter, box.left() + 5, box.top() + 2 + small.ascent(), text, self.small_font, LOWALT_COLOR)
 
     def _draw_labels(self, painter, labels):
         """Place each label right of centre, else on the left or right edge, avoiding overlaps."""
@@ -895,6 +950,23 @@ class SettingsWindow(QWidget):
         self.side_box.setChecked(owner.side_enabled)
         self.side_box.toggled.connect(owner.set_side_enabled)
         form.addRow(self.side_box)
+        self.lowalt_box = QCheckBox("B 显贴地模式")
+        self.lowalt_box.setChecked(owner.lowalt_enabled)
+        self.lowalt_box.toggled.connect(owner.set_lowalt_enabled)
+        form.addRow(self.lowalt_box)
+        self.lowalt_style = QComboBox()
+        for key, label in LOWALT_STYLES.items():
+            self.lowalt_style.addItem(label, key)
+        self.lowalt_style.setCurrentIndex(max(0, self.lowalt_style.findData(owner.lowalt_style)))
+        self.lowalt_style.currentIndexChanged.connect(lambda i: owner.set_lowalt_style(self.lowalt_style.itemData(i)))
+        form.addRow("贴地显示", self.lowalt_style)
+        lowalt_help = QLabel("贴地模式：目标贴地飞（离地 60 m 内，分不清多低）时打开，需同时打开 B 显发射区。"
+                             "浅蓝带 = 按你当前高度、真空速和机头俯仰现在发射，离地 25–35 m（多径最强）的直飞目标"
+                             "迎头和背离都能命中的距离段：远端实线由多径决定，近端虚线由导弹能压多陡决定。"
+                             "抬头带往外推，压机头往回收。多径增益取 0.5（一次 7000 m、1.5 马赫、约 17 km 命中的经验）；"
+                             "导引头没锁上时靠数据链，本机雷达须一直跟住。导弹跟随上面的选择。")
+        lowalt_help.setWordWrap(True)
+        form.addRow(lowalt_help)
         side_help = QLabel("高度侧视图：横轴 = 发射距离（量程与上面的 B 显量程相同），纵轴 = 目标高度减本机高度"
                            "（目标更高在上）。线型与 B 显发射区一致，为迎头直线飞行的发射区边界。")
         side_help.setWordWrap(True)
@@ -1074,6 +1146,10 @@ class OverlayApp:
         self._rose_cache = (None, None)
         self.scope_enabled = self.preferences.value("offense/scope_enabled", False, type=bool)
         self.side_enabled = self.preferences.value("offense/side_enabled", False, type=bool)
+        self.lowalt_enabled = self.preferences.value("offense/lowalt_enabled", False, type=bool)
+        style = self.preferences.value("offense/lowalt_style", "band_reference", type=str)
+        self.lowalt_style = style if style in LOWALT_STYLES else "band_reference"
+        self.lowalt_library = None
         self.scope_scale_km = self.preferences.value("offense/scope_scale_km", 40, type=int)
         self.scope_scale_km = self.scope_scale_km if self.scope_scale_km in SCOPE_RANGES_KM else 40
         self.scope_half_azimuth_deg = self.preferences.value("offense/scope_half_azimuth_deg", 60, type=int)
@@ -1154,6 +1230,9 @@ class OverlayApp:
         self.side_action = QAction("高度侧视图", self.tray_menu, checkable=True, checked=self.side_enabled)
         self.side_action.toggled.connect(self.set_side_enabled)
         self.tray_menu.addAction(self.side_action)
+        self.lowalt_action = QAction("B 显贴地模式", self.tray_menu, checkable=True, checked=self.lowalt_enabled)
+        self.lowalt_action.toggled.connect(self.set_lowalt_enabled)
+        self.tray_menu.addAction(self.lowalt_action)
         self.tray_menu.addAction("重新开始转向", self.restart_turn)
         self.tray_menu.addAction("设置…", self.show_settings)
         self.tray_menu.addSeparator()
@@ -1293,6 +1372,18 @@ class OverlayApp:
         self._checked(self.side_action, enabled)
         self._sync_surface()
 
+    def set_lowalt_enabled(self, enabled):
+        self.lowalt_enabled = enabled
+        self.preferences.setValue("offense/lowalt_enabled", enabled)
+        self._checked(self.settings_window.lowalt_box, enabled)
+        self._checked(self.lowalt_action, enabled)
+        self.refresh()
+
+    def set_lowalt_style(self, style):
+        self.lowalt_style = style if style in LOWALT_STYLES else "band_reference"
+        self.preferences.setValue("offense/lowalt_style", self.lowalt_style)
+        self.refresh()
+
     def set_scope_geometry(self, scale_km, half_azimuth_deg):
         self.scope_scale_km, self.scope_half_azimuth_deg = int(scale_km), int(half_azimuth_deg)
         self.preferences.setValue("offense/scope_scale_km", self.scope_scale_km)
@@ -1308,6 +1399,10 @@ class OverlayApp:
 
     def _load_advisor(self):
         """Hit-probability model for the chosen missile under the current target assumption."""
+        try:
+            self.lowalt_library = LowAltLibrary(self.offense_missile) if self.offense_missile else None
+        except (OSError, ValueError, KeyError):
+            self.lowalt_library = None  # Low-target tables are optional; the mode then says so.
         self.advisor = None
         self._envelope_job, self._envelope_cache, self._rose_cache = None, (None, None), (None, None)
         if not self.offense_missile:
@@ -1352,10 +1447,23 @@ class OverlayApp:
                                                                  state.tas_mps))
         return cached
 
+    def _lowalt_for(self, state):
+        """(window, note) for the B-scope low-target mode at the current altitude, TAS and pitch."""
+        if not self.lowalt_enabled:
+            return None, ""
+        if self.lowalt_library is None:
+            return None, f"贴地：{MISSILE_NAMES.get(self.offense_missile, self.offense_missile)} 没有贴地表"
+        values = None if state is None or not state.valid else (state.altitude_m, state.tas_mps, state.pitch_deg)
+        if values is None or any(v is None or not math.isfinite(v) for v in values):
+            return None, "贴地：等待高度、速度和俯仰"
+        return self.lowalt_library.window(*values), ""
+
     def _update_scope(self, snapshot):
         group, side, library, state = (self.groups["scope"], self.groups["side"], self.advisor, snapshot.state)
         for key in ("scope", "side"):
             self.groups[key].set_content(HudContent(GROUPS[key], (), demo=snapshot.mode == "demo"))
+        window, note = self._lowalt_for(state)
+        group.set_lowalt(window, self.lowalt_style, note)
         scale_m = self.scope_scale_km * 1000.
         if (library is None or state is None or not state.valid or state.altitude_m is None
                 or state.tas_mps is None or not math.isfinite(state.altitude_m) or not math.isfinite(state.tas_mps)):
