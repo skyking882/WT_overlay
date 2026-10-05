@@ -3,9 +3,11 @@
 
 For each launch range, target course relative to the line of sight (0 = hot,
 180 = cold; left/right assumed symmetric) and target pre-launch turn, runs the
-FM evader (beam and drag) at every start time on a fixed grid and records
-``reaction_s``: the largest t such that every start in [0, t] escapes with the
-better of beam and drag. 0 means even an immediate reaction is hit. Positive
+FM evader at every start time on a fixed grid and records ``reaction_s``: the
+largest t such that every start in [0, t] escapes with at least one plan.
+``--evasion library`` (default) tries the maneuver building-block library of
+optimize_evasion.py (heading x turn plane x dive); ``beamdrag`` only level
+beam and level drag. 0 means even an immediate reaction is hit. Positive
 turn g turns a crossing target further from hot; negative turns it back hot.
 
 Writes JSON under data/offense/. All modelling limits of escape_window.py and
@@ -17,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,13 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import escape_window as ew  # noqa: E402
 
-from wt_overlay.escape import KINDS, EvasionPilot  # noqa: E402
+from optimize_evasion import LIBRARY, _pilot  # noqa: E402
+
+from wt_overlay.escape import EvasionPilot  # noqa: E402
+
+# Level beam and drag first: they escape most often, and a start stops at its first escape.
+FIRST = [(90., 0., 0.), (0., 0., 0.)]
+PLANS = {"library": FIRST+[p for p in LIBRARY if p not in FIRST], "beamdrag": FIRST}
 
 
 def _cell_args(args, course, turn_g):
@@ -39,7 +46,7 @@ def _cell_args(args, course, turn_g):
 
 
 def _reaction(rows, step, max_gap_s=0.):
-    """(reaction_s, reliability) from per-start outcomes, best of all kinds.
+    """(reaction_s, reliability) from per-start outcomes, best of all plans.
 
     reaction_s is the end of the escaping run that starts at 0, bridging hit
     gaps no longer than ``max_gap_s`` (single-tick hits from chaff phase are
@@ -67,16 +74,16 @@ def _reaction(rows, step, max_gap_s=0.):
 def _scan_cell(payload):
     """Evasion starts from 0 until the reaction window provably ends (same answer as a full sweep).
 
-    Drag is only tried when beam is hit at that start; the scan stops at an
-    immediate-reaction hit or once the hit gap exceeds ``max_gap_s``.
+    Plans are tried in order and a start stops at its first escape; the scan
+    stops at an immediate-reaction hit or once the hit gap exceeds ``max_gap_s``.
     """
-    scenario, horizon, step, max_gap_s, pilot = payload
+    scenario, horizon, step, max_gap_s, plans = payload
     rows, gap, k = [], 0., 0
     while k*step <= horizon+1e-9:
         start = round(k*step, 6)
         escaped = False
-        for kind in KINDS:
-            row = ew._run((scenario, replace(pilot, kind=kind, start_s=start), 2.))
+        for plan in plans:
+            row = ew._run((scenario, _pilot(start, plan), 2.))
             rows.append(row)
             if row["escaped"]:
                 escaped = True
@@ -112,6 +119,11 @@ def main(argv=None):
     parser.add_argument("--out", type=Path)
     parser.add_argument("--scan", choices=("early", "full"), default="early",
                         help="early: stop each cell once its reaction window ends; full: sweep every start")
+    parser.add_argument("--evasion", choices=tuple(PLANS), default="library")
+    parser.add_argument("--clutter", choices=("look_down_angle", "geometric_mainlobe", "look_down"),
+                        default="look_down_angle")
+    parser.add_argument("--clutter-depression-deg", type=float, default=2.)
+    parser.add_argument("--no-cw", dest="cw", action="store_false")
     args = parser.parse_args(argv)
 
     ranges = [float(x)*1000 for x in args.ranges_km.split(",")]
@@ -119,8 +131,10 @@ def main(argv=None):
     turns = [float(x) for x in args.turns_g.split(",")]
     chaff = (args.chaff_rcs_ratio, 1., 1, 30) if args.chaff_rcs_ratio > 0 else None
     pilot = EvasionPilot("beam", 0.)
+    plans = PLANS[args.evasion]
+    depression = args.clutter_depression_deg if args.clutter == "look_down_angle" else None
     init = (str(args.missile_sim), args.missile, args.aircraft, args.mass_kg, True, chaff, "rwr",
-            (0., .1, 1.), "geometric_mainlobe")
+            (0., .1, 1.), args.clutter, depression, args.cw)
     began = time.perf_counter()
     cells = [(rng, course, turn) for rng in ranges for course in courses for turn in turns]
     with ProcessPoolExecutor(args.workers, initializer=ew._init, initargs=init) as pool:
@@ -129,16 +143,15 @@ def main(argv=None):
         swept = [(cell, base) for cell, base in zip(cells, bases) if not base["escaped"]]  # Misses need no sweep.
         if args.scan == "early":
             payloads = [(ew._scenario(_cell_args(args, c, g), r), base["flight_time_s"], args.step_s,
-                         args.max_gap_s, pilot) for (r, c, g), base in swept]
+                         args.max_gap_s, plans) for (r, c, g), base in swept]
             for (cell, _), rows in zip(swept, pool.map(_scan_cell, payloads)):
                 by_cell[cell] = rows
         else:
             jobs, owners = [], []
             for (r, c, g), base in swept:
-                for kind in KINDS:
+                for plan in plans:
                     for k in range(int(base["flight_time_s"]/args.step_s)+1):
-                        jobs.append((ew._scenario(_cell_args(args, c, g), r),
-                                     replace(pilot, kind=kind, start_s=k*args.step_s), 2.))
+                        jobs.append((ew._scenario(_cell_args(args, c, g), r), _pilot(k*args.step_s, plan), 2.))
                         owners.append((r, c, g))
             for cell, row in zip(owners, pool.map(ew._run, jobs, chunksize=8)):
                 by_cell[cell].append(row)
@@ -148,18 +161,22 @@ def main(argv=None):
     for cell, base in zip(cells, bases):
         r, c, g = cell
         rows = by_cell[cell]
+        reaction = None if base["escaped"] else _reaction(rows, args.step_s, args.max_gap_s)
+        last = [row for row in rows if row["escaped"] and reaction and abs(row["start_s"]-reaction[0]) < 1e-9]
         table.append(dict(range_m=r, course_deg=c, turn_g=g, unevaded_hit=not base["escaped"],
                           time_of_flight_s=base["flight_time_s"],
                           **(dict(reaction_s=None, reliability=None) if base["escaped"] else
-                             dict(zip(("reaction_s", "reliability"), _reaction(rows, args.step_s, args.max_gap_s)))),
+                             dict(zip(("reaction_s", "reliability"), reaction))),
+                          plan_at_reaction=last[0]["plan"] if last else None,
                           escaped_starts=sorted({row["start_s"] for row in rows if row["escaped"]}),
                           faults=sum(1 for row in rows if row["fault"])))
     meta = dict(missile=args.missile, evader_aircraft=args.aircraft, evader_mass_kg=args.mass_kg,
                 launch_altitude_m=args.launch_altitude_m, launch_speed_kmh=args.launch_speed_kmh,
                 target_altitude_m=args.target_altitude_m, target_speed_kmh=args.target_speed_kmh,
-                chaff_rcs_ratio=args.chaff_rcs_ratio, clutter="geometric_mainlobe", perception="rwr",
+                chaff_rcs_ratio=args.chaff_rcs_ratio, clutter=args.clutter, clutter_min_depression_deg=depression,
+                cw_on_clear_beam=args.cw, perception="rwr", evasion=args.evasion, plans=plans,
                 evader=dict(max_load=pilot.max_load, alpha_max_deg=pilot.alpha_max_deg,
-                            roll_rate_deg_s=pilot.roll_rate_deg_s, dive_deg=pilot.dive_deg),
+                            roll_rate_deg_s=pilot.roll_rate_deg_s),
                 step_s=args.step_s, max_gap_s=args.max_gap_s, turn_sign="+ turns a crossing target further from hot, - back toward hot",
                 scan=args.scan, created=time.strftime("%Y-%m-%d %H:%M:%S"), runs=runs, elapsed_s=round(elapsed, 1))
     out = args.out or ew.ROOT/"data"/"offense"/(

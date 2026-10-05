@@ -9,8 +9,8 @@ range for four lines (target straight at 1000 km/h by default):
     r3_hot     farthest range where a hot target has under 3 s to react
     rne_hot    farthest range where a hot target cannot escape at all
 
-Reaction uses the same rule as build_reaction_table.py (beam or drag, chaff,
-gaps up to --max-gap-s bridged). Each predicate is assumed monotone in range
+Reaction uses the same rule as build_reaction_table.py (any plan of
+--evasion, chaff, gaps up to --max-gap-s bridged). Each predicate is assumed monotone in range
 inside its first band, found on a coarse range ladder; a line is None when the
 property never holds on the ladder (e.g. no escape even at 2 km). All modelling limits of escape_window.py apply.
 
@@ -29,9 +29,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import escape_window as ew  # noqa: E402
-from build_reaction_table import _reaction, _scan_cell  # noqa: E402
-
-from wt_overlay.escape import EvasionPilot  # noqa: E402
+from build_reaction_table import PLANS, _reaction, _scan_cell  # noqa: E402
 
 LINES = ("rmax_hot", "rmax_cold", "r3_hot", "rne_hot")
 COARSE_KM = (2, 3, 4, 5, 7, 10, 14, 20, 28, 40, 56, 80, 120)
@@ -56,11 +54,11 @@ def _predicate(task, range_m):
     if unevaded["escaped"]:
         return False
     if line == "rne_hot":
-        # No escape: an immediate beam or drag is still hit.
-        rows = _scan_cell((scenario, 0., base.step_s, base.max_gap_s, EvasionPilot("beam", 0.)))
+        # No escape: every plan started immediately is still hit.
+        rows = _scan_cell((scenario, 0., base.step_s, base.max_gap_s, base.plans))
         return not any(row["escaped"] for row in rows)
     horizon = min(unevaded["flight_time_s"], base.reaction_limit_s+base.max_gap_s)
-    rows = _scan_cell((scenario, horizon, base.step_s, base.max_gap_s, EvasionPilot("beam", 0.)))
+    rows = _scan_cell((scenario, horizon, base.step_s, base.max_gap_s, base.plans))
     reaction, _ = _reaction(rows, base.step_s, base.max_gap_s)
     return reaction < base.reaction_limit_s
 
@@ -110,6 +108,11 @@ def main(argv=None):
     parser.add_argument("--max-range-km", type=float, default=120.)
     parser.add_argument("--tolerance-km", type=float, default=.25)
     parser.add_argument("--max-time-s", type=float, default=150.)
+    parser.add_argument("--evasion", choices=tuple(PLANS), default="library")
+    parser.add_argument("--clutter", choices=("look_down_angle", "geometric_mainlobe", "look_down"),
+                        default="look_down_angle")
+    parser.add_argument("--clutter-depression-deg", type=float, default=2.)
+    parser.add_argument("--no-cw", dest="cw", action="store_false")
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
@@ -117,13 +120,14 @@ def main(argv=None):
                            target_speed_kmh=args.target_speed_kmh, max_time_s=args.max_time_s,
                            reaction_limit_s=args.reaction_limit_s, step_s=args.step_s, max_gap_s=args.max_gap_s,
                            min_range_m=args.min_range_km*1000, max_range_m=args.max_range_km*1000,
-                           tolerance_m=args.tolerance_km*1000)
+                           tolerance_m=args.tolerance_km*1000, plans=PLANS[args.evasion])
     azimuths = [float(x) for x in args.azimuths_deg.split(",")]
     diffs = [float(x) for x in args.alt_diffs_m.split(",")]
     tasks = [(line, base, az, dh) for az in azimuths for dh in diffs for line in LINES]
     chaff = (args.chaff_rcs_ratio, 1., 1, 30) if args.chaff_rcs_ratio > 0 else None
+    depression = args.clutter_depression_deg if args.clutter == "look_down_angle" else None
     init = (str(args.missile_sim), args.missile, args.aircraft, args.mass_kg, True, chaff, "rwr",
-            (0., .1, 1.), "geometric_mainlobe")
+            (0., .1, 1.), args.clutter, depression, args.cw)
     began = time.perf_counter()
     with ProcessPoolExecutor(args.workers, initializer=ew._init, initargs=init) as pool:
         results = list(pool.map(_bisect, tasks, chunksize=1))
@@ -136,7 +140,8 @@ def main(argv=None):
                 target_speed_kmh=args.target_speed_kmh, chaff_rcs_ratio=args.chaff_rcs_ratio,
                 reaction_limit_s=args.reaction_limit_s, max_gap_s=args.max_gap_s, step_s=args.step_s,
                 range_bracket_km=[args.min_range_km, args.max_range_km], tolerance_km=args.tolerance_km,
-                clutter="geometric_mainlobe", perception="rwr", target="straight, course 0 hot / 180 cold",
+                clutter=args.clutter, clutter_min_depression_deg=depression, cw_on_clear_beam=args.cw,
+                evasion=args.evasion, perception="rwr", target="straight, course 0 hot / 180 cold",
                 created=time.strftime("%Y-%m-%d %H:%M:%S"), elapsed_s=round(elapsed, 1))
     out = args.out or ew.ROOT/"data"/"envelope"/(
         f"{args.missile}__{args.aircraft}__{int(args.launch_altitude_m)}m_{int(args.launch_speed_kmh)}kmh"

@@ -15,52 +15,135 @@
    120.0
   ],
   "tolerance_km": 0.25,
-  "clutter": "geometric_mainlobe",
+  "clutter": "look_down_angle",
+  "clutter_min_depression_deg": 2.0,
+  "cw_on_clear_beam": true,
+  "evasion": "library",
   "perception": "rwr",
   "target": "straight, course 0 hot / 180 cold",
-  "created": "2026-10-04 00:00:21",
-  "elapsed_s": 76.6
+  "created": "2026-10-04 14:42:04",
+  "elapsed_s": 238.7
  },
  "rows": [
+  {
+   "azimuth_deg": 0.0,
+   "alt_diff_m": -3000.0,
+   "rmax_hot": 64812.5,
+   "rmax_cold": 19250.0,
+   "r3_hot": 7000,
+   "rne_hot": null
+  },
   {
    "azimuth_deg": 0.0,
    "alt_diff_m": 0.0,
    "rmax_hot": 74562.5,
    "rmax_cold": 23750.0,
-   "r3_hot": 10250.0,
-   "rne_hot": 6250.0
+   "r3_hot": 8875.0,
+   "rne_hot": 4750.0
+  },
+  {
+   "azimuth_deg": 0.0,
+   "alt_diff_m": 3000.0,
+   "rmax_hot": 77562.5,
+   "rmax_cold": 28000,
+   "r3_hot": 11750.0,
+   "rne_hot": 7375.0
+  },
+  {
+   "azimuth_deg": 15.0,
+   "alt_diff_m": -3000.0,
+   "rmax_hot": 64437.5,
+   "rmax_cold": 19062.5,
+   "r3_hot": 6750.0,
+   "rne_hot": null
   },
   {
    "azimuth_deg": 15.0,
    "alt_diff_m": 0.0,
    "rmax_hot": 74187.5,
    "rmax_cold": 23250.0,
-   "r3_hot": 10250.0,
-   "rne_hot": 6250.0
+   "r3_hot": 8875.0,
+   "rne_hot": 4750.0
+  },
+  {
+   "azimuth_deg": 15.0,
+   "alt_diff_m": 3000.0,
+   "rmax_hot": 77187.5,
+   "rmax_cold": 27000.0,
+   "r3_hot": 10500.0,
+   "rne_hot": 7187.5
+  },
+  {
+   "azimuth_deg": 30.0,
+   "alt_diff_m": -3000.0,
+   "rmax_hot": 63312.5,
+   "rmax_cold": 18500.0,
+   "r3_hot": 5000,
+   "rne_hot": null
   },
   {
    "azimuth_deg": 30.0,
    "alt_diff_m": 0.0,
    "rmax_hot": 73062.5,
    "rmax_cold": 21000.0,
+   "r3_hot": 8500.0,
+   "rne_hot": 4500.0
+  },
+  {
+   "azimuth_deg": 30.0,
+   "alt_diff_m": 3000.0,
+   "rmax_hot": 75875.0,
+   "rmax_cold": 24750.0,
    "r3_hot": 10250.0,
-   "rne_hot": 6000.0
+   "rne_hot": null
+  },
+  {
+   "azimuth_deg": 45.0,
+   "alt_diff_m": -3000.0,
+   "rmax_hot": 61437.5,
+   "rmax_cold": 17750.0,
+   "r3_hot": null,
+   "rne_hot": null
   },
   {
    "azimuth_deg": 45.0,
    "alt_diff_m": 0.0,
    "rmax_hot": 69500.0,
    "rmax_cold": 20250.0,
-   "r3_hot": 11500.0,
-   "rne_hot": 5750.0
+   "r3_hot": 8125.0,
+   "rne_hot": 4000
+  },
+  {
+   "azimuth_deg": 45.0,
+   "alt_diff_m": 3000.0,
+   "rmax_hot": 72125.0,
+   "rmax_cold": 22500.0,
+   "r3_hot": 10000,
+   "rne_hot": null
+  },
+  {
+   "azimuth_deg": 60.0,
+   "alt_diff_m": -3000.0,
+   "rmax_hot": 58437.5,
+   "rmax_cold": 16437.5,
+   "r3_hot": null,
+   "rne_hot": null
   },
   {
    "azimuth_deg": 60.0,
    "alt_diff_m": 0.0,
    "rmax_hot": 65187.5,
    "rmax_cold": 18875.0,
+   "r3_hot": 7562.5,
+   "rne_hot": null
+  },
+  {
+   "azimuth_deg": 60.0,
+   "alt_diff_m": 3000.0,
+   "rmax_hot": 67625.0,
+   "rmax_cold": 21250.0,
    "r3_hot": 9437.5,
-   "rne_hot": 3750.0
+   "rne_hot": null
   }
  ]
 }

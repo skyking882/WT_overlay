@@ -35,7 +35,8 @@ from wt_overlay.turn import ManeuverModel  # noqa: E402
 _CTX = {}
 
 
-def _init(missile_sim, missile_id, aircraft, mass, afterburner, chaff, perception, crank, clutter):
+def _init(missile_sim, missile_id, aircraft, mass, afterburner, chaff, perception, crank, clutter, depression=None,
+          cw=False, launcher_gimbal_deg=None, require_lock=False):
     sys.path.insert(0, str(Path(missile_sim) / "src"))
     from aim120_model.chaff import ChaffProgram, ChaffSpec, chaffing_factory
     from aim120_model.profile_catalog import load_profile_catalog
@@ -49,6 +50,11 @@ def _init(missile_sim, missile_id, aircraft, mass, afterburner, chaff, perceptio
         raise SystemExit(f"unknown missile {missile_id}; library errors: {errors[:3]}")
     profile = found[missile_id]
     _CTX.update(simulate=simulate, state=TargetState, profile=profile, clutter=clutter,
+                clutter_kwargs={**({} if depression is None else {"clutter_min_depression_deg": depression}),
+                                **({"cw_on_clear_beam": True} if cw else {}),
+                                **({} if launcher_gimbal_deg is None else
+                                   {"launcher_radar_gimbal_deg": launcher_gimbal_deg}),
+                                **({"require_seeker_lock": True} if require_lock else {})},
                 model=ManeuverModel(load_aircraft(aircraft), mass, afterburner))
     if perception == "rwr":
         # Marker visible while the motor burns; RWR sees the active seeker.
@@ -82,9 +88,10 @@ def _run(job):
     if pilot is not None and "chaff" in _CTX:
         factory = _CTX["chaff"](factory, pilot.start_s)
     result = _CTX["simulate"](_CTX["profile"], scenario, target_factory=factory, early_miss_s=early_miss_s,
-                              clutter_model=_CTX["clutter"])
+                              clutter_model=_CTX["clutter"], **_CTX["clutter_kwargs"])
     summary, evader = result["summary"], result["model"].get("target_model") or {}
     return dict(range_m=scenario["initial_distance_m"], kind=pilot.kind if pilot else "none",
+                plan=pilot.describe() if pilot else None,
                 start_s=pilot.start_s if pilot else 0.0, event=summary["termination_event"],
                 flight_time_s=round(summary["flight_time_s"], 3),
                 min_distance_m=round(summary["minimum_distance_m"], 1),
@@ -173,8 +180,13 @@ def main(argv=None):
     parser.add_argument("--perception", choices=("rwr", "truth"), default="rwr",
                         help="rwr: evade the missile only while its motor burns or its seeker is active, "
                              "else the launcher; truth: always the true missile")
-    parser.add_argument("--clutter", choices=("geometric_mainlobe", "look_down"), default="geometric_mainlobe",
+    parser.add_argument("--clutter", choices=("look_down_angle", "geometric_mainlobe", "look_down"),
+                        default="look_down_angle",
                         help="missile_sim clutter notch condition; look_down flips on centimetres at co-altitude")
+    parser.add_argument("--clutter-depression-deg", type=float, default=2.,
+                        help="look_down_angle: minimum line-of-sight depression for ground clutter")
+    parser.add_argument("--no-cw", dest="cw", action="store_false",
+                        help="disable: chaff captures a beaming target with no clutter behind it (CW mode)")
     parser.add_argument("--azimuth-deg", type=float, default=0.,
                         help="target off-boresight angle at launch (missile_sim target_azimuth_deg)")
     parser.add_argument("--crank-deg", type=float, default=0.,
@@ -216,7 +228,8 @@ def main(argv=None):
         raise SystemExit("--crank-deg only changes the target's perception; use --perception rwr")
     crank = (crank_rad, args.crank_g*9.80665/(args.launch_speed_kmh/3.6), args.crank_start_s)
     init = (str(args.missile_sim), args.missile, args.aircraft, args.mass_kg, args.afterburner, chaff,
-            args.perception, crank, args.clutter)
+            args.perception, crank, args.clutter,
+            args.clutter_depression_deg if args.clutter == "look_down_angle" else None, args.cw)
     with ProcessPoolExecutor(args.workers, initializer=_init, initargs=init) as pool:
         baselines = {r["range_m"]: r for r in pool.map(_run, [(_scenario(args, rng), None, early) for rng in ranges])}
         jobs = [(_scenario(args, rng), pilot(kind, start), early) for rng in ranges for kind in kinds for start in starts

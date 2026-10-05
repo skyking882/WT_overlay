@@ -66,6 +66,28 @@ class EvaderTests(unittest.TestCase):
         self.assertGreater(radial(states[-1]), .95*speed)
         self.assertLess(abs(states[-1].position[1]-8000.), 600.)
 
+    def test_recommit_turns_back_on_the_launcher(self):
+        times = {}
+        for kind in ("beam", "drag"):
+            evader = FMEvader(HeadOn(), EvasionPilot(kind, 0.), self.model)
+            fly(evader, 15)
+            back = evader.recommit(10.)
+            self.assertIsNotNone(back)
+            self.assertAlmostEqual(evader._times[-1]-10., back["seconds"])  # Later history was replaced.
+            self.assertLess(abs(back["altitude_m"]-8000.), 1000.)  # A max-rate turn at AoA limit sinks.
+            times[kind] = back["seconds"]
+        self.assertLess(times["beam"], times["drag"])  # Beam is 90 deg off; drag is 180.
+        self.assertGreater(times["drag"], 5.)
+
+    def test_recommit_before_a_late_evasion_start(self):
+        # The missile passed at 3 s, before the evasion started at 5 s: the turn back starts
+        # at 5 s and the 2 s straight leg before it counts. Head-on, the nose is already on.
+        evader = FMEvader(HeadOn(), EvasionPilot("beam", 5.), self.model)
+        fly(evader, 8)
+        back = evader.recommit(3.)
+        self.assertIsNotNone(back)
+        self.assertAlmostEqual(back["seconds"], 2.)
+
     def test_dive_trades_altitude_for_speed(self):
         level, dive = (FMEvader(HeadOn(), EvasionPilot("drag", 0., dive_deg=d), self.model) for d in (0., 20.))
         a, b = fly(level, 20)[-1], fly(dive, 20)[-1]
@@ -111,6 +133,26 @@ class EvaderTests(unittest.TestCase):
         evader.observe_missile(5., (6000., 8000., -3000.), (900., 0., 0.))
         self.assertEqual(evader._reference((20000., 0., 8000.)), to_enu((6000., 8000., -3000.)))
         self.assertEqual(evader.describe()["perception"], "truth")
+
+    def test_split_s_reverses_through_the_vertical_and_pulls_out(self):
+        evader = FMEvader(HeadOn(), EvasionPilot("drag", 0., plane_deg=90.), self.model)
+        states = fly(evader, 14)
+        lowest_fpa = min(math.degrees(math.asin(s.velocity[1]/norm(s.velocity))) for s in states)
+        self.assertLess(lowest_fpa, -80.)  # Went through (nearly) straight down, not a level turn.
+        self.assertGreater(radial(states[-1]), .95*norm(states[-1].velocity))
+        self.assertLess(states[-1].position[1], 7000.)
+        self.assertGreater(states[-1].position[1], 5000.)
+        self.assertIsNone(evader.fault)
+
+    def test_segments_switch_at_their_times(self):
+        pilot = EvasionPilot("beam", 2., plane_deg=45., dive_deg=20., then=((4., 0., 0., 0.),))
+        self.assertEqual(pilot.segment(0.), (90., 45., 20.))
+        self.assertEqual(pilot.segment(4.), (0., 0., 0.))
+        self.assertEqual(pilot.describe(), "90/45/20 +4s 0/0/0")
+        for bad in (dict(plane_deg=95.), dict(target_deg=200.), dict(then=((0., 0., 0., 0.),)),
+                    dict(then=((3., 0., 0., 70.),))):
+            with self.assertRaises(ValueError):
+                EvasionPilot("beam", 0., **bad)
 
     def test_pilot_validation(self):
         for bad in (dict(kind="loop", start_s=0.), dict(kind="beam", start_s=-1.),

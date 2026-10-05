@@ -6,6 +6,7 @@ translucency and input-transparent windows, not whole-window opacity.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from ctypes import wintypes
 import math
@@ -15,8 +16,8 @@ import sys
 from typing import Callable
 
 try:
-    from PySide6.QtCore import QAbstractNativeEventFilter, QPoint, QRect, QSettings, Qt, QTimer, Signal
-    from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
+    from PySide6.QtCore import QAbstractNativeEventFilter, QPoint, QPointF, QRect, QRectF, QSettings, Qt, QTimer, Signal
+    from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
     from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox,
         QFileDialog, QFontComboBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
         QLineEdit, QMenu, QPushButton, QScrollArea, QSpinBox, QSystemTrayIcon,
@@ -26,31 +27,38 @@ except ImportError as exc:
 
 from .contracts import ClimbRequest, OverlaySnapshot, KeyboardTurnSettings
 from .climb import CUE_DEADBAND_DEG, CUE_RANGE_DEG, validate_request
-from .fm.catalog import aircraft_catalog
+from . import pk
+from .fm.catalog import aircraft_catalog, find_aircraft
 from .hud import INDICATORS, HudContent, contents, details
-from .offense import EnvelopeLibrary, RoseLibrary, available, course_for_blip_direction
+from .offense import MODES, REACH_P, SKILLS, OffenseAdvisor, available, course_for_blip_direction
 from .windows import GameWindow, WindowsDesktop
 from .turn import validate_settings
 
 
 GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考",
-          "climb": "爬升引导", "turn": "转向引导", "rose": "进攻动向图", "scope": "B 显发射区"}
+          "climb": "爬升引导", "turn": "转向引导", "rose": "进攻动向图", "scope": "B 显发射区", "side": "高度侧视图"}
 DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
                      "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65),
-                     "turn": (0.42, 0.65), "rose": (0.80, 0.78), "scope": (0.80, 0.40)}
+                     "turn": (0.42, 0.65), "rose": (0.80, 0.78), "scope": (0.80, 0.40), "side": (0.80, 0.15)}
 HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导",
            "T": "开关转向引导", "R": "重新开始转向", "A": "平翼校准", "K": "开关进攻动向图",
-           "B": "开关 B 显发射区"}
-# Seconds the target has to react, if fired now: below 3 s red, below 6 s amber, else grey.
-ROSE_BANDS = ((3.0, QColor(226, 75, 74, 190)), (6.0, QColor(239, 159, 39, 170)))
+           "B": "开关 B 显发射区", "V": "开关高度侧视图"}
+# Hit probability if fired now: from 50 % red, from 25 % amber, else grey; dark when the missile cannot reach.
+ROSE_BANDS = ((0.5, QColor(226, 75, 74, 190)), (0.25, QColor(239, 159, 39, 170)))
 ROSE_SLOW = QColor(95, 94, 90, 140)
 ROSE_UNREACHABLE = QColor(44, 44, 42, 120)
 # (line, label, colour, dashed): ranges from data/envelope tables.
 SCOPE_LINES = (("rmax_hot", "Rmax 迎头", "#EF9F27", False), ("rmax_cold", "Rmax 背离", "#EF9F27", True),
-               ("r3_hot", "3 s", "#E24B4A", True), ("rne_hot", "无逃逸", "#E24B4A", False))
+               ("pk25_hot", "命中 25%", "#E24B4A", True), ("pk50_hot", "命中 50%", "#E24B4A", False))
+# Enemy types offered as the assumed target (first = default) and their assumed speeds.
+ENEMY_AIRCRAFT = ("f_16c_block_50", "su_27sm", "j_11b", "su_30sm", "mig_29_9_13", "f_15c_msip2", "j_10c",
+                  "ef_2000_typhoon_aesa", "rafale_c_f3", "saab_jas39c", "fa_18c_late", "mirage_2000_5f")
+TARGET_SPEEDS_KMH = (800, 900, 1000, 1100, 1200, 1300)
 SCOPE_RANGES_KM = (10, 20, 40, 80, 160)
 SCOPE_AZIMUTHS_DEG = (30, 45, 60, 70)
 MISSILE_NAMES = {"cn_pl12": "PL-12", "cn_pl12a": "PL-12A", "su_r_77": "R-77", "su_r_77_1": "R-77-1",
+                 "cn_pl15": "PL-15", "cn_sd10a": "SD-10A", "il_derby": "Derby", "jp_aam4": "AAM-4",
+                 "r_darter": "R-Darter", "swd_rb99": "Rb 99", "su_rvv_ae": "RVV-AE",
                  "us_aim_120a": "AIM-120A", "us_aim_120b": "AIM-120B", "us_aim_120c_5": "AIM-120C-5",
                  "us_aim_120c_7": "AIM-120C-7", "us_aim_120d": "AIM-120D"}
 
@@ -241,10 +249,13 @@ class HudGroup(QWidget):
 
 class RoseGroup(HudGroup):
     """Kill rose: rings are launch range, sectors the blip's motion on the B-scope
-    (down = target hot), colour the target's reaction time if fired now.
+    (down = target hot), colour the hit probability if fired now against the
+    assumed opponent (offense.OffenseAdvisor).
 
-    An annulus shows its outer ring's value, so a target between two rings is
-    drawn with the longer (more conservative) reaction time.
+    Rings are equally wide (not to range scale), labelled with their outer range in km
+    along the left axis; the head-on, beam and cold axes carry each ring's hit probability
+    in %. An annulus shows its outer ring's value, so a target between two rings is drawn
+    with the farther (usually lower) probability.
     """
 
     def __init__(self, key: str, font: QFont, color: str):
@@ -263,7 +274,8 @@ class RoseGroup(HudGroup):
 
     def _measure(self):
         super()._measure()
-        self.radius = max(60, round(self.metrics.height() * 5.5))
+        # Rings must fit a two-digit percentage across them.
+        self.radius = max(90, round(self.metrics.height() * 8))
         self.label_height = self.small_metrics.height() + 4
         width = max(2 * self.radius + 24, self.small_metrics.horizontalAdvance(self.caption) + 24)
         height = 8 + self.header_height + 2 * self.label_height + 2 * self.radius + 8
@@ -291,14 +303,15 @@ class RoseGroup(HudGroup):
         self._label(painter, cx, top + self.small_metrics.ascent(), "↑ 背离")
         if self.rose is not None:
             ranges = self.rose.ranges_m
-            scale = self.radius / ranges[-1]
+            # Equal-width rings: the short ranges, where the colours change, are not squeezed into the centre.
+            ring = self.radius / len(ranges)
             painter.setPen(QPen(QColor(0, 0, 0, 170), 1))
             for i, range_m in enumerate(ranges):
-                outer, inner = range_m * scale, (ranges[i-1] * scale if i else 0.0)
+                outer, inner = (i + 1) * ring, i * ring
                 for k in range(12):
-                    seconds = self.rose.at(range_m, course_for_blip_direction(30.0 * k))
-                    color = (ROSE_UNREACHABLE if math.isinf(seconds) else
-                             next((c for limit, c in ROSE_BANDS if seconds < limit), ROSE_SLOW))
+                    cell = self.rose.at(range_m, course_for_blip_direction(30.0 * k))
+                    color = (ROSE_UNREACHABLE if cell is None or cell[1] < REACH_P else
+                             next((c for limit, c in ROSE_BANDS if cell[0] >= limit), ROSE_SLOW))
                     # Qt angles are counter-clockwise from 3 o'clock; 270° is straight down.
                     start, span = 270.0 + 30.0 * k - 15.0, 30.0
                     path = QPainterPath()
@@ -314,9 +327,20 @@ class RoseGroup(HudGroup):
                     path.closeSubpath()
                     painter.setBrush(color)
                     painter.drawPath(path)
-            for range_m in ranges:
-                self._text(painter, cx + 3, cy - range_m * scale + self.small_metrics.ascent(),
-                           f"{range_m / 1000:g}", self.small_font, "#f1f5f8")
+            small = self.small_metrics
+            # Range scale along the left half of the horizontal axis (km at each ring's outer edge).
+            for i, range_m in enumerate(ranges):
+                text = f"{range_m / 1000:g}"
+                self._text(painter, cx - (i + 1) * ring + 2, cy - 3, text, self.small_font, "#9fb3bf")
+            # Hit probability in % along the head-on (down), beam (right) and cold (up) axes.
+            for course, dx, dy in ((0.0, 0, 1), (90.0, 1, 0), (180.0, 0, -1)):
+                for i, range_m in enumerate(ranges):
+                    cell = self.rose.at(range_m, course)
+                    text = "–" if cell is None or cell[1] < REACH_P else f"{round(cell[0] * 100)}"
+                    mid = (i + 0.5) * ring
+                    x = cx + dx * mid - small.horizontalAdvance(text) / 2
+                    y = cy + dy * mid + small.ascent() / 2 - 1
+                    self._text(painter, x, y, text, self.small_font, "#ffffff")
         else:
             painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -403,13 +427,10 @@ class ScopeGroup(HudGroup):
                 center = dict(points).get(0.0)
                 if center is not None:
                     above = center > self.scale_m
-                    labels.append((("↑ " if above else "") + f"{label} {center / 1000:.0f}", color,
+                    value = ">45" if self.envelope.is_capped(name) else f"{center / 1000:.0f}"
+                    labels.append((("↑ " if above else "") + f"{label} {value}", color,
                                    self.small_metrics.ascent() + 2 if above else self._point(0.0, center).y() - 3))
             self._draw_labels(painter, labels)
-            env = self.envelope
-            if env.altitude_clamped or env.tas_clamped or env.nearest_only:
-                note = "本机状态超出表格" if env.altitude_clamped or env.tas_clamped else "网格未完整，取最近状态"
-                self._text(painter, 4, self.height() - 6, note, self.small_font, "#ffce79")
         painter.end()
 
     def _draw_labels(self, painter, labels):
@@ -453,6 +474,150 @@ class ScopeGroup(HudGroup):
         super().mouseReleaseEvent(event)
 
 
+class SideGroup(HudGroup):
+    """Launch envelope in the vertical plane: x = launch range, y = target altitude minus own altitude.
+
+    Same four lines as the B-scope overlay, taken head-on (azimuth 0) at each tabulated
+    altitude difference. Fixed size, scaled with the font; the range scale follows the
+    B-scope setting so distances match the radar.
+    """
+    MIN_EXTENT_M, MARGIN_M, TICK_M = 4000., 1000., 3000.
+
+    def __init__(self, key: str, font: QFont, color: str):
+        self.envelope = None
+        self.scale_m = 40000.0
+        super().__init__(key, font, color)
+
+    def set_envelope(self, envelope, scale_m):
+        if (envelope, scale_m) != (self.envelope, self.scale_m):
+            self.envelope, self.scale_m = envelope, scale_m
+            self.update()
+
+    def has_data(self):
+        return self.envelope is not None
+
+    def _measure(self):
+        super()._measure()
+        unit = self.metrics.height()
+        self.resize(min(16 * unit, max(100, self.viewport.width())), 9 * unit + self.header_height)
+
+    def _plot(self):
+        small = self.small_metrics
+        left = small.horizontalAdvance("−3") + 12
+        top = 8 + self.header_height + 4
+        return QRectF(left, top, self.width() - left - 10, self.height() - top - small.height() - 8)
+
+    def _profiles(self):
+        return [(name, label, color, dashed,
+                 [(dh, r) for dh, r in self.envelope.profile(name, 0.) if r is not None])
+                for name, label, color, dashed in SCOPE_LINES]
+
+    def _extent_m(self, profiles):
+        spread = max((abs(dh) for *_, points in profiles for dh, _ in points), default=0.)
+        return max(self.MIN_EXTENT_M, spread + self.MARGIN_M)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if self.editing:
+            painter.fillRect(self.rect(), QColor(12, 22, 30, 110))
+            painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 5, 5)
+        header = self._header()
+        if header:
+            self._text(painter, 12, 8 + self.small_metrics.ascent(), header, self.small_font,
+                       "#ffce79" if self.content.demo else self.accent)
+        plot, small = self._plot(), self.small_metrics
+        profiles = self._profiles() if self.envelope is not None else []
+        extent = self._extent_m(profiles)
+        mid = plot.center().y()
+        x_of = lambda range_m: plot.left() + range_m / self.scale_m * plot.width()  # noqa: E731
+        y_of = lambda dh: mid - dh / extent * plot.height() / 2  # noqa: E731
+        grid, light = QColor(210, 222, 229, 55), "#d2dee5"
+        painter.setPen(QPen(grid, 1))
+        for k in range(1, 5):
+            painter.drawLine(QPointF(plot.left() + plot.width() * k / 4, plot.top()),
+                             QPointF(plot.left() + plot.width() * k / 4, plot.bottom()))
+        for dh in (-self.TICK_M, self.TICK_M):
+            painter.drawLine(QPointF(plot.left(), y_of(dh)), QPointF(plot.right(), y_of(dh)))
+        painter.setPen(QPen(QColor(210, 222, 229, 150), 1, Qt.PenStyle.DashLine))
+        painter.drawLine(QPointF(plot.left(), mid), QPointF(plot.right(), mid))
+        painter.setPen(QPen(QColor(210, 222, 229, 90), 1))
+        painter.drawLine(QPointF(plot.left(), plot.top()), QPointF(plot.left(), plot.bottom()))
+        painter.drawLine(QPointF(plot.left(), plot.bottom()), QPointF(plot.right(), plot.bottom()))
+        for text, dh in (("+3", self.TICK_M), ("0", 0.), ("−3", -self.TICK_M)):
+            self._text(painter, plot.left() - 4 - small.horizontalAdvance(text),
+                       y_of(dh) + small.ascent() / 2 - 1, text, self.small_font, light)
+        baseline = plot.bottom() + 4 + small.ascent()
+        for k in range(5):
+            text = f"{self.scale_m * k / 4000:g}" + (" km" if k == 4 else "")
+            width = small.horizontalAdvance(text)
+            x = min(plot.left() + plot.width() * k / 4 - width / 2, self.width() - width - 2)
+            self._text(painter, max(2., x), baseline, text, self.small_font, light)
+        self._text(painter, plot.left() + 4, plot.top() + small.ascent() + 1, "↑ 目标高", self.small_font, light)
+        self._text(painter, plot.left() + 4, plot.bottom() - 3, "↓ 目标低", self.small_font, light)
+        labels = []
+        painter.setClipRect(plot.adjusted(0, -1, 1, 1))
+        for name, label, color, dashed, points in profiles:
+            if len(points) < 2:
+                continue
+            polyline = [QPointF(x_of(r), y_of(dh)) for dh, r in points]
+            painter.setPen(QPen(QColor(0, 0, 0, 200), 4))
+            painter.drawPolyline(polyline)
+            painter.setPen(QPen(QColor(color), 2, Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+            painter.drawPolyline(polyline)
+            level = dict(points).get(0.0)
+            if level is not None:
+                off = level > self.scale_m
+                value = ">45" if self.envelope.is_capped(name, 0.0, 0.0) else f"{level / 1000:.0f}"
+                labels.append((("→ " if off else "") + f"{label} {value}", color,
+                               None if off else x_of(level), mid))
+        painter.setClipping(False)
+        # Own aircraft: a marker on the zero line at the left edge.
+        marker = QPolygonF([QPointF(plot.left() - 1, mid - 5), QPointF(plot.left() + 9, mid),
+                            QPointF(plot.left() - 1, mid + 5)])
+        painter.setPen(QPen(QColor(0, 0, 0, 220), 1))
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawPolygon(marker)
+        self._draw_labels(painter, labels, plot)
+        painter.end()
+
+    def _draw_labels(self, painter, labels, plot):
+        """Label each line at the zero-difference point, stacking above/below the zero line to avoid overlaps."""
+        small = self.small_metrics
+        placed, height = [], small.height()
+        placed.append(QRect(round(plot.left() + 4), round(plot.top()), 60, height + 1))  # "↑ 目标高"
+        for text, color, anchor_x, mid in labels:
+            width = small.horizontalAdvance(text)
+            if anchor_x is None:
+                xs = (plot.right() - width - 3,)
+            else:
+                xs = (anchor_x + 4, anchor_x - width - 4, plot.right() - width - 3)
+            steps = []
+            for i in range(5):
+                steps += [-2 - i * height, small.ascent() + 2 + i * height]
+            box = None
+            for x in xs:
+                for dy in steps:
+                    cx = min(max(plot.left() + 2, x), plot.right() - width - 2)
+                    base = mid + dy
+                    cand = QRect(round(cx), round(base - small.ascent()), width, height)
+                    if (not any(cand.adjusted(-6, 0, 6, 0).intersects(o) for o in placed) and cand.top() >= plot.top()
+                            and cand.bottom() <= plot.bottom()):
+                        box, baseline = cand, base
+                        break
+                if box:
+                    break
+            if box is None:
+                continue
+            placed.append(box)
+            self._text(painter, box.x(), baseline, text, self.small_font, color)
+
+
 class SettingsWindow(QWidget):
     def __init__(self, owner):
         super().__init__()
@@ -491,7 +656,7 @@ class SettingsWindow(QWidget):
         self.group_boxes = {}
         group_row = QHBoxLayout()
         for key, caption in GROUPS.items():
-            if key in ("climb", "turn", "rose", "scope"):
+            if key in ("climb", "turn", "rose", "scope", "side"):
                 continue
             check = QCheckBox(caption)
             check.setChecked(owner.group_enabled[key])
@@ -674,15 +839,40 @@ class SettingsWindow(QWidget):
         self.rose_box.setChecked(owner.rose_enabled)
         self.rose_box.toggled.connect(owner.set_rose_enabled)
         form.addRow(self.rose_box)
-        self.rose_table = QComboBox()
-        for missile, evader, chaff in available():
-            label = (f"{MISSILE_NAMES.get(missile, missile)} · 规避方 {evader} · "
-                     + ("有箔条（RCS 比 {:g}）".format(chaff) if chaff > 0 else "无箔条"))
-            self.rose_table.addItem(label, f"{missile}|{evader}|{chaff:g}")
-        self.rose_table.setCurrentIndex(max(0, self.rose_table.findData(owner.rose_choice)))
-        self.rose_table.currentIndexChanged.connect(
-            lambda i: owner.set_rose_choice(self.rose_table.itemData(i)))
-        form.addRow("导弹与假设", self.rose_table)
+        self.offense_missile = QComboBox()
+        for missile in available():
+            self.offense_missile.addItem(MISSILE_NAMES.get(missile, missile), missile)
+        self.offense_enemy = QComboBox()
+        for ident in ENEMY_AIRCRAFT:
+            profile = find_aircraft(ident)
+            if profile is not None:
+                self.offense_enemy.addItem(profile.name, ident)
+        self.offense_skill = QComboBox()
+        for key in SKILLS:
+            self.offense_skill.addItem({"normal": "普通（85% 会躲，其中 60% 做对）",
+                                        "top": "高手（总能躲，且动作正确）"}[key], key)
+        self.offense_mode = QComboBox()
+        for key, label in MODES.items():
+            self.offense_mode.addItem(label, key)
+        self.offense_speed = QComboBox()
+        for kmh in TARGET_SPEEDS_KMH:
+            self.offense_speed.addItem(f"{kmh} km/h", kmh)
+        for box, key, value in ((self.offense_missile, "missile", owner.offense_missile),
+                                (self.offense_enemy, "enemy", owner.offense_enemy),
+                                (self.offense_skill, "skill", owner.offense_skill),
+                                (self.offense_mode, "mode", owner.offense_mode),
+                                (self.offense_speed, "target_kmh", owner.offense_target_kmh)):
+            box.setCurrentIndex(max(0, box.findData(value)))
+            box.currentIndexChanged.connect(lambda i, box=box, key=key: owner.set_offense_option(key, box.itemData(i)))
+        form.addRow("导弹", self.offense_missile)
+        form.addRow("假设敌机", self.offense_enemy)
+        form.addRow("敌机速度", self.offense_speed)
+        form.addRow("对手水平", self.offense_skill)
+        form.addRow("发射方式", self.offense_mode)
+        offense_help = QLabel("颜色为现在发射的命中概率：≥50% 红、25–50% 黄、<25% 灰、打不到暗色。主动弹无发射告警；"
+                              "对手在导弹开机（约 16 km）、看到动力段尾焰或被 STT 锁定时察觉。网络训练范围 2–45 km。")
+        offense_help.setWordWrap(True)
+        form.addRow(offense_help)
         self.scope_box = QCheckBox("显示 B 显发射区 · Ctrl+Alt+B")
         self.scope_box.setChecked(owner.scope_enabled)
         self.scope_box.toggled.connect(owner.set_scope_enabled)
@@ -701,6 +891,14 @@ class SettingsWindow(QWidget):
         self.scope_azimuth.currentIndexChanged.connect(
             lambda i: owner.set_scope_geometry(owner.scope_scale_km, self.scope_azimuth.itemData(i)))
         form.addRow("B 显方位范围", self.scope_azimuth)
+        self.side_box = QCheckBox("显示高度侧视图 · Ctrl+Alt+V")
+        self.side_box.setChecked(owner.side_enabled)
+        self.side_box.toggled.connect(owner.set_side_enabled)
+        form.addRow(self.side_box)
+        side_help = QLabel("高度侧视图：横轴 = 发射距离（量程与上面的 B 显量程相同），纵轴 = 目标高度减本机高度"
+                           "（目标更高在上）。线型与 B 显发射区一致，为迎头直线飞行的发射区边界。")
+        side_help.setWordWrap(True)
+        form.addRow(side_help)
         scope_help = QLabel("B 显发射区：进入布局模式，把框拖到游戏 B 显上，拖右下角调整到同样大小。"
                             "橙实线 = 迎头 Rmax，橙虚线 = 背离 Rmax，红虚线 = 迎头对方不足 3 s，红实线 = 迎头无逃逸。"
                             "目标假设为同高度直线飞行；量程切换需在这里同步。")
@@ -858,12 +1056,24 @@ class OverlayApp:
         self.indicator_enabled = {item.key: self.preferences.value(
             f"indicators/{item.key}", item.enabled, type=bool) for item in INDICATORS}
         self.rose_enabled = self.preferences.value("offense/enabled", False, type=bool)
-        choices = [f"{m}|{e}|{c:g}" for m, e, c in available()]
-        saved_choice = self.preferences.value("offense/table", "", type=str)
-        self.rose_choice = saved_choice if saved_choice in choices else (choices[0] if choices else "")
-        self.rose_library = None
-        self.envelope_library = None
+        missiles = available()
+        saved = self.preferences.value("offense/missile", "", type=str)
+        self.offense_missile = saved if saved in missiles else (missiles[0] if missiles else "")
+        enemy = self.preferences.value("offense/enemy", ENEMY_AIRCRAFT[0], type=str)
+        self.offense_enemy = enemy if enemy in ENEMY_AIRCRAFT else ENEMY_AIRCRAFT[0]
+        skill = self.preferences.value("offense/skill", "normal", type=str)
+        self.offense_skill = skill if skill in SKILLS else "normal"
+        mode = self.preferences.value("offense/mode", "tws", type=str)
+        self.offense_mode = mode if mode in MODES else "tws"
+        kmh = self.preferences.value("offense/target_kmh", 1000, type=int)
+        self.offense_target_kmh = kmh if kmh in TARGET_SPEEDS_KMH else 1000
+        self.advisor = None
+        self._offense_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="offense")
+        self._envelope_job = None   # (key, future) of the envelope being computed
+        self._envelope_cache = (None, None)  # (key, envelope)
+        self._rose_cache = (None, None)
         self.scope_enabled = self.preferences.value("offense/scope_enabled", False, type=bool)
+        self.side_enabled = self.preferences.value("offense/side_enabled", False, type=bool)
         self.scope_scale_km = self.preferences.value("offense/scope_scale_km", 40, type=int)
         self.scope_scale_km = self.scope_scale_km if self.scope_scale_km in SCOPE_RANGES_KM else 40
         self.scope_half_azimuth_deg = self.preferences.value("offense/scope_half_azimuth_deg", 60, type=int)
@@ -871,7 +1081,7 @@ class OverlayApp:
             self.scope_half_azimuth_deg = 60
         self.groups, self.group_enabled = {}, {}
         for key in GROUPS:
-            group = {"rose": RoseGroup, "scope": ScopeGroup}.get(key, HudGroup)(key, self.hud_font, self.color)
+            group = {"rose": RoseGroup, "scope": ScopeGroup, "side": SideGroup}.get(key, HudGroup)(key, self.hud_font, self.color)
             if key == "scope":
                 group.set_box(self.preferences.value("groups/scope/w", 260, type=int),
                               self.preferences.value("groups/scope/h", 260, type=int))
@@ -887,7 +1097,7 @@ class OverlayApp:
         self.game = None
         self.snapshot = OverlaySnapshot("live", "等待飞行数据")
         self.settings_window = SettingsWindow(self)
-        self._load_rose_library()
+        self._load_advisor()
         self._setup_tray()
         self._setup_hotkeys()
         if climb_request is None and self.preferences.contains("climb/altitude_m"):
@@ -941,6 +1151,9 @@ class OverlayApp:
         self.scope_action = QAction("B 显发射区", self.tray_menu, checkable=True, checked=self.scope_enabled)
         self.scope_action.toggled.connect(self.set_scope_enabled)
         self.tray_menu.addAction(self.scope_action)
+        self.side_action = QAction("高度侧视图", self.tray_menu, checkable=True, checked=self.side_enabled)
+        self.side_action.toggled.connect(self.set_side_enabled)
+        self.tray_menu.addAction(self.side_action)
         self.tray_menu.addAction("重新开始转向", self.restart_turn)
         self.tray_menu.addAction("设置…", self.show_settings)
         self.tray_menu.addSeparator()
@@ -958,7 +1171,8 @@ class OverlayApp:
                      "T": lambda: self.set_turn_enabled(not self.turn_enabled), "R": self.restart_turn,
                      "A": self.settings_window.apply_pose_calibration,
                      "K": lambda: self.set_rose_enabled(not self.rose_enabled),
-                     "B": lambda: self.set_scope_enabled(not self.scope_enabled)}
+                     "B": lambda: self.set_scope_enabled(not self.scope_enabled),
+                     "V": lambda: self.set_side_enabled(not self.side_enabled)}
         active, failures = {}, []
         self.settings_hotkey_available = False
         if self.desktop:
@@ -1072,57 +1286,97 @@ class OverlayApp:
         self._checked(self.scope_action, enabled)
         self._sync_surface()
 
+    def set_side_enabled(self, enabled):
+        self.side_enabled = enabled
+        self.preferences.setValue("offense/side_enabled", enabled)
+        self._checked(self.settings_window.side_box, enabled)
+        self._checked(self.side_action, enabled)
+        self._sync_surface()
+
     def set_scope_geometry(self, scale_km, half_azimuth_deg):
         self.scope_scale_km, self.scope_half_azimuth_deg = int(scale_km), int(half_azimuth_deg)
         self.preferences.setValue("offense/scope_scale_km", self.scope_scale_km)
         self.preferences.setValue("offense/scope_half_azimuth_deg", self.scope_half_azimuth_deg)
         self.refresh()
 
-    def set_rose_choice(self, choice):
-        self.rose_choice = choice or ""
-        self.preferences.setValue("offense/table", self.rose_choice)
-        self._load_rose_library()
+    def set_offense_option(self, key, value):
+        """Missile, assumed enemy aircraft and speed, opponent skill and launch mode for the offensive aids."""
+        setattr(self, f"offense_{key}", value)
+        self.preferences.setValue(f"offense/{key}", value)
+        self._load_advisor()
         self.refresh()
 
-    def _load_rose_library(self):
-        """Kill-rose and B-scope envelope tables for the chosen missile and assumptions."""
-        self.rose_library = self.envelope_library = None
-        if not self.rose_choice:
+    def _load_advisor(self):
+        """Hit-probability model for the chosen missile under the current target assumption."""
+        self.advisor = None
+        self._envelope_job, self._envelope_cache, self._rose_cache = None, (None, None), (None, None)
+        if not self.offense_missile:
             return
-        missile, evader, chaff = self.rose_choice.split("|")
+        assumption = pk.Assumption(aircraft=self.offense_enemy, speed_kmh=float(self.offense_target_kmh),
+                                   skill=self.offense_skill, mode=self.offense_mode)
         try:
-            self.rose_library = RoseLibrary(missile, evader, float(chaff))
-        except (OSError, ValueError) as exc:
-            self.settings_window.error.setText(f"进攻动向图数据不可用：{exc}")
-        try:
-            self.envelope_library = EnvelopeLibrary(missile, evader, float(chaff))
-        except (OSError, ValueError):
-            pass  # Envelope tables are optional; the scope stays hidden without them.
+            self.advisor = OffenseAdvisor(self.offense_missile, assumption)
+        except (OSError, ValueError, KeyError) as exc:
+            self.settings_window.error.setText(f"命中概率模型不可用：{exc}")
+
+    @staticmethod
+    def _offense_key(state):
+        # Recompute only when ownship altitude or TAS has moved noticeably.
+        return round(state.altitude_m / 200.0), round(state.tas_mps * 3.6 / 20.0)
+
+    def _offense_caption(self):
+        enemy = find_aircraft(self.offense_enemy)
+        return (f"{MISSILE_NAMES.get(self.offense_missile, self.offense_missile)} · {SKILLS[self.offense_skill]}"
+                f" · {MODES[self.offense_mode]} · 假设 {enemy.name if enemy else self.offense_enemy} "
+                f"{self.offense_target_kmh} km/h")
+
+    def _envelope_for(self, state):
+        """The envelope for this ownship state: cached, computed in the background (the first one inline)."""
+        key = self._offense_key(state)
+        job = self._envelope_job
+        if job is not None and job[1].done():
+            try:
+                self._envelope_cache = (job[0], job[1].result())
+            except (ValueError, OSError):
+                self._envelope_cache = (job[0], None)
+            self._envelope_job = job = None
+        cached_key, cached = self._envelope_cache
+        if cached_key == key:
+            return cached
+        if cached is None:
+            envelope = self.advisor.envelope(state.altitude_m, state.tas_mps)
+            self._envelope_cache = (key, envelope)
+            return envelope
+        if job is None:
+            self._envelope_job = (key, self._offense_pool.submit(self.advisor.envelope, state.altitude_m,
+                                                                 state.tas_mps))
+        return cached
 
     def _update_scope(self, snapshot):
-        group, library, state = self.groups["scope"], self.envelope_library, snapshot.state
-        group.set_content(HudContent(GROUPS["scope"], (), demo=snapshot.mode == "demo"))
+        group, side, library, state = (self.groups["scope"], self.groups["side"], self.advisor, snapshot.state)
+        for key in ("scope", "side"):
+            self.groups[key].set_content(HudContent(GROUPS[key], (), demo=snapshot.mode == "demo"))
+        scale_m = self.scope_scale_km * 1000.
         if (library is None or state is None or not state.valid or state.altitude_m is None
                 or state.tas_mps is None or not math.isfinite(state.altitude_m) or not math.isfinite(state.tas_mps)):
-            group.set_envelope(None, self.scope_scale_km * 1000., float(self.scope_half_azimuth_deg))
+            group.set_envelope(None, scale_m, float(self.scope_half_azimuth_deg))
+            side.set_envelope(None, scale_m)
             return
-        group.set_envelope(library.envelope(state.altitude_m, state.tas_mps),
-                           self.scope_scale_km * 1000., float(self.scope_half_azimuth_deg))
+        envelope = self._envelope_for(state)
+        group.set_envelope(envelope, scale_m, float(self.scope_half_azimuth_deg))
+        side.set_envelope(envelope, scale_m)
 
     def _update_rose(self, snapshot):
-        group, library, state = self.groups["rose"], self.rose_library, snapshot.state
+        group, library, state = self.groups["rose"], self.advisor, snapshot.state
         group.set_content(HudContent(GROUPS["rose"], (), demo=snapshot.mode == "demo"))
         if (library is None or state is None or not state.valid or state.altitude_m is None
                 or state.tas_mps is None or not math.isfinite(state.altitude_m) or not math.isfinite(state.tas_mps)):
             group.set_rose(None)
             return
-        rose = library.rose(state.altitude_m, state.tas_mps)
-        caption = MISSILE_NAMES.get(library.missile, library.missile)
-        if rose.altitude_clamped or rose.tas_clamped:
-            caption += " · 本机状态超出表格"
-        elif rose.nearest_only:
-            caption += " · 网格未完整，取最近状态"
-        group.set_rose(rose, caption)
+        key = self._offense_key(state)
+        if self._rose_cache[0] != key:
+            self._rose_cache = (key, library.rose(state.altitude_m, state.tas_mps))
+        group.set_rose(self._rose_cache[1], self._offense_caption())
 
     def set_indicator_enabled(self, key, enabled):
         self.indicator_enabled[key] = enabled
@@ -1217,8 +1471,9 @@ class OverlayApp:
             group.place(viewport)
             enabled = (self.climb_enabled if key == "climb" else self.turn_enabled if key == "turn"
                        else self.rose_enabled if key == "rose" else self.scope_enabled if key == "scope"
+                       else self.side_enabled if key == "side"
                        else self.group_enabled[key])
-            has_data = group.has_data() if key in ("rose", "scope") else bool(group.content.rows)
+            has_data = group.has_data() if key in ("rose", "scope", "side") else bool(group.content.rows)
             visible = allowed and enabled and (has_data or self.editing)
             if group.isVisible() != visible:
                 group.setVisible(visible)
@@ -1325,6 +1580,7 @@ class OverlayApp:
         self.closed = True
         self.timer.stop()
         self.surface_timer.stop()
+        self._offense_pool.shutdown(wait=False, cancel_futures=True)
         self.app.removeNativeEventFilter(self.hotkey_filter)
         if self.desktop:
             self.desktop.close()
