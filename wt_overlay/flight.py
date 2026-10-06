@@ -216,7 +216,8 @@ class FlightCommand:
     ``max_climb_deg`` / ``max_dive_deg`` bound the flight path), else ``climb_deg`` (flight path angle), else the
     direction vector's own, else level. Speed: ``speed_mps`` (autothrottle, plus airbrake when
     ``airbrake_allowed``) or ``throttle_percent`` (0-110, held), else full power. ``min_speed_mps`` stops a climb
-    from trading the last speed away. ``floor_m``: the pilot will not descend into it."""
+    from trading the last speed away. ``floor_m``: the pilot will not descend into it (None: no ground
+    avoidance at all, whoever flies has to pull out in time)."""
     direction: tuple | None = None
     heading_deg: float | None = None
     climb_deg: float | None = None
@@ -228,7 +229,7 @@ class FlightCommand:
     max_climb_deg: float = 30.
     max_dive_deg: float = 30.
     min_speed_mps: float | None = None
-    floor_m: float = 100.
+    floor_m: float | None = 100.
 
     def __post_init__(self):
         for name in ("heading_deg", "climb_deg", "altitude_m", "speed_mps", "throttle_percent", "min_speed_mps"):
@@ -443,16 +444,21 @@ class Aircraft:
         # Ground floor: level off early enough to arrest the sink rate with the load limit (circular pull-out). The
         # pull-out outranks turning: a descending aircraft that is low pulls up wings level on its current heading,
         # and below the floor it climbs out.
-        sink = max(0., -s.velocity[2])
-        pull_out = FLOOR_PULL_OUT*sink*sink/(2*max(.5, cmd.max_load-1)*G) if sink else 0.
-        self._low = s.position[2] < cmd.floor_m+pull_out
-        if self._low and (gamma < 0. or sink > PULL_OUT_SINK_MPS):
-            gamma = max(gamma, 0.)
-            ch = math.hypot(direction[0], direction[1])
-            if sink > 0. and ch > 1e-6:
-                heading = (direction[0]/ch, direction[1]/ch)
-        if s.position[2] < cmd.floor_m:
-            gamma = max(gamma, math.radians(CLIMB_OUT_DEG))
+        self._low = False
+        if cmd.floor_m is not None:
+            sink = max(0., -s.velocity[2])
+            usable = cmd.max_load
+            if self.vne_mps is not None:   # above VneControl the controls stiffen: pull out on the load still available
+                usable = 1.+self._control_share(self.indicated(s))*(min(cmd.max_load, self.load_limits[1])-1.)
+            pull_out = FLOOR_PULL_OUT*sink*sink/(2*max(.5, usable-1)*G) if sink else 0.
+            self._low = s.position[2] < cmd.floor_m+pull_out
+            if self._low and (gamma < 0. or sink > PULL_OUT_SINK_MPS):
+                gamma = max(gamma, 0.)
+                ch = math.hypot(direction[0], direction[1])
+                if sink > 0. and ch > 1e-6:
+                    heading = (direction[0]/ch, direction[1]/ch)
+            if s.position[2] < cmd.floor_m:
+                gamma = max(gamma, math.radians(CLIMB_OUT_DEG))
         # Reversals stay a horizontal turn with a locked side; aiming straight behind would degenerate into a loop.
         ch = math.hypot(direction[0], direction[1])
         if ch > 1e-6:

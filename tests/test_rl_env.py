@@ -462,6 +462,23 @@ class ContractTests(unittest.TestCase):
             else:
                 self.assertEqual(deaths,[])
 
+    def test_policy_ground_floor_and_deck_apply_to_policy_aircraft_only(self):
+        e=env(controlled=[0],policy_ground_floor=False,policy_deck_m=10.)
+        ex0,ex1=e.executors[0],e.executors[1]
+        self.assertEqual((ex0.ground_floor,ex0.deck_m),(False,10.))
+        self.assertEqual((ex1.ground_floor,ex1.deck_m),(True,100.))
+        a=e.scripted_actions()[0]; a['vertical']=3; a['view_mode']=0
+        e.step({0:a})
+        for _ in range(4):
+            e.step(e.scripted_actions())
+        cmd=e.engagement.planes[0].flight.command
+        self.assertIsNone(cmd.floor_m)
+        self.assertEqual(e.engagement.planes[1].flight.command.floor_m,100.)
+        self.assertEqual(env().executors[0].deck_m,100.)        # defaults unchanged
+        for bad in (dict(policy_ground_floor=1),dict(policy_deck_m=0),dict(policy_deck_m=True)):
+            with self.assertRaises(ValueError):
+                MatchEnv(bad,0)
+
     def test_timeout_reward_makes_the_time_limit_terminal(self):
         e=env(time_limit_s=DT_STEP,timeout_reward=-.5)
         obs,rewards,dones,info=e.step(e.scripted_actions())

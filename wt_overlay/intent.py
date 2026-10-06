@@ -121,12 +121,15 @@ class IntentExecutor:
     ignored, when leaving), then delay and error if it is taken up.
     """
     def __init__(self, seed, *, path='follow', delay=None, hold_s=2., error_deg=5.,
-                 reject_p=.05, renotice_s=2., authority=1., home_xy=(0.,0.)):
+                 reject_p=.05, renotice_s=2., authority=1., home_xy=(0.,0.), ground_floor=True, deck_m=100.):
         if path not in ('follow','autonomous'):
             raise ValueError('unknown execution path')
         if hold_s<0 or error_deg<0 or not 0<=reject_p<=1 or not renotice_s>=0 or not 0<authority<=1:
             raise ValueError('invalid execution parameters')
         self.rng = random.Random(seed)
+        # ground_floor False: manoeuvre commands carry no ground floor (no pull-out help); deck_m: the lowest altitude
+        # the deck / dive options aim for.
+        self.ground_floor, self.deck_m = bool(ground_floor), float(deck_m)
         settings = {'follow':DelayPath((.5,1.2),.3,(.25,2.5)),
                     'autonomous':DelayPath((1.,2.5),.4,(.5,5.))}
         for name, d in (delay or {}).items():
@@ -276,7 +279,7 @@ class IntentExecutor:
         if i.maneuver or leaving or self.aim_heading is None:
             self.aim_heading=(heading+noise)%360.
         if i.vertical or leaving or self.aim_altitude is None:
-            self.aim_altitude=(own.altitude_m,11000.,8000.,100.,max(100.,own.altitude_m-3000.))[i.vertical]
+            self.aim_altitude=(own.altitude_m,11000.,8000.,self.deck_m,max(self.deck_m,own.altitude_m-3000.))[i.vertical]
 
     def _action(self, plane, obs, entities, i, fire_once):
         if i.view_mode:
@@ -291,7 +294,7 @@ class IntentExecutor:
             max_load=2. if i.weapon else 3. if not warning and ratio is not None and ratio<1. else 9.
             flight=FlightCommand(heading_deg=self.aim_heading,altitude_m=self.aim_altitude,max_load=max_load,
                                  throttle_percent=(110.,85.,0.)[i.speed],airbrake_allowed=i.speed==2,
-                                 speed_mps=50. if i.speed==2 else None)
+                                 speed_mps=50. if i.speed==2 else None,**({} if self.ground_floor else {'floor_m':None}))
         target=next((e for e in entities if e.key==i.target and e.track_id is not None),None)
         track=None if target is None else target.track_id
         data=plane.radar.radar if plane.radar else None

@@ -437,6 +437,37 @@ class StructuralSpeedTests(unittest.TestCase):
         self.assertEqual(a._control_share(a.vne_control_mps-1.), 1.)
 
 
+class NoFloorTests(unittest.TestCase):
+    """FlightCommand(floor_m=None): no ground avoidance (user 2026-10-06: policy aircraft must pull out themselves)."""
+
+    def test_without_a_floor_a_dive_below_the_ground_ends_in_the_ground(self):
+        model = aircraft_model("su_30sm2", mass_factor=1.3)
+        results = {}
+        for floor in (100., None):
+            a = Aircraft(model, (0., 0., 3000.), (0., 300., -100.), params=FlightParams())
+            cmd = FlightCommand(heading_deg=0., climb_deg=-30., floor_m=floor)
+            low = 3000.
+            for _ in range(48*60):
+                a.step(cmd)
+                low = min(low, a.altitude)
+                if not a.alive:
+                    break
+            results[floor] = (a.crashed, a.time)
+        # A full-throttle 30 degree dive beats even the floor's pull-out (it only delays the impact); without a floor
+        # nothing intervenes, so the aircraft hits the ground earlier.
+        self.assertTrue(results[None][0])
+        self.assertLess(results[None][1], results[100.][1])
+
+    def test_without_a_floor_the_altitude_hold_still_levels_at_10_m(self):
+        model = aircraft_model("su_30sm2", mass_factor=1.3)
+        a = Aircraft(model, (0., 0., 1500.), (0., 250., -40.), params=FlightParams())
+        cmd = FlightCommand(heading_deg=0., altitude_m=10., max_dive_deg=15., floor_m=None)
+        for _ in range(48*90):
+            a.step(cmd)
+        self.assertTrue(a.alive)
+        self.assertLess(abs(a.altitude-10.), 15.)
+
+
 class FMEvaderUnchangedTests(unittest.TestCase):
     """The shared physics must leave FMEvader bit-identical: compare against the pre-refactor body."""
 

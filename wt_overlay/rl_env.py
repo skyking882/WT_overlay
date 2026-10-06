@@ -107,6 +107,11 @@ class MatchEnv:
         t=self.config.get('timeout_reward')
         if t is not None and (isinstance(t,bool) or not isinstance(t,(int,float))):
             raise ValueError('timeout_reward must be a number')
+        if not isinstance(self.config.get('policy_ground_floor',True),bool):
+            raise ValueError('policy_ground_floor must be True or False')
+        deck=self.config.get('policy_deck_m',100.)
+        if isinstance(deck,bool) or not isinstance(deck,(int,float)) or not 0<deck<=8000:
+            raise ValueError('policy_deck_m must be a number in (0, 8000]')
         frame=self.config.get('observation_frame','world')
         if frame not in ('world','egocentric'):
             raise ValueError("observation_frame must be 'world' or 'egocentric'")
@@ -199,7 +204,11 @@ class MatchEnv:
                 if name not in ('candidate_count','side_weight','threat_weight','over_shoulder_p'):
                     raise ValueError('unknown target_selection setting '+name)
                 setattr(pilot,name,value)
-            ex=IntentExecutor(f'{episode_seed}:execute:{p.ident}',path='follow' if p.ident in ids else 'autonomous',
+            # User 2026-10-06: policy aircraft may get no pull-out help (policy_ground_floor False) and a lower deck
+            # (policy_deck_m, e.g. 10 m); scripted pilots keep theirs.
+            floor_kw={} if p.ident not in ids else dict(ground_floor=c.get('policy_ground_floor',True),
+                                                         deck_m=c.get('policy_deck_m',100.))
+            ex=IntentExecutor(f'{episode_seed}:execute:{p.ident}',path='follow' if p.ident in ids else 'autonomous',**floor_kw,
                               home_xy=pilot.home_xy,**c.get('execution',{}))
             self.executors[p.ident]=ex
             self.reach[p.ident]=ReachTable.load(p.missile_id,c.get('reach_dir')) if p.missile_id else None
