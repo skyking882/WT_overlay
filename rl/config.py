@@ -11,6 +11,8 @@ import os
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Dict, List
 
+from rl.spec import HEAD_NAMES
+
 
 @dataclass
 class EnvCfg:
@@ -79,11 +81,25 @@ class PPOCfg:
     # 'weapon' should not be pushed toward random: s1_v2 (ent_coef 0.05) drove weapon entropy 0.06 -> 0.23 and
     # doubled launches per episode, wasting missiles.
     ent_head_scale: dict = field(default_factory=dict)
+    # Per-head KL constraint to the behaviour policy (opt-in; {} = off): {head: {"target": t, "coef": c0[, "coef_min",
+    # "coef_max"]}}. The actor loss gains coef * KL_head (k3 estimate per valid step, from buf.logp_heads and the
+    # current log-probs); after each round coef is multiplied by 1.5 if the round's mean KL_head > 1.5 * target and
+    # divided by 1.5 if < target / 1.5 (clamped, default [0.01, 100]); the adapted coef is in the trainer state.
+    # Suggested for 'weapon': target 2e-4 (s1_ego2's per-minibatch weapon k3 ran ~2e-4..6e-4, the joint KL ~6e-3).
+    head_kl: dict = field(default_factory=dict)
     kl_beta: float = 0.05
     kl_beta_hold: float = 2.0e5
     kl_beta_end: float = 2.0e6
     value_std_floor: float = 0.05
     critic_warmup_rounds: int = 0  # rounds that update only the critic
+
+
+@dataclass
+class LeagueCfg:
+    # Opponent pool of history episodes (env.config history_prob > 0; unused otherwise), rl.league.
+    snapshot_every: int = 10       # rounds between snapshots of the current actor (0: references only)
+    keep: int = 8                  # newest snapshots kept in the pool
+    references: List[str] = field(default_factory=list)   # fixed checkpoints, always in the pool
 
 
 @dataclass
@@ -126,6 +142,7 @@ class Config:
     resources: ResourcesCfg = field(default_factory=ResourcesCfg)
     rollout: RolloutCfg = field(default_factory=RolloutCfg)
     ppo: PPOCfg = field(default_factory=PPOCfg)
+    league: LeagueCfg = field(default_factory=LeagueCfg)
     bc: BCCfg = field(default_factory=BCCfg)
     run: RunCfg = field(default_factory=RunCfg)
 
@@ -166,16 +183,41 @@ class Config:
             raise ValueError("env.config must be a dict, got %r (a --set value is parsed with ast.literal_eval: "
                              "write None / True / False, not null / true / false, or use a JSON config file)"
                              % (e.config,))
-        p_self = e.config.get("self_play_prob", 0)
-        if isinstance(p_self, (int, float)) and p_self > 0:
-            # a self-play episode controls every aircraft slot; a bigger episode would stop the worker at some
-            # random later reset, so refuse here
-            teams = e.config.get("teams")
-            slots = sum(len(t) for t in teams) if teams else 2 * e.config.get("team_size", 1)
-            if e.streams_per_env < slots:
-                raise ValueError("env.config.self_play_prob > 0 controls all %d aircraft slots per episode: "
-                                 "env.streams_per_env must be >= %d (is %d)" % (slots, slots, e.streams_per_env))
+        for key in ("self_play_prob", "history_prob"):
+            p_all = e.config.get(key, 0)
+            if isinstance(p_all, (int, float)) and p_all > 0:
+                # self-play and history episodes control every aircraft slot; a bigger episode would stop the worker
+                # at some random later reset, so refuse here
+                teams = e.config.get("teams")
+                slots = sum(len(t) for t in teams) if teams else 2 * e.config.get("team_size", 1)
+                if e.streams_per_env < slots:
+                    raise ValueError("env.config.%s > 0 controls all %d aircraft slots per episode: "
+                                     "env.streams_per_env must be >= %d (is %d)"
+                                     % (key, slots, slots, e.streams_per_env))
+        if sum(e.config.get(k, 0) for k in ("self_play_prob", "history_prob")
+               if isinstance(e.config.get(k, 0), (int, float))) > 1 + 1e-9:
+            raise ValueError("env.config: self_play_prob + history_prob must not exceed 1")
+        lg = self.league
+        if lg.snapshot_every < 0 or lg.keep < 1 or not isinstance(lg.references, list):
+            raise ValueError("league: snapshot_every >= 0, keep >= 1 and references a list are required")
+        if history_on(self) and lg.snapshot_every == 0 and not lg.references:
+            raise ValueError("env.config.history_prob > 0 needs opponents: league.snapshot_every > 0 or "
+                             "league.references")
+        for h, v in self.ppo.head_kl.items():
+            if h not in HEAD_NAMES:
+                raise ValueError("ppo.head_kl: unknown head %r" % (h,))
+            if not isinstance(v, dict) or set(v) - {"target", "coef", "coef_min", "coef_max"} or \
+                    not v.get("target", 0) > 0 or v.get("coef", 1.0) < 0 or \
+                    not 0 < v.get("coef_min", 0.01) <= v.get("coef_max", 100.0):
+                raise ValueError("ppo.head_kl[%r] must look like {'target': t > 0, 'coef': c >= 0[, 'coef_min', "
+                                 "'coef_max']}, got %r" % (h, v))
         check_core_budget(self)
+
+
+def history_on(cfg) -> bool:
+    """History episodes (frozen past opponents from the league) are switched on by env.config history_prob > 0."""
+    p = cfg.env.config.get("history_prob", 0) if isinstance(cfg.env.config, dict) else 0
+    return isinstance(p, (int, float)) and not isinstance(p, bool) and p > 0
 
 
 def _merge(obj, d):

@@ -756,6 +756,31 @@ console.log(JSON.stringify(out));
         self.assertEqual(o["has_sp"], [False, True])
         self.assertEqual(o["extras"], [["by_env.0", 2], ["flag", True], ["settle_ticks", 80]])
 
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_history_kind_and_weapon_head_kl(self):
+        rec = dict(round=5, episode_return_by_kind=dict(vs_script=0.3, history=-0.2),
+                   head_kl=dict(weapon=dict(kl=3e-4, coef=1.5, coef_next=2.25, target=2e-4)),
+                   outcomes_by_kind=dict(
+                       vs_script=dict(win=5, loss=2, trade=1, none=2, kills=6, deaths=3, episodes=10),
+                       history=dict(win=4, loss=3, trade=1, none=0, kills=5, deaths=4, episodes=8, win_rate=0.5,
+                                    exchange=1.25)))
+        script = """
+const M = require('./metrics.js');
+const r = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const s = M.kindStats(r, M.KIND_HIST);
+console.log(JSON.stringify({ kind: M.KIND_HIST, win_rate: s.win_rate, exchange: s.exchange, ret: s.ret,
+  episodes: s.episodes, has: [M.hasKind([r], 'history'), M.hasKind([{ round: 1 }], 'history')],
+  kl: M.headKl(r, 'weapon', 'kl'), coef: M.headKl(r, 'weapon', 'coef'), none: M.headKl({ round: 1 }, 'weapon', 'kl'),
+  pooled: M.pooled([r], 'history', 10).win_rate }));
+"""
+        o = run_node(script, rec)
+        self.assertEqual(o, dict(kind="history", win_rate=0.5, exchange=1.25, ret=-0.2, episodes=8, has=[True, False],
+                                 kl=3e-4, coef=1.5, none=None, pooled=0.5))
+        js = (STATIC / "training.js").read_text()
+        for s in ("对历史对手", "kindCharts(M.KIND_HIST)", "id: 'headkl'", "id: 'headcoef'"):
+            self.assertIn(s, js)
+        self.assertIn(".cgroup.g-hist", (STATIC / "style.css").read_text())
+
     def test_labels_and_chart_order(self):
         html = (STATIC / "index.html").read_text()
         order = [html.index('src="/static/%s"' % n) for n in ("app.js", "metrics.js", "training.js")]

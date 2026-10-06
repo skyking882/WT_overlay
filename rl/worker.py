@@ -8,22 +8,27 @@ multiprocessing.connection, so workers can run on other nodes (TCP) or other int
 
 Ops (request payload -> reply):
   init       {env_cls, env_config, env_ids, seeds, streams_per_env, validate_steps, host_id}
-             -> {env_id: {"obs": {aid: wire}, "scenario": ..., "kind": ...}}   (creates and resets the envs)
+             -> {env_id: {"obs": {aid: wire}, "scenario": ..., "kind": ...[, "frozen": [aid, ...]]}}
+             (creates and resets the envs)
   step       {env_id: {aid: action tuple}} -> ({env_id: StepResult}, seconds)
   collect_bc {n_episodes, seed, check_legality} -> list of episode records (scripted pilots)
   ping / close
 StepResult: {"rew","done": {aid:..}, "timeout": bool, "obs": {aid: wire} of agents that continue
   (or of the fresh episode if "new_episode"), "final": {aid: wire} final observations of agents
   that survived a timeout (bootstrap), "new_episode": bool, "events": {name: int}, "scenario",
-  "kind"} where "kind" is env.episode_kind ("self_play" / "vs_script" for MatchEnv with self_play_prob, else
-  None) of the episode "obs" belongs to, like "scenario". Optional keys: "late" {aid: reward} owed to agents that
-  finished in an earlier step (an env's info["late_rewards"]: a missile of a downed aircraft scored), "tallies"
-  {aid: [kills, deaths]} (info["tallies"]), "time_limit" (info["time_limit"]: the match ran out of time, also when
-  the env makes that a terminal step rather than a bootstrapped timeout), "pending": True if the episode goes on and
-  env.pending_credit() is still True (the sampler keeps stepping such an env before its PPO update: Sampler._settle).
-The env is reset automatically when no policy-controlled agent is left. If the env has pending_credit() (missiles
-of downed policy aircraft still flying) it is first played on without actions until they end, and what they score
-is added to the reward of the agents that finished in this step ("late" for agents that finished earlier).
+  "kind"} where "kind" is env.episode_kind ("self_play" / "history" / "vs_script" for MatchEnv with self_play_prob or
+  history_prob, else None) of the episode "obs" belongs to, like "scenario". Optional keys: "late" {aid: reward} owed
+  to agents that finished in an earlier step (an env's info["late_rewards"]: a missile of a downed aircraft scored),
+  "tallies" {aid: [kills, deaths]} (info["tallies"]), "time_limit" (info["time_limit"]: the match ran out of time,
+  also when the env makes that a terminal step rather than a bootstrapped timeout), "pending": True if the episode
+  goes on and env.pending_credit() is still True (the sampler keeps stepping such an env before its PPO update:
+  Sampler._settle), "frozen" (with "new_episode", and in init) the env's frozen_ids when there are any: agents of a
+  history episode flown by a frozen past policy (the sampler acts for them but trains nothing on them).
+The env is reset automatically when no policy-controlled agent is left, or (history episodes) when only frozen agents
+are left and nothing is owed to a downed trained agent any more (pending_credit() False). If the env has
+pending_credit() (missiles of downed policy aircraft still flying) it is first played on without actions until they
+end, and what they score is added to the reward of the agents that finished in this step ("late" for agents that
+finished earlier).
 """
 from __future__ import annotations
 
@@ -76,8 +81,12 @@ class EnvHost:
             raise RuntimeError(
                 "env %d: reset() returned %d controlled agents but streams_per_env=%d; raise "
                 "env.streams_per_env or lower the number of controlled agents" % (j, len(obs), self.streams_per_env))
-        return {"obs": self._pack(j, obs), "scenario": getattr(env, "scenario", None),
-                "kind": getattr(env, "episode_kind", None)}
+        out = {"obs": self._pack(j, obs), "scenario": getattr(env, "scenario", None),
+               "kind": getattr(env, "episode_kind", None)}
+        frozen = getattr(env, "frozen_ids", None)
+        if frozen:
+            out["frozen"] = list(frozen)
+        return out
 
     # ------------------------------------------------------------------ ops
     def reset_all(self):
@@ -104,6 +113,9 @@ class EnvHost:
             tallies = {aid: list(v) for aid, v in (info.get("tallies") or {}).items()}
             time_limit = bool(info.get("time_limit", False))
             pending = getattr(env, "pending_credit", None)
+            frozen = getattr(env, "frozen_ids", None)
+            if nxt and frozen and all(aid in frozen for aid in nxt) and not (pending is not None and pending()):
+                nxt = {}    # history episode: only the frozen side is left and nothing more can reach a trained agent
             if not nxt and pending is not None and not getattr(env, "over", True):
                 # Every controlled aircraft is down but some of their missiles still fly: finish them before the
                 # reset, so a kill after death (a trade) reaches the shooter.
@@ -147,6 +159,8 @@ class EnvHost:
                 res["new_episode"] = True
                 res["scenario"] = r["scenario"]
                 res["kind"] = r["kind"]
+                if "frozen" in r:
+                    res["frozen"] = r["frozen"]
             out[j] = res
         return out, time.time() - t0
 

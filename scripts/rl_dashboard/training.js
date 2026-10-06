@@ -22,8 +22,9 @@
   const multi = () => T.sel.length > 1;
 
   // ------------------------------------------------------------------ chart definitions
-  // Charts come in groups: vs-script episodes, self-play episodes (shown when a selected run has any), all training
-  // trajectories mixed, and the PPO update. Per-kind numbers come from metrics.js, which also reads older records.
+  // Charts come in groups: vs-script episodes, self-play and history episodes (each shown when a selected run has
+  // any), all training trajectories mixed, and the PPO update. Per-kind numbers come from metrics.js, which also reads
+  // older records.
   const M = R.metrics;
   const POOL_ROUNDS = 10;              // group header tiles: the last rounds pooled
   const per100 = (k) => (r) => { const e = r.events && r.events[k]; const d = r.decisions_in_round; return e == null || !d ? null : (e / d) * 100; };
@@ -33,14 +34,16 @@
   const share = (kind, k) => (r) => M.outcomeShare(r, kind, k);
   const endShare = (k) => (r) => { const e = r.episode_kinds; const n = r.episodes_finished; return e && n ? (e[k] || 0) / n : null; };
   function kindCharts(kind) {
-    const vs = kind === M.KIND_SCRIPT, p = kind + '.';
+    const vs = kind === M.KIND_SCRIPT, hist = kind === M.KIND_HIST, p = kind + '.';
+    const color = vs ? 'p1' : hist ? 'p2' : 'p4';
     return [
-      { id: p + 'winrate', title: '胜率', sub: vs ? '击落对方且存活 · S1 过关线 60%' : '击落对方且存活 · 双方同一策略', ref: vs ? [{ y: 0.6 }] : [], share: true, max1: true,
+      { id: p + 'winrate', title: '胜率', sub: vs ? '击落对方且存活 · S1 过关线 60%' : hist ? '击落对方且存活 · 对冻结的历史策略 · 50% = 持平' : '击落对方且存活 · 双方同一策略',
+        ref: vs ? [{ y: 0.6 }] : hist ? [{ y: 0.5 }] : [], share: true, max1: true,
         fmtVal: (v) => fmt.pct(v, 1), series: [{ key: 'v', label: '胜率', color: 'p3', get: ks(kind, (s) => s.win_rate) }] },
-      { id: p + 'exchange', title: '交换比', sub: vs ? '击落 / 被击落 · S1 过关线 1.5' : '击落 / 被击落 · 按构造约 1', ref: vs ? [{ y: 1.5 }, { y: 1 }] : [{ y: 1 }], min0: true,
+      { id: p + 'exchange', title: '交换比', sub: vs ? '击落 / 被击落 · S1 过关线 1.5' : hist ? '击落 / 被击落 · 1 = 持平' : '击落 / 被击落 · 按构造约 1', ref: vs ? [{ y: 1.5 }, { y: 1 }] : [{ y: 1 }], min0: true,
         series: [{ key: 'v', label: '交换比', color: 'p1', get: ks(kind, (s) => s.exchange) }] },
-      { id: p + 'return', title: '平均回报', sub: vs ? 'episode return · 仅对脚本局' : 'episode return · 按构造约 −0.5', ref: [{ y: vs ? 0 : -0.5 }],
-        series: [{ key: 'v', label: '平均回报', color: vs ? 'p1' : 'p4', get: (r) => M.kindReturn(r, kind) }] },
+      { id: p + 'return', title: '平均回报', sub: vs ? 'episode return · 仅对脚本局' : hist ? 'episode return · 仅当前策略一方' : 'episode return · 按构造约 −0.5', ref: [{ y: vs || hist ? 0 : -0.5 }],
+        series: [{ key: 'v', label: '平均回报', color, get: (r) => M.kindReturn(r, kind) }] },
       { id: p + 'outcomes', title: '每局结果', sub: '胜 · 负 · 同归于尽 · 存活无击落 (超时 / 其他)', share: true, max1: true, fmtVal: (v) => fmt.pct(v, 1), multiDefault: ['win', 'loss'],
         series: [{ key: 'win', label: '胜', color: 'p3', get: share(kind, 'win') }, { key: 'loss', label: '负', color: 'kill', get: share(kind, 'loss') },
                  { key: 'trade', label: '同归于尽', color: 'p6', get: share(kind, 'trade') },
@@ -51,13 +54,14 @@
         series: [{ key: 'trade', label: '同归于尽率', color: 'p6', get: ks(kind, (s) => s.trade_rate) },
                  { key: 'timeout', label: '超时率', color: 'p8', get: ks(kind, (s) => s.timeout_rate) }] },
       { id: p + 'episodes', title: '每轮回合数', sub: 'agent 回合 · 上面各曲线的样本量', min0: true, fmtVal: (v) => fmt.int(v),
-        series: [{ key: 'v', label: '回合数', color: vs ? 'p2' : 'p4', get: ks(kind, (s) => s.episodes) }] },
+        series: [{ key: 'v', label: '回合数', color: vs ? 'p2' : color, get: ks(kind, (s) => s.episodes) }] },
     ];
   }
+  const hk = (key) => (r) => M.headKl(r, 'weapon', key);
   const MIX_CHARTS = [
     { id: 'reward', title: '每决策奖励', sub: 'reward / decision · 全部轨迹', ref: [{ y: 0 }],
       series: [{ key: 'v', label: '每决策奖励', color: 'p3', get: (r) => r.reward_per_decision }] },
-    { id: 'return', title: '回合回报 · 全部训练轨迹 (混合)', sub: '对脚本与自博弈合并 · 自博弈约 −0.5', ref: [{ y: 0 }],
+    { id: 'return', title: '回合回报 · 全部训练轨迹 (混合)', sub: '各类局合并 · 自博弈约 −0.5', ref: [{ y: 0 }],
       series: [{ key: 'v', label: '全部训练轨迹 (混合)', color: 'p6', get: (r) => r.episode_return_mean }] },
     { id: 'events', title: '事件 / 100 决策', sub: 'launch · kill · death · assist', multiDefault: ['kill'],
       series: EVENTS.map(([k, l, c]) => ({ key: k, label: l, color: c, get: per100(k) })) },
@@ -78,6 +82,11 @@
     { id: 'kl', title: 'KL 散度', sub: '行为策略 · BC 参考', headKey: 'kl_ref_head', refCfg: 'target_kl', min0: true,
       series: [{ key: 'target', label: '目标 KL', color: 'p1', get: (r) => r.kl_target },
                { key: 'ref', label: 'BC 参考 KL', color: 'p6', get: (r) => r.kl_ref }] },
+    { id: 'headkl', title: '武器头 KL 约束', sub: 'ppo.head_kl · 对行为策略的本轮均值 KL 与目标 · 选头看各头 KL', headKey: 'kl_target_head', min0: true,
+      series: [{ key: 'kl', label: '武器头 KL', color: 'p1', get: hk('kl'), optional: true },
+               { key: 'target', label: '目标', color: 'p8', get: hk('target'), optional: true }] },
+    { id: 'headcoef', title: '武器头 KL 系数', sub: 'ppo.head_kl · 本轮使用的系数 (每轮 ×1.5 或 ÷1.5 趋向目标)', min0: true,
+      series: [{ key: 'coef', label: '系数', color: 'p6', get: hk('coef'), optional: true }] },
     { id: 'clip', title: '裁剪比例', sub: 'clip fraction', min0: true,
       series: [{ key: 'v', label: '裁剪比例', color: 'p2', get: (r) => r.clip_frac }] },
     { id: 'vloss', title: '价值损失 (归一化)', sub: 'MSE / value_scale²', min0: true,
@@ -105,8 +114,10 @@
       desc: '策略对脚本飞行员 · 主要考核指标' },
     { id: 'sp', kind: M.KIND_SELF, cls: 'g-sp', title: '自博弈局', tag: 'self-play', charts: kindCharts(M.KIND_SELF), optional: true,
       desc: '双方都是当前策略 · 平均回报按构造约 −0.5，胜率与交换比看的是对称性，不是强弱' },
+    { id: 'hist', kind: M.KIND_HIST, cls: 'g-hist', title: '对历史对手', tag: 'history', charts: kindCharts(M.KIND_HIST), optional: true,
+      desc: '当前策略对冻结的历史策略 (league) · 只统计当前策略一方 · 胜率持续高于 50% 才是在进步' },
     { id: 'mix', cls: 'g-mix', title: '全部训练轨迹 (混合)', tag: 'all trajectories', charts: MIX_CHARTS,
-      desc: '对脚本局与自博弈局合并 · 奖励、事件与采样' },
+      desc: '各类局合并 · 奖励、事件与采样 (历史对手一方不进训练，不计入)' },
     { id: 'opt', cls: 'g-opt', title: '优化与价值网络', tag: 'PPO update', charts: OPT_CHARTS,
       desc: '策略熵 · KL · 裁剪 · 价值损失、RMS 误差 (奖励单位) 与解释方差并列' },
   ];
@@ -362,9 +373,11 @@
       const sum = (f) => tail.reduce((a, r) => a + (isNum(f(r)) ? f(r) : 0), 0);
       const eps = sum((r) => r.episodes_finished);
       const sp = sum((r) => { const s = M.kindStats(r, M.KIND_SELF); return s ? s.episodes : 0; });
+      const hi = sum((r) => { const s = M.kindStats(r, M.KIND_HIST); return s ? s.episodes : 0; });
       const late = tail.some((r) => r.late_rewards);
       host.append(gstat('回合', fmt.int(eps), '近 ' + tail.length + ' 轮'),
         gstat('自博弈占比', eps ? fmt.pct(sp / eps, 0) : '—', 'agent 回合'),
+        ...(hi ? [gstat('历史对手占比', eps ? fmt.pct(hi / eps, 0) : '—', 'agent 回合 · 当前策略一方')] : []),
         gstat('迟到战果', late ? fmt.int(sum((r) => r.late_rewards && r.late_rewards.credited)) : '—',
           late ? '丢弃 ' + fmt.int(sum((r) => r.late_rewards && r.late_rewards.dropped)) : '旧记录无此项'));
       // sampler statistics without a chart of their own (e.g. from a newer rollout), listed as they come

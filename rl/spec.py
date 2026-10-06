@@ -11,10 +11,11 @@ DT_STEP = 20.0 / 48.0          # seconds per env.step (20 ticks of 1/48 s)
 GAMMA_BASE = 0.995             # per second
 LAMBDA_BASE = 0.95             # per second
 
-# Episode kinds an env may report (MatchEnv with self_play_prob: env.episode_kind, info["episode_kind"]). An env
-# that reports none counts as vs-script, the behaviour before self-play existed.
+# Episode kinds an env may report (MatchEnv with self_play_prob / history_prob: env.episode_kind,
+# info["episode_kind"]). An env that reports none counts as vs-script, the behaviour before self-play existed.
 KIND_SCRIPT = "vs_script"      # the configured controlled slots (default slot 0) fly the policy, the rest scripts
 KIND_SELF = "self_play"        # every aircraft slot is policy-controlled
+KIND_HIST = "history"          # every slot is policy-controlled; one side (env.frozen_ids) flies a frozen past policy
 
 OWN_DIM = 96
 ENT_DIM = 48

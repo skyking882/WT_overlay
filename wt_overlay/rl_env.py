@@ -88,6 +88,8 @@ class MatchEnv:
         self.engagement=None
         self.scenario=None
         self.self_play=False
+        self.history=False
+        self.frozen_ids=()
         self.episode_kind=None
         self._observations={}
         self._entities={}
@@ -96,9 +98,12 @@ class MatchEnv:
         n=self.config.get('team_size',1)
         if not isinstance(n,int) or not 1<=n<=16:
             raise ValueError('team_size must be 1..16')
-        p=self.config.get('self_play_prob',0.)
-        if isinstance(p,bool) or not isinstance(p,(int,float)) or not 0.<=p<=1.:
-            raise ValueError('self_play_prob must be a number in [0,1]')
+        for name in ('self_play_prob','history_prob'):
+            p=self.config.get(name,0.)
+            if isinstance(p,bool) or not isinstance(p,(int,float)) or not 0.<=p<=1.:
+                raise ValueError(name+' must be a number in [0,1]')
+        if self.config.get('self_play_prob',0.)+self.config.get('history_prob',0.)>1.+1e-9:
+            raise ValueError('self_play_prob + history_prob must not exceed 1')
         t=self.config.get('timeout_reward')
         if t is not None and (isinstance(t,bool) or not isinstance(t,(int,float))):
             raise ValueError('timeout_reward must be a number')
@@ -124,10 +129,14 @@ class MatchEnv:
         self.episode_count+=1
         episode_seed=self.rng.randrange(2**63)
         c=self.config
-        # With self_play_prob>0 the episode kind comes from the env's own episode RNG (one draw per reset, so
-        # kinds are a function of the env seed). Without it no draw is made and episodes are unchanged.
-        p_self=c.get('self_play_prob',0.)
-        self.self_play=p_self>0. and self.rng.random()<p_self
+        # With self_play_prob or history_prob >0 the episode kind comes from the env's own episode RNG (one draw per
+        # reset, so kinds are a function of the env seed). Without them no draw is made and episodes are unchanged.
+        # A history episode draws once more: the side flown by the frozen past policy (env.frozen_ids).
+        p_self,p_hist=c.get('self_play_prob',0.),c.get('history_prob',0.)
+        u=self.rng.random() if p_self>0. or p_hist>0. else 1.
+        self.self_play=u<p_self
+        self.history=not self.self_play and u<p_self+p_hist
+        frozen_side=self.rng.randrange(2) if self.history else None
         model=copy.deepcopy(c.get('model') or match.load_model(c.get('model_path')))
         if 'aircraft_pool' in c:
             allowed=set(c['aircraft_pool'])
@@ -159,9 +168,10 @@ class MatchEnv:
             ids=list(range(len(generated.specs)))
         if not ids or len(set(ids))!=len(ids) or any(type(i) is not int or not 0<=i<len(generated.specs) for i in ids):
             raise ValueError('policy_ids must be distinct valid aircraft slots')
-        if self.self_play:
+        if self.self_play or self.history:
             ids=list(range(len(generated.specs)))   # validated above, so a bad config fails on every episode kind
         self.policy_ids=tuple(ids)
+        self.frozen_ids=tuple(i for i,s in enumerate(generated.specs) if s.team==frozen_side) if self.history else ()
         self.pilots={i:s.controller for i,s in enumerate(generated.specs)}
         for s in generated.specs:
             s.controller=None
@@ -198,10 +208,10 @@ class MatchEnv:
             p.camera.advance(p.own,0.)
         self.over=False
         self.scenario=f'match:{episode_seed}:{len(generated.specs)}'
-        if 'self_play_prob' in c:
-            self.episode_kind='self_play' if self.self_play else 'vs_script'
-            if self.self_play:
-                self.scenario+=':self_play'
+        if 'self_play_prob' in c or 'history_prob' in c:
+            self.episode_kind='self_play' if self.self_play else 'history' if self.history else 'vs_script'
+            if self.self_play or self.history:
+                self.scenario+=':'+self.episode_kind
         else:
             self.episode_kind=None
         return self.observe()
@@ -341,18 +351,39 @@ class MatchEnv:
             # Decisions taken in self-play episodes this step (agent-summed like the other events).
             events['self_play_decisions']=len(active) if self.self_play else 0
             info.update(self_play=self.self_play,episode_kind=self.episode_kind)
+            if 'history_prob' in self.config:
+                # history episodes: decisions of the current policy (the frozen side's are not counted)
+                events['history_decisions']=sum(1 for a in active if a not in self.frozen_ids) if self.history else 0
+                info['frozen_ids']=list(self.frozen_ids)
         if self.over and not timeout:
             obs={}
             self._observations={}
         return obs,rewards,dones,info
 
     def pending_credit(self):
-        """True while a missile of a policy aircraft that is already down is still flying: its result is still owed
-        to that aircraft (info['late_rewards']), so a trainer should play the match on before resetting it."""
+        """True while a policy aircraft that is already down can still be credited (info['late_rewards']), so a
+        trainer should play the match on before resetting it: one of its missiles is still flying, or a teammate can
+        still kill an enemy it shot at within the assist window (Engagement._kill: a teammate of the killer whose
+        missile at the victim was in flight within the last 20 s gets an assist, alive or not). The frozen side of a
+        history episode (frozen_ids) trains nothing, so nothing is owed to it."""
         eng=self.engagement
         if eng is None or self.over:
             return False
-        return any(not m.done and m.shooter.ident in self.policy_ids and not m.shooter.alive for m in eng.missiles)
+        owed={i for i in self.policy_ids if i not in self.frozen_ids and not eng.planes[i].alive}
+        if not owed:
+            return False
+        if any(not m.done and m.shooter.ident in owed for m in eng.missiles):
+            return True
+        t=eng.time
+        for v in eng.live:
+            for shooter,_,t_end in v.missile_hist:
+                team=eng.planes[shooter].team
+                if shooter in owed and team!=v.team and (t_end is None or t_end>=t-20.):
+                    # a kill needs a possible killer: a live teammate, or a teammate's missile still in flight
+                    if any(p.team==team and p.ident!=shooter for p in eng.live) or \
+                            any(not m.done and m.shooter.team==team and m.shooter.ident!=shooter for m in eng.missiles):
+                        return True
+        return False
 
     def snapshot(self):
         if self.engagement is None:

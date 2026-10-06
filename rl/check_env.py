@@ -81,6 +81,16 @@ def run_episode(rep, env, rng, mode, max_steps, where):
         rep.err("%s: reset() returned no agent" % where)
         return None
     alive = set(obs)
+    frozen = set(getattr(env, "frozen_ids", None) or ())
+    if frozen:                  # MatchEnv history episode: one side flown by a frozen past policy, the rest trains
+        if not frozen < alive:
+            rep.err("%s: frozen_ids %s must be a proper subset of the controlled agents %s"
+                    % (where, sorted(map(str, frozen)), sorted(map(str, alive))))
+        if getattr(env, "episode_kind", None) != "history":
+            rep.err("%s: frozen_ids outside a history episode (episode_kind %r)" % (where, env.episode_kind))
+        rep.count("frozen_agents_history", len(frozen))
+    elif getattr(env, "episode_kind", None) == "history":
+        rep.err("%s: a history episode without frozen_ids" % where)
     steps = 0
     while obs and steps < max_steps:
         steps += 1
@@ -106,7 +116,7 @@ def run_episode(rep, env, rng, mode, max_steps, where):
         if set(rew) != set(acts) or set(done) != set(acts):
             rep.err("%s: rewards/dones must be keyed exactly by the agents that acted" % where)
         timeout = bool((info or {}).get("timeout", False))
-        kind = (info or {}).get("episode_kind")     # MatchEnv with self_play_prob: "self_play" / "vs_script"
+        kind = (info or {}).get("episode_kind")     # MatchEnv: "self_play" / "history" / "vs_script"
         if kind is not None and steps == 1:
             rep.count("episodes_" + str(kind))
             rep.count("controlled_agents_" + str(kind), len(acts))

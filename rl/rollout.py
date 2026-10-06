@@ -16,6 +16,13 @@ flying while another controlled agent of the env lives on: self-play), the round
 the same actor, L ticks at a time, until none of them owes credit (at most settle_cap ticks). Their agents' steps are
 stored in the extended round like any other, so the late reward reaches the downed agent's final step before the
 update that trains on it. Streams of the other envs idle there; their running episodes bootstrap at tick T-1.
+
+History episodes (MatchEnv history_prob; the worker reports the env's frozen_ids as "frozen"): every slot is bound to
+a stream as in self-play, but the agents of the frozen side get their actions from an opponent of the league (a frozen
+past actor, drawn per episode by league.pick()), with their own recurrent state (h_frozen) and generator. Their steps
+are never written to the round buffer: those slots stay padding (valid False, no reward, done or bootstrap), so they
+reach no loss, GAE, value target or statistic; their rewards and late rewards are dropped. The current agent of the
+episode trains as in any other episode, late credit and settle ticks included.
 """
 from __future__ import annotations
 
@@ -50,7 +57,7 @@ class Tail:
 
 
 class Sampler:
-    def __init__(self, cfg, pool, device, seed=0):
+    def __init__(self, cfg, pool, device, seed=0, league=None):
         self.cfg = cfg
         self.pool = pool
         self.device = device
@@ -69,6 +76,13 @@ class Sampler:
         self.ep_death = [0] * self.S
         self.ep_air = [""] * self.S
         self.ep_kind = [spec.KIND_SCRIPT] * self.S
+        self.frozen = [False] * self.S      # stream bound to an agent of the frozen side of a history episode
+        self.env_frozen = [frozenset()] * self.n_envs
+        self.env_opp = [None] * self.n_envs     # (name, actor) flying the frozen side of env j's history episode
+        self.league = league                # opponent pool with pick() -> (name, actor); needed for history episodes
+        self.h_frozen = torch.zeros(self.S, H, device=device)
+        self.gen_frozen = torch.Generator(device=device)
+        self.gen_frozen.manual_seed(seed + 7919)
         self.finished = {}                  # (env, agent) -> final step of an agent whose env episode still runs
         self.env_pending = [False] * self.n_envs    # env still owes late credit (worker "pending")
         self.settle_cap = self.T            # max settle ticks per round; 0 = off (late credit after the round dropped)
@@ -86,7 +100,7 @@ class Sampler:
     def start(self, seed_base):
         resets = self.pool.init_envs(self.n_envs, seed_base)
         for j, r in resets.items():
-            self._bind(j, r["obs"], r.get("kind"))
+            self._bind(j, r["obs"], r.get("kind"), r.get("frozen"))
         self.started = True
 
     def _air(self, name):
@@ -96,11 +110,18 @@ class Sampler:
             self.aircraft_names.append(name)
         return i
 
-    def _bind(self, j, obs, kind=None):
+    def _bind(self, j, obs, kind=None, frozen=None):
+        fz = self.env_frozen[j] = frozenset(frozen or ())
+        if fz and self.league is None:
+            raise RuntimeError("env %d reports frozen agents (a history episode) but the sampler has no league: "
+                               "history_prob > 0 needs an opponent pool (rl.league)" % j)
+        self.env_opp[j] = self.league.pick() if fz else None
         for s in self.env_streams[j]:
             self.slot_agent[s] = None
             self.pending[s] = None
+            self.frozen[s] = False
         for s, a in zip(self.env_streams[j], sorted(obs, key=str)):
+            self.frozen[s] = a in fz
             self.slot_agent[s] = a
             self.pending[s] = obs[a]
             self.pending_first[s] = True
@@ -140,7 +161,7 @@ class Sampler:
         if B == 0:
             buf.h_actor[buf.K] = self.h_actor.clone()
         for s in range(S):
-            if self.pending[s] is not None:
+            if self.pending[s] is not None and not self.frozen[s]:
                 buf.end_obs[s] = self.pending[s]
                 buf.end_first[s] = self.pending_first[s]
         buf.store.finalize()
@@ -158,28 +179,32 @@ class Sampler:
         active = [s for s in streams if self.pending[s] is not None]
         if not active:
             return None
-        for s in active:
+        learn = [s for s in active if not self.frozen[s]]
+        for s in learn:
             st["decisions_by_kind"][self.ep_kind[s]] = st["decisions_by_kind"].get(self.ep_kind[s], 0) + 1
         t0 = time.time()
-        act_t = torch.tensor(active)
-        dec = Decoded([self.pending[s] for s in active])
-        first = torch.tensor([self.pending_first[s] for s in active])
-        batch = dec.to_batch(first=first).to(dev)
-        with torch.no_grad():
-            out, h_new = actor.act(batch, self.h_actor[act_t.to(dev)], self.gen, greedy)
-        self.h_actor[act_t.to(dev)] = h_new
-        actions = out.actions.cpu()
-        st["mask_fallbacks"] += int(out.fallback.sum())
-        flat = (t + P) * S + act_t
-        buf.store.put(flat, dec, first=first, act=actions)
-        buf.logp[flat] = out.logp.sum(-1).cpu()
-        buf.logp_heads[flat] = out.logp.cpu()
-        buf.aircraft[flat] = torch.tensor([self._air(n) for n in dec.aircraft])
         by_env: Dict[int, dict] = {}
-        acts_l = actions.tolist()
-        for i, s in enumerate(active):
-            by_env.setdefault(self.stream_env[s], {})[self.slot_agent[s]] = tuple(acts_l[i])
-            self.pending_first[s] = False
+        if learn:
+            act_t = torch.tensor(learn)
+            dec = Decoded([self.pending[s] for s in learn])
+            first = torch.tensor([self.pending_first[s] for s in learn])
+            batch = dec.to_batch(first=first).to(dev)
+            with torch.no_grad():
+                out, h_new = actor.act(batch, self.h_actor[act_t.to(dev)], self.gen, greedy)
+            self.h_actor[act_t.to(dev)] = h_new
+            actions = out.actions.cpu()
+            st["mask_fallbacks"] += int(out.fallback.sum())
+            flat = (t + P) * S + act_t
+            buf.store.put(flat, dec, first=first, act=actions)
+            buf.logp[flat] = out.logp.sum(-1).cpu()
+            buf.logp_heads[flat] = out.logp.cpu()
+            buf.aircraft[flat] = torch.tensor([self._air(n) for n in dec.aircraft])
+            acts_l = actions.tolist()
+            for i, s in enumerate(learn):
+                by_env.setdefault(self.stream_env[s], {})[self.slot_agent[s]] = tuple(acts_l[i])
+                self.pending_first[s] = False
+        if len(learn) < len(active):
+            self._act_frozen([s for s in active if self.frozen[s]], greedy, by_env, st)
         st["t_infer"] += time.time() - t0
         t0 = time.time()
         res = self.pool.step(by_env)
@@ -187,6 +212,26 @@ class Sampler:
         st["t_worker"] += self.pool.last_worker_time
         self._process(res, t, buf, st)
         return res
+
+    def _act_frozen(self, streams, greedy, by_env, st):
+        """Actions of the frozen side of history episodes: one batch per opponent actor, own state and generator;
+        nothing is stored."""
+        dev = self.device
+        groups: Dict[int, list] = {}
+        for s in streams:
+            groups.setdefault(id(self.env_opp[self.stream_env[s]][1]), []).append(s)
+        for ss in groups.values():
+            opp = self.env_opp[self.stream_env[ss[0]]][1]
+            idx = torch.tensor(ss).to(dev)
+            batch = Decoded([self.pending[s] for s in ss]).to_batch(
+                first=torch.tensor([self.pending_first[s] for s in ss])).to(dev)
+            with torch.no_grad():
+                out, h_new = opp.act(batch, self.h_frozen[idx], self.gen_frozen, greedy)
+            self.h_frozen[idx] = h_new
+            for i, a in enumerate(out.actions.cpu().tolist()):
+                by_env.setdefault(self.stream_env[ss[i]], {})[self.slot_agent[ss[i]]] = tuple(a)
+                self.pending_first[ss[i]] = False
+        st["frozen_decisions"] = st.get("frozen_decisions", 0) + len(streams)
 
     def _settle(self, actor, greedy, abort, buf, st):
         """Settle ticks (module docstring): extend the round by L ticks at a time and step only the envs that owe
@@ -199,7 +244,8 @@ class Sampler:
         for s in range(S):
             # Idle from tick T0 on with the episode going on: bootstrap at T0-1 from the next observation, the value
             # the end of the round would have given (GAE stops there as it does at the round end).
-            if self.stream_env[s] not in envs and self.pending[s] is not None and not self.pending_first[s]:
+            if self.stream_env[s] not in envs and self.pending[s] is not None and not self.pending_first[s] \
+                    and not self.frozen[s]:
                 f = buf.flat(T0 - 1, s)
                 buf.trunc[f] = buf.boot_final[f] = True
                 buf.boot_obs.append((f, self.pending[s]))
@@ -224,6 +270,9 @@ class Sampler:
             # scored): added to their final step if that step is in this round's buffer (settle ticks keep it there;
             # still dropped past settle_cap, or for credit the env does not report as pending).
             for a, v in (r.get("late") or {}).items():
+                if a in self.env_frozen[j]:             # the frozen side of a history episode trains nothing
+                    st["late_frozen"] = st.get("late_frozen", 0) + 1
+                    continue
                 f = self.finished.get((j, a))
                 if f is None or f["buf"] is not buf:
                     st["late_dropped"] = st.get("late_dropped", 0) + 1
@@ -240,6 +289,13 @@ class Sampler:
             for s in self.env_streams[j]:
                 a = self.slot_agent[s]
                 if a is None:
+                    continue
+                if self.frozen[s]:                      # acted for the frozen side: nothing stored, nothing counted
+                    if (not r["new_episode"]) and a in r["obs"] and not r["done"].get(a, False):
+                        self.pending[s] = r["obs"][a]
+                    else:
+                        self.slot_agent[s] = None
+                        self.pending[s] = None
                     continue
                 flat = (t + P) * S + s
                 rew = r["rew"].get(a)
@@ -279,13 +335,16 @@ class Sampler:
             if r["new_episode"]:
                 for key in [key for key in self.finished if key[0] == j]:
                     del self.finished[key]
-                self._bind(j, r["obs"], r.get("kind"))
+                self._bind(j, r["obs"], r.get("kind"), r.get("frozen"))
 
     def _end_episode(self, s, kind, st, where=None):
         st["episodes"].append((self.ep_air[s], self.ep_ret[s], self.ep_len[s], kind, self.ep_kind[s]))
         k, d = self.ep_kill[s], self.ep_death[s]
         outcome = ("trade" if k else "loss") if d else ("win" if k else "none")
         st.setdefault("outcomes", []).append((self.ep_air[s], outcome, k, d, self.ep_kind[s]))
+        opp = self.env_opp[self.stream_env[s]]
+        if opp is not None:                     # history episode: which frozen opponent this result was against
+            st.setdefault("opponent_of", {})[len(st["outcomes"]) - 1] = opp[0]
         if where is not None:                   # (env, agent, final flat step, buffer): target of late rewards
             j, a, flat, buf = where
             self.finished[(j, a)] = {"buf": buf, "flat": flat, "ep": len(st["episodes"])-1,

@@ -1,9 +1,10 @@
-/* WT 控制台 — 训练指标按局类型拆分 (vs_script / self_play) from metrics.jsonl records, older records included.
+/* WT 控制台 — 训练指标按局类型拆分 (vs_script / self_play / history) from metrics.jsonl records, older records included.
    Pure functions: the page loads this after app.js (window.RLD.metrics); the tests load it with node (module.exports). */
 (function (root) {
   'use strict';
   const KIND_SCRIPT = 'vs_script';
   const KIND_SELF = 'self_play';
+  const KIND_HIST = 'history';        // the current policy against frozen past policies (league opponents)
   const OUTCOMES = ['win', 'loss', 'trade', 'none'];
   const isNum = (v) => typeof v === 'number' && isFinite(v);
   const num = (v) => (isNum(v) ? v : null);
@@ -136,7 +137,13 @@
     return out;
   }
 
-  const api = { KIND_SCRIPT, KIND_SELF, kindsOf, kindReturn, kindStats, outcomeShare, pooled, valueRmse, hasKind, samplerExtras };
+  /** ppo.head_kl entry of a record for one head: kl (round mean), coef (used this round), coef_next, target; or null */
+  function headKl(r, head, key) {
+    const d = r && r.head_kl && r.head_kl[head];
+    return d ? num(d[key]) : null;
+  }
+
+  const api = { KIND_SCRIPT, KIND_SELF, KIND_HIST, headKl, kindsOf, kindReturn, kindStats, outcomeShare, pooled, valueRmse, hasKind, samplerExtras };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root && root.RLD) root.RLD.metrics = api;
 })(typeof window !== 'undefined' ? window : null);

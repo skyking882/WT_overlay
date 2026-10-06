@@ -89,8 +89,14 @@ def stage_bc(cfg, run_dir, stop):
 
 
 def fly_eval(cfg, actor, device, pool, ds, stats):
+    import copy
     from rl.rollout import Sampler
-    sampler = Sampler(cfg, pool, device, seed=cfg.run.seed + 99)
+    league = None
+    if C.history_on(cfg):                   # history episodes: the frozen side flies a copy of the cloned policy
+        from rl.league import League
+        league = League(cfg.league, device, seed=cfg.run.seed + 99)
+        league.add("bc", copy.deepcopy(actor))
+    sampler = Sampler(cfg, pool, device, seed=cfg.run.seed + 99, league=league)
     sampler.start(cfg.env.seed + 424242)
     rew = dec = 0
     ev = {}
@@ -154,8 +160,20 @@ def stage_ppo(cfg, run_dir, stop):
     if path:
         trainer.load_state_dict(ck["trainer"])
     metrics.truncate_after(trainer.round)
+    league = None
+    if C.history_on(cfg):
+        # opponent pool of history episodes: snapshots listed in the checkpoint, the configured references, and the
+        # starting actor when there is no snapshot yet
+        from rl.league import League
+        league = League(cfg.league, device, run_dir, seed=cfg.run.seed + 1000 * starts + 31, log=R.log)
+        if path:
+            league.load_state_dict(ck.get("league"))
+        league.load_references(cfg.league.references)
+        if cfg.league.snapshot_every > 0 and not league.snapshots():
+            league.snapshot(actor, trainer.round)
+        R.log("league: %s" % ", ".join(league.names()))
     pool = _pool(cfg, run_dir)
-    sampler = Sampler(cfg, pool, device, seed=cfg.run.seed + 1000 * starts)
+    sampler = Sampler(cfg, pool, device, seed=cfg.run.seed + 1000 * starts, league=league)
     round_times = []
     code = R.EXIT_DONE
 
@@ -163,9 +181,13 @@ def stage_ppo(cfg, run_dir, stop):
         payload = {"actor": actor.state_dict(), "critic": critic.state_dict(),
                    "ref": None if ref is None else ref.state_dict(), "trainer": trainer.state_dict(),
                    "cfg": cfg.to_dict(), "starts": starts, "aircraft": sampler.aircraft_names}
+        if league is not None:
+            payload["league"] = league.state_dict()
         p = R.checkpoint_path(ckpt_dir, trainer.round)
         R.atomic_torch_save(payload, p)
         R.prune_checkpoints(ckpt_dir, cfg.run.keep_ckpts)
+        if league is not None:
+            league.prune_files()
         R.log("checkpoint %s%s" % (os.path.basename(p), tag))
 
     try:
@@ -197,6 +219,9 @@ def stage_ppo(cfg, run_dir, stop):
             t_post = time.time() - t0
             m = trainer.update(buf)
             rec = round_record(cfg, trainer, buf, st, m, sampler)
+            if league is not None:
+                rec["league"]["added"] = league.after_round(actor, trainer.round)
+                rec["league"]["members"] = league.names()
             rec["time"] = {"sample": t_collect, "inference": st["t_infer"], "env_wait": st["t_env"],
                            "worker_max_sum": st["t_worker"], "postpass": t_post, "update": m.get("t_update", 0.0),
                            "round": time.time() - t_round}
@@ -217,6 +242,8 @@ def round_record(cfg, trainer, buf, st, m, sampler):
     S, T = buf.S, buf.T
     v = buf.loss_view(buf.store.valid)
     n_valid = int(v.sum())
+    # over the configured ticks: settle ticks (sampler_stats settle_*) lengthen some rounds and would lower it
+    T_cfg = min(cfg.rollout.steps, T)
     rew = buf.loss_view(buf.reward)
     air = buf.loss_view(buf.aircraft)
     per_air = {}
@@ -244,11 +271,12 @@ def round_record(cfg, trainer, buf, st, m, sampler):
     outcomes = st.get("outcomes", [])
     by_kind = outcomes_by_kind(outcomes, st.get("decisions_by_kind"), eps)
     # The long-standing keys describe the policy against scripts: self-play results are ~50/50 by construction and
-    # would hide them, so they leave these (they stay in outcomes_by_kind). Without any vs-script episode: all.
-    base = [o for o in outcomes if _kind_of(o) != spec.KIND_SELF] or outcomes
+    # history results are against frozen past policies, so both leave these (they stay in outcomes_by_kind). Without
+    # any vs-script episode: all.
+    base = [o for o in outcomes if _kind_of(o) not in (spec.KIND_SELF, spec.KIND_HIST)] or outcomes
     rec = {
         "round": trainer.round, "decisions_total": trainer.decisions, "decisions_in_round": n_valid,
-        "valid_fraction": n_valid / float(S * T),
+        "valid_fraction": int(v[:T_cfg].sum()) / float(S * T_cfg),
         "reward_per_decision": float(rew[v].sum()) / max(n_valid, 1),
         "episodes_finished": len(eps), "episode_kinds": kinds,
         "episode_ends_by_kind": episode_ends_by_kind(eps),
@@ -265,6 +293,9 @@ def round_record(cfg, trainer, buf, st, m, sampler):
     extra = sampler_extras(st)
     if extra:
         rec["sampler_stats"] = extra
+    if getattr(sampler, "league", None) is not None:
+        rec["league"] = {"members": sampler.league.names(), "added": None,
+                         "by_opponent": by_opponent(outcomes, st.get("opponent_of"))}
     rec.update(outcome_rates(rec["outcomes"]))
     for o in base:
         pa = per_air.setdefault(o[0], {})
@@ -275,7 +306,7 @@ def round_record(cfg, trainer, buf, st, m, sampler):
 
 # Sampler stats keys round_record turns into keys of its own; anything else a sampler reports goes to sampler_stats.
 ST_KNOWN = frozenset(("t_infer", "t_env", "t_worker", "episodes", "events", "lost", "mask_fallbacks",
-                      "decisions_by_kind", "outcomes", "late_credited", "late_dropped", "n_valid"))
+                      "decisions_by_kind", "outcomes", "late_credited", "late_dropped", "n_valid", "opponent_of"))
 
 
 def _is_num(x):
@@ -369,6 +400,21 @@ def outcomes_by_kind(outcomes, decisions=None, episodes=None):
     return out
 
 
+def by_opponent(outcomes, opponent_of):
+    """{league member: outcome counts + episodes + win_rate / exchange} of the current policy's history episodes
+    (opponent_of: sampler's {outcome index: member name})."""
+    groups = {}
+    for i, name in (opponent_of or {}).items():
+        groups.setdefault(name, []).append(outcomes[i])
+    out = {}
+    for name, rows in sorted(groups.items()):
+        c = outcome_counts(rows)
+        c["episodes"] = len(rows)
+        c.update(outcome_rates(c))
+        out[name] = c
+    return out
+
+
 def summary_line(r):
     t = r["time"]
     line = ("round %d  dec %d  valid %.2f  rew/dec %.4f  ent %.3f  klT %.4f  klBC %.4f  clip %.3f  vloss %.3f  "
@@ -379,14 +425,25 @@ def summary_line(r):
                 r.get("value_rmse", float("nan")), r.get("explained_variance", float("nan")), t["sample"],
                 t["inference"], t["env_wait"], t["postpass"], t["update"]))
     kinds = r.get("outcomes_by_kind") or {}
-    if spec.KIND_SELF in kinds:         # with self-play, the vs-script result must not be lost in the totals
-        def f(x):
-            return "-" if x is None else "%.2f" % x
-        vs, sp = kinds.get(spec.KIND_SCRIPT) or {}, kinds[spec.KIND_SELF]
-        ret = r.get("episode_return_by_kind") or {}
-        line += "  | vs-script: eps %d win %s ex %s ret %s dec %d  self-play: eps %d ret %s dec %d" % (
+
+    def f(x):
+        return "-" if x is None else "%.2f" % x
+    ret = r.get("episode_return_by_kind") or {}
+    if spec.KIND_SELF in kinds or spec.KIND_HIST in kinds:     # the vs-script result must not be lost in the totals
+        vs = kinds.get(spec.KIND_SCRIPT) or {}
+        line += "  | vs-script: eps %d win %s ex %s ret %s dec %d" % (
             vs.get("episodes", 0), f(vs.get("win_rate")), f(vs.get("exchange")), f(ret.get(spec.KIND_SCRIPT)),
-            vs.get("decisions", 0), sp["episodes"], f(ret.get(spec.KIND_SELF)), sp["decisions"])
+            vs.get("decisions", 0))
+    if spec.KIND_SELF in kinds:
+        sp = kinds[spec.KIND_SELF]
+        line += "  self-play: eps %d ret %s dec %d" % (sp["episodes"], f(ret.get(spec.KIND_SELF)), sp["decisions"])
+    if spec.KIND_HIST in kinds:         # the current policy against frozen past ones (league)
+        h = kinds[spec.KIND_HIST]
+        line += "  history: eps %d win %s ex %s ret %s dec %d" % (h["episodes"], f(h.get("win_rate")),
+                                                                   f(h.get("exchange")), f(ret.get(spec.KIND_HIST)),
+                                                                   h["decisions"])
+    for name, d in sorted((r.get("head_kl") or {}).items()):
+        line += "  kl[%s] %s coef %.3g" % (name, "-" if d["kl"] is None else "%.2e" % d["kl"], d["coef"])
     return line
 
 

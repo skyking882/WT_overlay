@@ -10,7 +10,8 @@ compared across rounds. Policy aircraft show archetype "AI" in the replay header
 Environment: exams and --stats use the env config stored in the checkpoint (cfg.env.config, the one training used:
 timeout_reward, observation_frame, spawn_layout, ...); --env-config '{...}' overrides only the keys it names (null
 switches an option off). A checkpoint without a stored config (bc_actor.pt) starts from {team_size 1, time_limit_s
-420} as before. self_play_prob and policy_ids are dropped: the evaluation decides which slots a policy flies.
+420} as before. self_play_prob, history_prob and policy_ids are dropped: the evaluation decides which slots a policy
+flies.
 
 Exam sets (--sets, default both):
   fixed  r<round>_fixed_<scenario>.jsonl  the scripts without script_perturbation: comparable over a whole run and
@@ -58,7 +59,7 @@ from rl.model import Actor, H  # noqa: E402
 
 OPPONENT_SEED_BASE = 1_000_003      # --stats: generator seed of slot 1 is this + episode index (slot 0: the index)
 DEFAULT_ENV = dict(team_size=1, time_limit_s=420)   # env config of a checkpoint that stores none (bc_actor.pt)
-EVAL_DROP = ("self_play_prob", "policy_ids")        # the evaluation itself decides which slots a policy flies
+EVAL_DROP = ("self_play_prob", "history_prob", "policy_ids")   # the evaluation decides which slots a policy flies
 PATH_KEYS = ("model_path", "reach_dir")              # training-machine paths a stored config may carry
 EXAM_SETS = ("fixed", "train")
 RESULTS = ("win", "loss", "trade", "timeout")

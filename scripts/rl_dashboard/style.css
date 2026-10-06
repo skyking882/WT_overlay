@@ -579,6 +579,7 @@ kbd { display: inline-block; min-width: 20px; padding: 0 5px; text-align: center
 }
 .cgroup.g-vs { --g: var(--p1); }
 .cgroup.g-sp { --g: var(--p4); }
+.cgroup.g-hist { --g: var(--p2); }
 .cgroup.g-mix { --g: var(--p6); }
 .cgroup.g-opt { --g: var(--faint); }
 .cgroup > .grid { margin-top: 14px; }

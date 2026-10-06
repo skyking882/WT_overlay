@@ -7,7 +7,8 @@
 * target-KL 0.02 on the joint action (k3 estimator): once a minibatch exceeds it, the remaining
   actor updates of the round are skipped (critic keeps training).
 * actor loss = PPO - ent_coef * normalised entropy + beta * KL(pi_BC || pi)
-  (KL averaged over heads with >1 legal option); critic loss = MSE / (return std)^2.
+  (KL averaged over heads with >1 legal option) [+ sum over ppo.head_kl heads of coef_h * KL_h, the head's k3 KL to
+  the behaviour policy per valid step; coef_h adapts per round toward its target]; critic loss = MSE / (return std)^2.
 * advantages normalised over the whole valid batch of the round; padding never enters any
   loss or statistic.
 """
@@ -141,6 +142,13 @@ class PPOTrainer:
         self.ent_scale = torch.tensor([float(p.ent_head_scale.get(h, 1.0)) for h in spec.HEAD_NAMES],
                                       device=self.device)
         self.beta_sched = BetaSchedule(p.kl_beta, p.kl_beta_hold, p.kl_beta_end)
+        # ppo.head_kl: head -> (index, target, coef_min, coef_max); the adapted coefficients live in the trainer state
+        unknown = set(p.head_kl) - set(spec.HEAD_NAMES)
+        if unknown:
+            raise ValueError("ppo.head_kl has unknown heads: %s" % sorted(unknown))
+        self.head_kl = {h: (spec.HEAD_INDEX[h], float(v["target"]), float(v.get("coef_min", 0.01)),
+                            float(v.get("coef_max", 100.0))) for h, v in p.head_kl.items()}
+        self.head_kl_coef = {h: float(v.get("coef", 1.0)) for h, v in p.head_kl.items()}
         self.decisions = 0
         self.round = 0
         self.gen = torch.Generator()
@@ -150,7 +158,7 @@ class PPOTrainer:
     def state_dict(self):
         return {"opt_a": self.opt_a.state_dict(), "opt_c": self.opt_c.state_dict(),
                 "ent": self.ent_sched.state_dict(), "decisions": self.decisions, "round": self.round,
-                "gen": self.gen.get_state()}
+                "gen": self.gen.get_state(), "head_kl_coef": dict(self.head_kl_coef)}
 
     def load_state_dict(self, d):
         self.opt_a.load_state_dict(d["opt_a"])
@@ -159,6 +167,9 @@ class PPOTrainer:
         self.decisions = d["decisions"]
         self.round = d["round"]
         self.gen.set_state(d["gen"])
+        for h, c in (d.get("head_kl_coef") or {}).items():    # heads still configured keep their adapted coef
+            if h in self.head_kl_coef:
+                self.head_kl_coef[h] = float(c)
 
     # ------------------------------------------------------------------ update
     def update(self, buf: RoundBuffer) -> Dict:
@@ -200,6 +211,9 @@ class PPOTrainer:
         head_cnt = torch.zeros(spec.N_HEADS)
         head_kl = torch.zeros(spec.N_HEADS)
         head_klc = torch.zeros(spec.N_HEADS)
+        head_k3 = torch.zeros(spec.N_HEADS)             # per-head k3 KL to the behaviour policy, sum over actor steps
+        hk = [(h,) + self.head_kl[h] + (self.head_kl_coef[h],) for h in self.head_kl]   # coefs fixed for the round
+        hk_acc = {h: 0.0 for h in self.head_kl}
         actor_stopped = False
         stopped_at = -1
         stop_diag = skip_diag = None
@@ -234,6 +248,9 @@ class PPOTrainer:
                     with torch.no_grad():
                         kl_old = (((ratio - 1.0) - logr) * lmf).sum() / n_lm
                         clipf = (((ratio - 1.0).abs() > p.clip).to(torch.float32) * lmf).sum() / n_lm
+                        old_h = buf.logp_heads[widx[:, B:]].reshape(-1, spec.N_HEADS).to(dev)
+                        lr_h = (out.logp.reshape(-1, spec.N_HEADS) - old_h).clamp(-20.0, 20.0)
+                        k3 = ((lr_h.exp() - 1.0) - lr_h) * lmf.unsqueeze(-1)
                     acc["kl_last"] = float(kl_old)
                     acc["kl_max"] = max(acc["kl_max"], float(kl_old))
                     skip_mb = False
@@ -252,9 +269,6 @@ class PPOTrainer:
                         # skipped): per-head k3 KL to the behaviour policy, and how many valid steps changed a head's
                         # log-prob by more than 1.
                         with torch.no_grad():
-                            old_h = buf.logp_heads[widx[:, B:]].reshape(-1, spec.N_HEADS).to(dev)
-                            lr_h = (out.logp.reshape(-1, spec.N_HEADS) - old_h).clamp(-20.0, 20.0)
-                            k3 = ((lr_h.exp() - 1.0) - lr_h) * lmf.unsqueeze(-1)
                             big = ((lr_h.abs() > 1.0).to(torch.float32) * lmf.unsqueeze(-1)).sum(0)
                             diag = {"minibatch": mb_count, "kl": float(kl_old), "steps": int(n_lm),
                                     "kl_heads": {h: round(float(v), 5) for h, v in
@@ -283,6 +297,11 @@ class PPOTrainer:
                             klr = torch.zeros((), device=dev)
                             kl_heads = None
                         loss = pg_loss - ent_coef * ent_bonus + beta * klr
+                        for h, i, _, _, _, c in hk:             # ppo.head_kl: k3 KL of one head, with gradient
+                            lr_i = (out.logp.reshape(-1, spec.N_HEADS)[:, i] - old_h[:, i]).clamp(-20.0, 20.0)
+                            kl_i = (((lr_i.exp() - 1.0) - lr_i) * lmf).sum() / n_lm
+                            loss = loss + c * kl_i
+                            hk_acc[h] += float(kl_i.detach())
                         self.opt_a.zero_grad(set_to_none=True)
                         loss.backward()
                         gn = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), p.max_grad_norm)
@@ -296,6 +315,7 @@ class PPOTrainer:
                             acc["illegal"] += int(((~out.legal) & lm.unsqueeze(-1)).sum())
                             acc["fallback"] += int((out.fallback & lm.unsqueeze(-1)).sum())
                             acc["steps"] += float(lmf.sum())
+                            head_k3 += (k3.sum(0) / n_lm).cpu()
                             m2 = lmf.unsqueeze(-1) * active
                             head_ent += (out.ent * m2).sum(0).cpu()
                             head_cnt += m2.sum(0).cpu()
@@ -312,6 +332,14 @@ class PPOTrainer:
                 acc["v"] += v_loss.item(); acc["gn_c"] += float(gc); acc["n_c"] += 1
         na, nc = max(acc["n_a"], 1), max(acc["n_c"], 1)
         names = spec.HEAD_NAMES
+        head_kl_m = {}
+        for h, _, target, lo, hi, c in hk:
+            # adapt toward the target for the next round: x1.5 above 1.5 * target, /1.5 below target / 1.5
+            kl_h = hk_acc[h] / acc["n_a"] if acc["n_a"] else None
+            nxt = c if kl_h is None else min(max(c * 1.5 if kl_h > 1.5 * target else c / 1.5 if kl_h < target / 1.5
+                                                 else c, lo), hi)
+            self.head_kl_coef[h] = nxt
+            head_kl_m[h] = {"kl": kl_h, "coef": c, "coef_next": nxt, "target": target}
         cnt = head_cnt.clamp(min=1)
         mean_ent = acc["ent"] / na if acc["n_a"] else float("nan")
         m = {
@@ -336,10 +364,15 @@ class PPOTrainer:
             "actor_stopped_at_minibatch": stopped_at, "illegal_actions_taken": acc["illegal"], "mask_fallbacks": acc["fallback"],
             "entropy_head": {names[i]: float(head_ent[i] / cnt[i]) for i in range(spec.N_HEADS) if head_cnt[i] > 0},
             "kl_ref_head": {names[i]: float(head_kl[i] / head_klc[i].clamp(min=1)) for i in range(spec.N_HEADS) if head_klc[i] > 0},
+            # per-head k3 KL to the behaviour policy per valid step, mean over the applied actor minibatches (like
+            # kl_target; the joint k3 is not the sum of these)
+            "kl_target_head": {names[i]: float(head_k3[i] / na) for i in range(spec.N_HEADS) if head_k3[i] > 0},
             "head_active_frac": {names[i]: float(head_cnt[i] / max(acc["steps"], 1.0)) for i in range(spec.N_HEADS)},
             "t_update": time.time() - t_start,
             "decisions_in_round": n_valid,
         }
+        if hk:
+            m["head_kl"] = head_kl_m             # {head: {kl (round mean), coef (used), coef_next, target}}
         self.decisions += n_valid
         self.round += 1
         if acc["n_a"] and mean_ent == mean_ent:

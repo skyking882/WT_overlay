@@ -550,6 +550,151 @@ class SelfPlayTests(unittest.TestCase):
         self.assertEqual(stats['controlled_agents_vs_script'],stats['episodes_vs_script'])
 
 
+class HistoryTests(unittest.TestCase):
+    """history_prob: one side is flown by a frozen past policy (env.frozen_ids); kind and side from the episode RNG."""
+    CONFIG=dict(teams=TEAMS,range_km=40.,execution=ZERO,time_limit_s=20.)
+
+    def make(self,seed=5,**kwargs):
+        return MatchEnv(dict(self.CONFIG,**kwargs),seed)
+
+    def kinds(self,seed,n,**kwargs):
+        e=self.make(seed,**kwargs)
+        return [(e.reset() and e.episode_kind,tuple(sorted(e._observations)),e.frozen_ids,e.scenario) for _ in range(n)]
+
+    def test_kinds_and_frozen_sides_are_drawn_per_episode_and_reproducible(self):
+        rows=self.kinds(11,16,history_prob=.5,self_play_prob=.25)
+        self.assertEqual(rows,self.kinds(11,16,history_prob=.5,self_play_prob=.25))
+        self.assertEqual({k for k,*_ in rows},{'history','self_play','vs_script'})
+        sides=set()
+        for kind,agents,frozen,scenario in rows:
+            if kind=='history':
+                self.assertEqual(agents,(0,1));self.assertTrue(scenario.endswith(':history'));sides.add(frozen)
+            else:
+                self.assertEqual(frozen,());self.assertEqual(agents,(0,1) if kind=='self_play' else (0,))
+        self.assertEqual(sides,{(0,),(1,)})
+        # in team games the frozen side is a whole team
+        big=MatchEnv(dict(team_size=2,execution=ZERO,time_limit_s=20.,history_prob=1.),3)
+        teams=set()
+        for _ in range(8):
+            self.assertEqual(sorted(big.reset()),[0,1,2,3])
+            self.assertEqual(len({big.engagement.planes[i].team for i in big.frozen_ids}),1)
+            teams.add(big.frozen_ids)
+        self.assertEqual(teams,{(0,1),(2,3)})
+
+    def test_history_episode_reports_its_frozen_side(self):
+        e=self.make(history_prob=1.)
+        obs=e.reset()
+        self.assertEqual((e.episode_kind,e.self_play,e.history,e.policy_ids),('history',False,True,(0,1)))
+        self.assertTrue(all(ex.path=='follow' for ex in e.executors.values()))
+        rng=random.Random(3)
+        for _ in range(3):
+            obs,r,d,info=e.step(random_actions(e,rng))
+            self.assertEqual((info['episode_kind'],info['frozen_ids'],info['self_play']),('history',list(e.frozen_ids),False))
+            self.assertEqual((info['events']['history_decisions'],info['events']['self_play_decisions']),(1,0))
+            self.assertEqual(set(r),{0,1})
+        snap=e.snapshot();e.restore(snap)
+        self.assertEqual((e.episode_kind,e.frozen_ids),('history',tuple(info['frozen_ids'])))
+        # the other kinds report no frozen side
+        for kw in (dict(history_prob=0.,self_play_prob=1.),dict(history_prob=0.)):
+            e=self.make(**kw);e.reset()
+            _,_,_,info=e.step(e.scripted_actions())
+            self.assertEqual((info['frozen_ids'],info['events']['history_decisions']),([],0))
+
+    def test_option_absent_changes_nothing(self):
+        for base in ({},dict(self_play_prob=.5)):
+            absent=self.make(11,**base);zero=self.make(11,history_prob=0.,**base)
+            for _ in range(4):
+                a,b=absent.reset(),zero.reset()
+                self.assertEqual((absent.scenario,absent.frozen_ids),(zero.scenario,()))
+                self.assertEqual({k:wire.pack_obs(o) for k,o in a.items()},{k:wire.pack_obs(o) for k,o in b.items()})
+            actions=absent.scripted_actions()
+            _,_,_,ia=absent.step(actions)
+            _,_,_,ib=zero.step(actions)
+            self.assertNotIn('frozen_ids',ia);self.assertNotIn('history_decisions',ia['events'])
+            self.assertEqual(ia['events'],{k:v for k,v in ib['events'].items() if k not in ('history_decisions','self_play_decisions')}
+                             if not base else {k:v for k,v in ib['events'].items() if k!='history_decisions'})
+            self.assertEqual(absent.rng.random(),zero.rng.random())
+
+    def test_invalid_probabilities_are_rejected(self):
+        for bad in (-.1,1.5,'half',None,True):
+            with self.assertRaises(ValueError,msg=repr(bad)):
+                MatchEnv(dict(self.CONFIG,history_prob=bad),1)
+        with self.assertRaisesRegex(ValueError,'must not exceed 1'):
+            MatchEnv(dict(self.CONFIG,history_prob=.6,self_play_prob=.5),1)
+
+    def test_nothing_is_owed_to_the_frozen_side(self):
+        for down_frozen in (True,False):
+            e=self.make(history_prob=1.);e.reset()
+            frozen=e.frozen_ids[0]
+            plane=e.engagement.planes[frozen if down_frozen else 1-frozen]
+            e.engagement._kill(plane,None,'crash',None)
+            e.engagement.missiles.append(SimpleNamespace(done=False,shooter=plane))
+            self.assertEqual(e.pending_credit(),not down_frozen)
+
+    def test_contract_checks_pass_with_history_episodes(self):
+        config=dict(team_size=1,time_limit_s=25.,history_prob=.5,self_play_prob=.25)
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code=check_env.main(['--env','wt_overlay.rl_env:MatchEnv','--config',json.dumps(config),
+                                 '--episodes','6','--max-steps','60'])
+        report=json.loads(out.getvalue())
+        self.assertEqual((code,report['errors']),(0,[]))
+        stats=report['stats']
+        self.assertGreater(stats['episodes_history'],0)
+        self.assertEqual(stats['frozen_agents_history'],stats['episodes_history'])
+        self.assertEqual(stats['controlled_agents_history'],2*stats['episodes_history'])
+
+
+class AssistWindowTests(unittest.TestCase):
+    """pending_credit() also covers an assist that a downed policy aircraft can still get (Engagement._kill: a
+    teammate kills an enemy that its missile was aimed at within the last 20 s)."""
+
+    def downed(self,**kwargs):
+        e=env(teams=[TEAMS[0]*2,TEAMS[1]*2],**kwargs)
+        p0=e.engagement.planes[0]
+        p0.flight.state=replace(p0.flight.state,position=(0.,0.,-100.))
+        e.step(e.scripted_actions())
+        self.assertFalse(p0.alive);self.assertFalse(e.over);self.assertFalse(e.pending_credit())
+        return e
+
+    def test_window_of_20_s_after_the_missile_ended(self):
+        e=self.downed()
+        eng=e.engagement
+        p0,p1,p2,p3=eng.planes
+        t=eng.time
+        entry=[0,t-10.,t-3.]
+        p2.missile_hist.append(entry)              # p0's missile at the enemy p2 ended 3 s ago
+        self.assertTrue(e.pending_credit())
+        entry[2]=t-20.5;self.assertFalse(e.pending_credit())
+        entry[2]=None;self.assertTrue(e.pending_credit())
+        entry[2]=t-19.5;self.assertTrue(e.pending_credit())
+        p1.missile_hist.append([0,t-5.,t-1.])     # a missile at a teammate is never an assist
+        p2.missile_hist.remove(entry)
+        self.assertFalse(e.pending_credit())
+        p2.missile_hist.append(entry)
+        # the teammate p1 kills p2 now: the assist reaches the downed p0 as a late reward
+        step=eng.step
+        def killing_step():
+            eng.step=step
+            step()
+            eng._kill(p2,p1,'missile',None)
+        eng.step=killing_step
+        _,r,_,info=e.step(e.scripted_actions())
+        self.assertEqual(info['late_rewards'],{0:.3});self.assertEqual(r[1],1.)
+        self.assertFalse(e.pending_credit())        # p2 is down: no live enemy left that p0 shot at
+
+    def test_an_assist_needs_a_possible_killer(self):
+        e=self.downed(controlled=None,policy_ids=[0])      # p1 is a script here
+        eng=e.engagement
+        p0,p1,p2,p3=eng.planes
+        p2.missile_hist.append([0,eng.time-10.,eng.time-3.])
+        self.assertTrue(e.pending_credit())
+        eng._kill(p1,None,'crash',None)                       # no teammate alive ...
+        self.assertFalse(e.pending_credit())
+        eng.missiles.append(SimpleNamespace(done=False,shooter=p1))   # ... but a teammate's missile still flies
+        self.assertTrue(e.pending_credit())
+
+
 class MissileRadarTests(unittest.TestCase):
     """docs/radar_missile_detection_spec.md: radars see enemy missiles (opt-in), NCTR names them, no missile targets."""
 
