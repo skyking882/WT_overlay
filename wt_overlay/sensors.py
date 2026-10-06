@@ -140,7 +140,7 @@ class OwnState:
 
 @dataclass(frozen=True)
 class TargetTruth:
-    """An aircraft as the simulator knows it. ``rcs_m2`` None: the sensor's default."""
+    """An aircraft (or a missile in flight) as the simulator knows it. ``rcs_m2`` None: the sensor's default."""
     id: object
     position: tuple
     velocity: tuple
@@ -179,6 +179,7 @@ class RadarContact:
     age_s: float
     extrapolated: bool
     mark_id: int | None = None        # observed map association, assigned by ObservationBuilder
+    target_type: str | None = None    # NCTR class on the display ('missile'), assigned by ObservationBuilder
 
 
 @dataclass(frozen=True)
@@ -420,6 +421,10 @@ class RadarSensor:
         if self.mode == "stt" and self._stt is not None:
             return {self._stt.truth}
         return set()
+
+    def track_truth(self, track_id):
+        """Truth id behind the confirmed TWS track ``track_id`` now, None if there is none (engagement manager only)."""
+        return next((k.truth for k in self._tracks if k.id is not None and k.id == track_id), None)
 
     # -- geometry -----------------------------------------------------------------------------------------
 

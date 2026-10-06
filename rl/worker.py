@@ -19,7 +19,8 @@ StepResult: {"rew","done": {aid:..}, "timeout": bool, "obs": {aid: wire} of agen
   None) of the episode "obs" belongs to, like "scenario". Optional keys: "late" {aid: reward} owed to agents that
   finished in an earlier step (an env's info["late_rewards"]: a missile of a downed aircraft scored), "tallies"
   {aid: [kills, deaths]} (info["tallies"]), "time_limit" (info["time_limit"]: the match ran out of time, also when
-  the env makes that a terminal step rather than a bootstrapped timeout).
+  the env makes that a terminal step rather than a bootstrapped timeout), "pending": True if the episode goes on and
+  env.pending_credit() is still True (the sampler keeps stepping such an env before its PPO update: Sampler._settle).
 The env is reset automatically when no policy-controlled agent is left. If the env has pending_credit() (missiles
 of downed policy aircraft still flying) it is first played on without actions until they end, and what they score
 is added to the reward of the agents that finished in this step ("late" for agents that finished earlier).
@@ -138,6 +139,8 @@ class EnvHost:
             self.checked[j] += 1
             if nxt:
                 res["obs"] = self._pack(j, nxt)
+                if pending is not None and pending():
+                    res["pending"] = True
             else:
                 r = self._reset(j)
                 res["obs"] = r["obs"]

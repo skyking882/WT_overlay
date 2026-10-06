@@ -317,6 +317,8 @@ class PPOTrainer:
         m = {
             "ent_coef": ent_coef, "kl_beta": beta,
             "pg_loss": acc["pg"] / na, "value_loss": acc["v"] / nc,
+            # value_loss is normalised by value_scale^2; this is its RMS error in reward units
+            "value_rmse": (acc["v"] / nc) ** 0.5 * vscale,
             "entropy": mean_ent,
             "kl_target": acc["kl_old"] / na,         # joint-action KL to the behaviour policy (k3), mean over actor steps
             "kl_target_max": acc["kl_max"],          # largest per-minibatch KL seen, incl. the one that stopped the actor

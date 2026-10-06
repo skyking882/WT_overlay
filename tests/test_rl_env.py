@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 
 from rl import check_env, spec, wire
-from wt_overlay.engagement import Camera, Sighting, LauncherSupport
+from wt_overlay.engagement import Camera, Sighting, LauncherSupport, MISSILE_TRUTH, RadarCommand
 from wt_overlay.flight import KeyboardCommand, FlightCommand
 from wt_overlay.intent import Intent, IntentExecutor, HEAD_NAMES, launch_limit, selected_mask
 from wt_overlay import match
@@ -548,6 +548,86 @@ class SelfPlayTests(unittest.TestCase):
         self.assertGreater(stats['episodes_self_play'],0);self.assertGreater(stats['episodes_vs_script'],0)
         self.assertEqual(stats['controlled_agents_self_play'],2*stats['episodes_self_play'])
         self.assertEqual(stats['controlled_agents_vs_script'],stats['episodes_vs_script'])
+
+
+class MissileRadarTests(unittest.TestCase):
+    """docs/radar_missile_detection_spec.md: radars see enemy missiles (opt-in), NCTR names them, no missile targets."""
+
+    def tracked_missile(self, nctr=True, **kwargs):
+        """The Su-30SM2 fires at the Golden Eagle (slot 0); steps until the Eagle's radar has a track on the missile.
+        Returns the env, the missile, the entity index of its track and the summed radar_missile_tracks events."""
+        e=env(range_km=40.,radar_sees_missiles=True,**kwargs)
+        eng=e.engagement
+        ge,sm2=eng.planes
+        if not nctr:
+            ge.radar.radar=replace(ge.radar.radar,identifies_missiles=False)
+        m=eng.fire(sm2,ge)
+        counted=0
+        for _ in range(40):
+            _,_,_,info=e.step(e.scripted_actions())
+            counted+=info['events']['radar_missile_tracks']
+            found=[i for i,x in enumerate(e._entities[0]) if x.missile==m.uid and x.track_id is not None]
+            if found:
+                return e,m,found[0],counted
+        self.fail('the missile was never tracked')
+
+    def type_slot(self, vector):
+        k,n=ENTITY_FIELDS.index('aircraft_type'),len(ENTITY_FIELDS)
+        self.assertEqual(len(vector),2*n)
+        return vector[k],vector[n+k]
+
+    def test_a_named_missile_track_is_a_radar_entity_that_cannot_be_targeted(self):
+        e,m,i,counted=self.tracked_missile()
+        ent,o=e._entities[0][i],e._observations[0]
+        self.assertEqual((ent.kind,ent.aircraft),('radar','missile'))
+        self.assertGreaterEqual(counted,1)
+        self.assertEqual(self.type_slot(o.entities[i]),(-1.,1.))
+        self.assertFalse(o.masks['target'][i])
+        self.assertEqual(o.masks['weapon'][i],[True,False])
+        self.assertEqual(o.masks['radar_mode'][i],[True,True,False])
+        self.assertNotEqual(e.scripted_actions()[0]['target'],i)
+        self.assertIn(0,e.engagement.tracked_by(m))
+
+    def test_without_nctr_it_looks_like_an_aircraft_track_and_is_still_masked(self):
+        e,m,i,_=self.tracked_missile(nctr=False)
+        ent,o=e._entities[0][i],e._observations[0]
+        self.assertIsNone(ent.aircraft)
+        self.assertEqual(self.type_slot(o.entities[i]),(0.,0.))
+        self.assertEqual(o.entities[i],entity_vector(replace(ent,missile=None)))   # the truth flag is not encoded
+        self.assertFalse(o.masks['target'][i])
+        self.assertEqual(o.masks['weapon'][i],[True,False])
+
+    def test_stt_does_not_lock_and_no_launch_goes_at_a_missile_track(self):
+        e,m,i,_=self.tracked_missile()
+        eng=e.engagement;ge=eng.planes[0];track=e._entities[0][i].track_id
+        eng._set_radar(ge,RadarCommand('stt',0,0.,0.,track))
+        self.assertEqual(ge.radar.mode,'tws')
+        self.assertIn(MISSILE_TRUTH+m.uid,ge.radar.tracked_ids())
+        ge.last_launch=-1e9
+        self.assertIsNone(eng.launch(ge,track))
+
+    def test_allow_missile_targets_unmasks_them_and_lets_stt_lock(self):
+        e,m,i,_=self.tracked_missile(allow_missile_targets=True)
+        o=e._observations[0]
+        self.assertTrue(o.masks['target'][i])
+        self.assertTrue(o.masks['radar_mode'][i][2])
+        eng=e.engagement;ge=eng.planes[0]
+        eng._set_radar(ge,RadarCommand('stt',0,0.,0.,e._entities[0][i].track_id))
+        self.assertEqual((ge.radar.mode,ge.radar.tracked_ids()),('stt',{MISSILE_TRUTH+m.uid}))
+
+    def test_off_by_default_radars_see_no_missiles(self):
+        e=env(range_km=40.)
+        eng=e.engagement
+        eng.fire(eng.planes[1],eng.planes[0])
+        for _ in range(25):
+            _,_,_,info=e.step(e.scripted_actions())
+            self.assertNotIn('radar_missile_tracks',info['events'])
+            self.assertEqual(e._raw[0].radar_missiles,())
+            self.assertTrue(all(x.missile is None and x.aircraft!='missile' for x in e._entities[0]))
+            self.assertTrue(all(t<MISSILE_TRUTH for p in eng.planes for t in p.tracked))
+        for bad in (1,'yes',None):
+            with self.assertRaises(ValueError):
+                MatchEnv(dict(team_size=1,radar_sees_missiles=bad),1)
 
 
 if __name__=='__main__':

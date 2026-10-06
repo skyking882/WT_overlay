@@ -6,6 +6,7 @@ controlled agent in a vs-script episode, two in a self-play episode) so the samp
 import contextlib
 import io
 import json
+import math
 import os
 import random
 import tempfile
@@ -80,6 +81,46 @@ class Metrics(unittest.TestCase):
         self.assertEqual((by["self_play"]["episodes"], by["self_play"]["win_rate"], by["self_play"]["decisions"]),
                          (0, None, 6))
         self.assertEqual(T.outcomes_by_kind([]), {})
+        self.assertNotIn("timeout_rate", T.outcomes_by_kind(rows)["vs_script"])       # without episodes: as before
+
+    # (aircraft, outcome, kills, deaths, kind) and the matching (aircraft, return, length, end, kind), in sampler order
+    ROWS = [("a", "win", 1, 0, "vs_script"), ("a", "none", 0, 0, "vs_script"), ("b", "none", 0, 0, "vs_script"),
+            ("a", "trade", 1, 1, "vs_script"), ("b", "win", 1, 0, "vs_script"),
+            ("a", "win", 1, 0, "self_play"), ("b", "none", 0, 0, "self_play"), ("a", "loss", 0, 1, "self_play")]
+    EPS = [("a", 1.0, 10, "terminal", "vs_script"), ("a", -0.5, 900, "timeout", "vs_script"),
+           ("b", 0.0, 40, "terminal", "vs_script"), ("a", -1.0, 30, "terminal", "vs_script"),
+           ("b", 0.5, 1008, "timeout", "vs_script"),           # a kill, then alive at the time limit: win AND timeout
+           ("a", 1.0, 20, "terminal", "self_play"), ("b", -0.5, 1008, "timeout", "self_play"),
+           ("a", -2.0, 20, "lost", "self_play")]
+
+    def test_outcomes_by_kind_with_episodes_adds_trade_timeout_and_the_none_split(self):
+        by = T.outcomes_by_kind(self.ROWS, {"vs_script": 50, "self_play": 30}, self.EPS)
+        vs, sp = by["vs_script"], by["self_play"]
+        self.assertEqual((vs["win"], vs["none"], vs["trade"], vs["episodes"]), (2, 2, 1, 5))   # old keys unchanged
+        self.assertEqual((vs["trade_rate"], vs["timeouts"], vs["timeout_rate"]), (0.2, 2, 0.4))
+        # survived without a kill: one ran out of time, one ended otherwise (e.g. the opponent crashed)
+        self.assertEqual((vs["none_timeout"], vs["none_other"]), (1, 1))
+        self.assertEqual((sp["none_timeout"], sp["none_other"], sp["timeouts"]), (1, 0, 1))
+        self.assertAlmostEqual(sp["timeout_rate"], 1 / 3)
+        self.assertEqual(sp["trade_rate"], 0.0)
+        # lists that do not line up: no split rather than a wrong one
+        for eps in (self.EPS[:-1], [("x",) + e[1:] for e in self.EPS]):
+            by = T.outcomes_by_kind(self.ROWS, None, eps)
+            self.assertEqual((by["vs_script"]["none_timeout"], by["vs_script"]["none_other"]), (None, None))
+        # a kind that acted but finished nothing
+        by = T.outcomes_by_kind(self.ROWS[:5], {"self_play": 7}, self.EPS[:5])
+        self.assertEqual((by["self_play"]["trade_rate"], by["self_play"]["timeout_rate"], by["self_play"]["timeouts"]),
+                         (None, None, 0))
+
+    def test_episode_ends_by_kind_and_sampler_extras(self):
+        self.assertEqual(T.episode_ends_by_kind(self.EPS + [("c", 0.0, 5, "terminal")]),      # an old 4-tuple
+                         {"vs_script": {"terminal": 4, "timeout": 2},
+                          "self_play": {"terminal": 1, "timeout": 1, "lost": 1}})
+        st = {"t_infer": 1.0, "episodes": [], "outcomes": [], "events": {}, "late_credited": 2, "n_valid": 9,
+              "settle_ticks": 160, "settle_envs": 3, "by_env": {"0": 1, "1": 2.5}, "flag": True,
+              "nested": {"a": {"b": 1}}, "names": ["x"]}
+        self.assertEqual(T.sampler_extras(st), {"settle_ticks": 160, "settle_envs": 3, "by_env": {"0": 1, "1": 2.5},
+                                                "flag": True})
 
 
 def run_round(p_self, streams_per_env=2, streams=8, rounds=1, seed=1):
@@ -151,6 +192,33 @@ class SamplerAndRecord(unittest.TestCase):
             self.assertEqual(tally, sum(rec["outcomes"][k] for k in ("win", "loss", "trade", "none")))
             json.dumps(rec["outcomes_by_kind"])
         self.assertGreater(checked, 0, "no self-play episode finished in 3 rounds")
+
+    def test_record_splits_ends_by_kind_and_reports_the_value_error_in_reward_units(self):
+        recs, _ = run_round(0.5, streams=16, rounds=2)
+        for rec, st, _ in recs:
+            eps = st["episodes"]
+            ends = rec["episode_ends_by_kind"]
+            self.assertEqual(sum(sum(d.values()) for d in ends.values()), rec["episodes_finished"])
+            merged = {}
+            for d in ends.values():
+                for k, n in d.items():
+                    merged[k] = merged.get(k, 0) + n
+            self.assertEqual(merged, rec["episode_kinds"])            # the old mixed key is the sum over kinds
+            for kind, c in rec["outcomes_by_kind"].items():
+                mine = [e for e in eps if e[4] == kind]
+                self.assertEqual(c["timeouts"], sum(1 for e in mine if e[3] == "timeout"))
+                self.assertEqual(c["none_timeout"] + c["none_other"], c["none"])
+                if c["episodes"]:
+                    self.assertAlmostEqual(c["trade_rate"], c["trade"] / c["episodes"])
+                    self.assertAlmostEqual(c["timeout_rate"], c["timeouts"] / len(mine))
+                    self.assertAlmostEqual(rec["episode_return_by_kind"][kind], sum(e[1] for e in mine) / len(mine))
+            self.assertAlmostEqual(rec["value_rmse"], math.sqrt(rec["value_loss"]) * rec["value_scale"], places=6)
+            for k in set(st) - T.ST_KNOWN:                             # extra sampler numbers are kept
+                if isinstance(st[k], (int, float)):
+                    self.assertEqual(rec["sampler_stats"][k], st[k])
+            json.dumps(rec)
+            line = T.summary_line(dict(rec, time=dict(sample=1., inference=1., env_wait=1., postpass=1., update=1.)))
+            self.assertIn("vrms %.3f" % rec["value_rmse"], line)
 
     def test_only_self_play_episodes_fall_back_to_all_episodes_for_the_old_keys(self):
         recs, _ = run_round(1.0, streams=8)

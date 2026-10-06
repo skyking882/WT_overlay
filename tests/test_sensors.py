@@ -791,5 +791,38 @@ class ShippedRadarTests(unittest.TestCase):
         self.assertTrue(u.rwrs)
 
 
+class MissileTargetTests(unittest.TestCase):
+    """Engagement(radar_sees_missiles=True) hands the radars enemy missiles of MISSILE_RCS_M2 under the normal rules."""
+
+    def test_head_on_missile_is_first_seen_near_70_km_by_the_reference_radar(self):
+        from wt_overlay.engagement import MISSILE_RCS_M2, MISSILE_TRUTH
+        r = units.load().radars["us_an_apg_63_v_3"]
+        wf = r.tws.waveforms[0]
+        self.assertEqual((wf.signal, wf.range_m, wf.reference_rcs_m2), ("mprfSearch", 70000., 1.))
+        sensor = RadarSensor(r, owner="me")
+        sensor.set_mode("tws", 0, 0., 0., t=0.)
+        self.assertAlmostEqual(sensor._limit(wf, MISSILE_RCS_M2), 70000.)
+        ident, closing = MISSILE_TRUTH+3, 300.+1000.
+        own_at = lambda t: own((0., 300.*t, 8000.), (0., 300., 0.))  # noqa: E731
+        missile = lambda t: [moving(ident, (0., 90000., 8000.), (0., -1000., 0.), t, MISSILE_RCS_M2)]  # noqa: E731
+        hits = [h for p in run(sensor, 20., own_at, missile) for h in p.hits]
+        self.assertTrue(hits)
+        first = hits[0].range_m
+        self.assertLessEqual(first, 70000.)
+        self.assertGreater(first, 70000.-closing*r.tws.patterns[0].period_s)
+        self.assertIn(ident, sensor.tracked_ids())
+
+    def test_missiles_take_tws_track_slots(self):
+        from wt_overlay.engagement import MISSILE_RCS_M2, MISSILE_TRUTH
+        # The missile and the first aircraft are swept (and confirmed) before the second aircraft.
+        targets = lambda t: [bandit(MISSILE_TRUTH, at_azimuth(-5., 25000.), (0., 0., 0.), MISSILE_RCS_M2),  # noqa: E731
+                             bandit("a", at_azimuth(0.)), bandit("b", at_azimuth(20.))]
+        full, capped = tracking(limit=3), tracking(limit=2)
+        run(full, 8., lambda t: own(), targets)
+        run(capped, 8., lambda t: own(), targets)
+        self.assertEqual(full.tracked_ids(), {MISSILE_TRUTH, "a", "b"})
+        self.assertEqual(capped.tracked_ids(), {MISSILE_TRUTH, "a"})
+
+
 if __name__ == "__main__":
     unittest.main()

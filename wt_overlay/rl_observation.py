@@ -26,6 +26,7 @@ ENTITY_FIELDS = ('kind','bearing_sin','bearing_cos','elevation_sin','elevation_c
                  'airframe_load_limit','radar_for','altitude','vx','vy','vz','speed','energy','flight_time','seeker_time','age',
                  'extrapolated','tracking_me','friend','support','active','aircraft_type')
 KINDS = ('radar','rwr','maw','flame','visual','box','map','friend','shot','missile_marker','contrail')
+MISSILE_TYPE_ID = -1.   # aircraft_type of a radar track an NCTR radar names a missile (aircraft are in (0, 1])
 
 
 def pair(values):
@@ -115,13 +116,14 @@ class Entity:
     flight_time: float | None = None
     seeker_time: float | None = None
     launch_ok: bool = False
+    missile: int | None = None      # truth (radar_sees_missiles): uid of the missile behind a radar entity; never encoded
 
 
 def raw_entities(obs, reach=None):
     out=[]
     boxes={b.ref:b for b in obs.boxes}
-    for c in obs.radar:
-        key=('radar',c.track_id) if c.track_id is not None else ('blip',c.mark_id)
+    for c,uid in zip(obs.radar,obs.radar_missiles or (None,)*len(obs.radar)):
+        key=('radar',c.track_id) if c.track_id is not None else ('blip',c.mark_id) if uid is None else ('blip','missile',uid)
         b=boxes.get(c.mark_id)
         flight,seeker=None,None
         if reach is not None and c.position is not None and c.range_m is not None:
@@ -137,7 +139,8 @@ def raw_entities(obs, reach=None):
         valid=c.kind in ('track','stt') and (c.track_id is not None or c.kind=='stt')
         out.append(Entity(key,'radar',c.bearing_deg,c.world_elevation_deg,c.range_m,c.closing_speed_mps,
                           c.position,c.velocity,c.age_s,c.extrapolated,track_id=STT_TRACK if c.kind=='stt' else c.track_id,
-                          mark_id=c.mark_id,aircraft=None if b is None else b.aircraft,flight_time=flight,seeker_time=seeker,
+                          mark_id=c.mark_id,aircraft=c.target_type if b is None else b.aircraft,flight_time=flight,
+                          seeker_time=seeker,missile=uid,
                           launch_ok=valid and abs(c.azimuth_deg)<=launch_limit(obs.own.aircraft,obs.own.missile_id)))
     for c in obs.rwr:
         known=[eq.aircraft for eq in equipment_data().equipment.values() if eq.radar==c.radar_id] if c.radar_id else []
@@ -223,7 +226,10 @@ def masks_for(obs, entities, executor, last_launch):
     n=len(entities)
     none=single(n+1,n)
     refs=[e.bearing is not None for e in entities]+[True]
-    target=[e.track_id is not None and e.kind=='radar' for e in entities]+[True]
+    # A missile track (truth, so also one the radar did not name) is no target unless allow_missile_targets:
+    # this masks the weapon and STT as well.
+    target=[e.track_id is not None and e.kind=='radar' and (e.missile is None or obs.missile_targets)
+            for e in entities]+[True]
     aim_refs=refs
     held=executor.held(obs.time_s)
     old=executor.published.indices(entities)
@@ -284,8 +290,10 @@ def entity_vector(e, heading_deg=None):
     # An observed type is represented by catalog order; absent type stays invalid.
     from .fm.catalog import aircraft_catalog
     types=[a.id for a in aircraft_catalog()]
-    type_id=None if e.aircraft is None else (types.index(e.aircraft)+1)/len(types)
-    descriptions=aircraft_description(e.aircraft) if e.kind in ('radar','rwr','visual','box','map','contrail','friend') else (None,None)
+    missile=e.aircraft=='missile'
+    type_id=None if e.aircraft is None else MISSILE_TYPE_ID if missile else (types.index(e.aircraft)+1)/len(types)
+    descriptions=aircraft_description(e.aircraft) if e.kind in ('radar','rwr','visual','box','map','contrail','friend') \
+        and not missile else (None,None)
     values=[KINDS.index(e.kind)/10.,a,b,c,d,scale(e.distance,120000.),scale(e.closure,1000.),
             *descriptions,scale(pos[2],20000.),
             *[scale(v,1000.) for v in vel],scale(speed,1000.),scale(energy,40000.),

@@ -498,6 +498,7 @@ def convert_replay(path: Path, hz=1.0):
     step = 1
     pcol = {n: i for i, n in enumerate(PLANE_COLUMNS)}
     mcol = {n: i for i, n in enumerate(MISSILE_COLUMNS)}
+    tracked_col = None          # replays with radar_sees_missiles: the aircraft whose radar tracks each missile
 
     def phase_index(name):
         name = name or ""
@@ -536,6 +537,9 @@ def convert_replay(path: Path, hz=1.0):
         tr["h"].append(round(row[mcol["heading_deg"]]) % 360)
         tr["s"].append(int(row[mcol["seeker"]]))
         tr["d"].append(int(row[mcol["datalink"]]))
+        if tracked_col is not None:
+            by = row[tracked_col] if tracked_col < len(row) else None
+            tr.setdefault("r", []).append(by if isinstance(by, list) else [])
 
     for raw in _lines(path):
         o = _json_or_none(raw)
@@ -551,6 +555,7 @@ def convert_replay(path: Path, hz=1.0):
             cols = o.get("missile_columns")
             if isinstance(cols, list) and all(c in cols for c in MISSILE_COLUMNS):
                 mcol = {n: cols.index(n) for n in MISSILE_COLUMNS}
+                tracked_col = cols.index("tracked_by") if "tracked_by" in cols else None
             dt = o.get("frame_dt_s") or 0.25
             step = max(1, int(round(1.0 / (max(hz, 1e-3) * dt))))
         elif typ == "frame":
@@ -594,7 +599,7 @@ def convert_replay(path: Path, hz=1.0):
                 ref = last_pos.get(o.get("victim"))
             elif kind in ("death", "rwr", "chaff"):
                 ref = last_pos.get(o.get("plane"))
-            elif kind == "missile_end":
+            elif kind in ("missile_end", "radar_missile_track"):
                 ref = last_mpos.get(o.get("uid"))
             if ref is not None:
                 o = dict(o, x=round(ref[0]), y=round(ref[1]), z=round(ref[2]))

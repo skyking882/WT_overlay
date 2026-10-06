@@ -21,6 +21,9 @@ their names and the radars' state machines (C/D):
     ``posGateMaxTime``) for confirmed tracks and ``posGateRangeInitial`` for new ones;
     ``rollStabLimit`` / ``pitchStabLimit`` are the attitudes up to which the scan is
     stabilised against the horizon (wt_overlay/sensors.py uses all of these).
+  * NCTR: a radar whose target type table ``targetTypeId`` has an entry for rocket
+    propulsion (``targetPropulsion`` type "rocket", the "hud/rocket" icon) names a
+    missile track as a missile (``identifies_missiles``).
 """
 from __future__ import annotations
 
@@ -114,6 +117,7 @@ class Radar:
     search_waveforms: tuple
     tws: Tws | None
     stt_coast_s: float | None
+    identifies_missiles: bool = False   # NCTR: targetTypeId lists rocket-propelled targets
 
     @property
     def electronic(self) -> bool:
@@ -244,7 +248,9 @@ def parse_radar(ident: str, d: dict) -> Radar:
     track = fsms.get("track") or {}
     for t in [*(track.get("actionsTemplates") or {}).values(), *(t.get("actions") or {} for t in _transitions(track))]:
         coast = (t.get("clearTargetsOfInterest") or {}).get("timeOut", coast) if isinstance(t, dict) else coast
-    return Radar(ident, d.get("name") or ident, search_patterns, search_waveforms, tws, coast)
+    rocket = any(isinstance(p, dict) and p.get("type") == "rocket" for e in as_list(d.get("targetTypeId"))
+                 if isinstance(e, dict) for p in as_list(e.get("targetPropulsion")))
+    return Radar(ident, d.get("name") or ident, search_patterns, search_waveforms, tws, coast, rocket)
 
 
 def parse_rwr(ident: str, d: dict) -> Rwr:
@@ -276,6 +282,7 @@ def parse_unit(aircraft: str, unit: dict, sensor_types: dict, containers: dict) 
         for p in presets:
             if "air_to_air" not in str(p.get("iconType", "")):
                 continue
+            carried = {}   # a preset can list the same missile more than once (e.g. a tandem pair under the fuselage)
             for w in as_list(p.get("Weapon")):
                 if "blk" not in w:
                     continue
@@ -285,6 +292,8 @@ def parse_unit(aircraft: str, unit: dict, sensor_types: dict, containers: dict) 
                 if "/containers/" in blk.lower() and stem(blk) in containers:
                     blk, n = containers[stem(blk)][0], containers[stem(blk)][1]*(w.get("bullets") or 1)
                 m = missile_id(blk)
+                carried[m] = carried.get(m, 0)+n
+            for m, n in carried.items():
                 best[m] = max(best.get(m, 0), n)
         for m, n in best.items():
             missiles[m] = missiles.get(m, 0)+n
@@ -312,7 +321,7 @@ def _tupled(cls, data):
     if cls is Radar:
         return Radar(data["id"], data["name"], tuple(_tupled(ScanPattern, p) for p in data["search_patterns"]),
                      tuple(_tupled(Waveform, w) for w in data["search_waveforms"]),
-                     data["tws"] and _tupled(Tws, data["tws"]), data["stt_coast_s"])
+                     data["tws"] and _tupled(Tws, data["tws"]), data["stt_coast_s"], data.get("identifies_missiles", False))
     if cls is Rwr:
         return Rwr(**{k: (tuple(tuple(x) if isinstance(x, list) else x for x in v) if isinstance(v, list) else v)
                       for k, v in data.items()})

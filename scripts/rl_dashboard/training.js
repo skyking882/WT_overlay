@@ -22,24 +22,57 @@
   const multi = () => T.sel.length > 1;
 
   // ------------------------------------------------------------------ chart definitions
+  // Charts come in groups: vs-script episodes, self-play episodes (shown when a selected run has any), all training
+  // trajectories mixed, and the PPO update. Per-kind numbers come from metrics.js, which also reads older records.
+  const M = R.metrics;
+  const POOL_ROUNDS = 10;              // group header tiles: the last rounds pooled
   const per100 = (k) => (r) => { const e = r.events && r.events[k]; const d = r.decisions_in_round; return e == null || !d ? null : (e / d) * 100; };
   const EVENTS = [['launch', '发射', 'p1'], ['kill', '击杀', 'kill'], ['death', '阵亡', 'p4'], ['assist', '助攻', 'p6']];
   const tm = (f) => (r) => { const t = r.time; if (!t) return null; const v = f(t); return v == null || !isFinite(v) ? null : Math.max(0, v); };
-  const outShare = (k) => (r) => { const o = r.outcomes; if (!o) return null; const n = (o.win || 0) + (o.loss || 0) + (o.trade || 0) + (o.none || 0); return n ? (o[k] || 0) / n : null; };
-  const CHARTS = [
-    { id: 'winrate', title: '胜率', sub: '击落对方且存活 · S1 过关线 60%', ref: [{ y: 0.6 }], min0: true, max1: true, fmtVal: (v) => fmt.pct(v, 1),
-      series: [{ key: 'v', label: '胜率', color: 'p3', get: (r) => r.win_rate }] },
-    { id: 'exchange', title: '交换比', sub: '击落 / 被击落 · S1 过关线 1.5', ref: [{ y: 1.5 }, { y: 1 }], min0: true,
-      series: [{ key: 'v', label: '交换比', color: 'p1', get: (r) => r.exchange }] },
-    { id: 'outcomes', title: '每局结果', sub: '胜 · 负 · 同归于尽 · 超时', min0: true, max1: true, fmtVal: (v) => fmt.pct(v, 1), multiDefault: ['win', 'loss'],
-      series: [{ key: 'win', label: '胜', color: 'p3', get: outShare('win') }, { key: 'loss', label: '负', color: 'kill', get: outShare('loss') },
-               { key: 'trade', label: '同归于尽', color: 'p6', get: outShare('trade') }, { key: 'none', label: '超时', color: 'p8', get: outShare('none') }] },
-    { id: 'reward', title: '每决策奖励', sub: 'reward / decision', ref: [{ y: 0 }],
+  const ks = (kind, f) => (r) => { const s = M.kindStats(r, kind); return s ? f(s) : null; };
+  const share = (kind, k) => (r) => M.outcomeShare(r, kind, k);
+  const endShare = (k) => (r) => { const e = r.episode_kinds; const n = r.episodes_finished; return e && n ? (e[k] || 0) / n : null; };
+  function kindCharts(kind) {
+    const vs = kind === M.KIND_SCRIPT, p = kind + '.';
+    return [
+      { id: p + 'winrate', title: '胜率', sub: vs ? '击落对方且存活 · S1 过关线 60%' : '击落对方且存活 · 双方同一策略', ref: vs ? [{ y: 0.6 }] : [], share: true, max1: true,
+        fmtVal: (v) => fmt.pct(v, 1), series: [{ key: 'v', label: '胜率', color: 'p3', get: ks(kind, (s) => s.win_rate) }] },
+      { id: p + 'exchange', title: '交换比', sub: vs ? '击落 / 被击落 · S1 过关线 1.5' : '击落 / 被击落 · 按构造约 1', ref: vs ? [{ y: 1.5 }, { y: 1 }] : [{ y: 1 }], min0: true,
+        series: [{ key: 'v', label: '交换比', color: 'p1', get: ks(kind, (s) => s.exchange) }] },
+      { id: p + 'return', title: '平均回报', sub: vs ? 'episode return · 仅对脚本局' : 'episode return · 按构造约 −0.5', ref: [{ y: vs ? 0 : -0.5 }],
+        series: [{ key: 'v', label: '平均回报', color: vs ? 'p1' : 'p4', get: (r) => M.kindReturn(r, kind) }] },
+      { id: p + 'outcomes', title: '每局结果', sub: '胜 · 负 · 同归于尽 · 存活无击落 (超时 / 其他)', share: true, max1: true, fmtVal: (v) => fmt.pct(v, 1), multiDefault: ['win', 'loss'],
+        series: [{ key: 'win', label: '胜', color: 'p3', get: share(kind, 'win') }, { key: 'loss', label: '负', color: 'kill', get: share(kind, 'loss') },
+                 { key: 'trade', label: '同归于尽', color: 'p6', get: share(kind, 'trade') },
+                 { key: 'none_timeout', label: '存活无击落 · 超时', color: 'p8', get: share(kind, 'none_timeout') },
+                 { key: 'none_other', label: '存活无击落 · 其他', color: 'p5', get: share(kind, 'none_other') },
+                 { key: 'none', label: '存活无击落 (未细分)', color: 'p7', get: share(kind, 'none'), optional: true }] },
+      { id: p + 'rates', title: '同归于尽率 · 超时率', sub: '每 agent 回合 · 超时 = 打满时间 (含已击落者)', share: true, fmtVal: (v) => fmt.pct(v, 1),
+        series: [{ key: 'trade', label: '同归于尽率', color: 'p6', get: ks(kind, (s) => s.trade_rate) },
+                 { key: 'timeout', label: '超时率', color: 'p8', get: ks(kind, (s) => s.timeout_rate) }] },
+      { id: p + 'episodes', title: '每轮回合数', sub: 'agent 回合 · 上面各曲线的样本量', min0: true, fmtVal: (v) => fmt.int(v),
+        series: [{ key: 'v', label: '回合数', color: vs ? 'p2' : 'p4', get: ks(kind, (s) => s.episodes) }] },
+    ];
+  }
+  const MIX_CHARTS = [
+    { id: 'reward', title: '每决策奖励', sub: 'reward / decision · 全部轨迹', ref: [{ y: 0 }],
       series: [{ key: 'v', label: '每决策奖励', color: 'p3', get: (r) => r.reward_per_decision }] },
-    { id: 'return', title: '回合回报', sub: 'episode return · mean', ref: [{ y: 0 }],
-      series: [{ key: 'v', label: '回合平均回报', color: 'p1', get: (r) => r.episode_return_mean }] },
+    { id: 'return', title: '回合回报 · 全部训练轨迹 (混合)', sub: '对脚本与自博弈合并 · 自博弈约 −0.5', ref: [{ y: 0 }],
+      series: [{ key: 'v', label: '全部训练轨迹 (混合)', color: 'p6', get: (r) => r.episode_return_mean }] },
     { id: 'events', title: '事件 / 100 决策', sub: 'launch · kill · death · assist', multiDefault: ['kill'],
       series: EVENTS.map(([k, l, c]) => ({ key: k, label: l, color: c, get: per100(k) })) },
+    { id: 'ends', title: '回合结束方式', sub: '全部轨迹 · 正常结束 · 打满时间 · 丢失', share: true, max1: true, fmtVal: (v) => fmt.pct(v, 1),
+      series: [{ key: 'terminal', label: '正常结束', color: 'p1', get: endShare('terminal') },
+               { key: 'timeout', label: '打满时间', color: 'p8', get: endShare('timeout') },
+               { key: 'lost', label: '丢失', color: 'kill', get: endShare('lost'), optional: true,
+                 has: (r) => !!(r.episode_kinds && r.episode_kinds.lost) }] },
+    { id: 'late', title: '迟到战果', sub: '阵亡飞机的导弹之后击落 · 计入 / 丢弃', min0: true, fmtVal: (v) => fmt.int(v),
+      series: [{ key: 'credited', label: '计入', color: 'p3', get: (r) => (r.late_rewards ? r.late_rewards.credited : null) },
+               { key: 'dropped', label: '丢弃', color: 'kill', get: (r) => (r.late_rewards ? r.late_rewards.dropped : null) }] },
+    { id: 'valid', title: '有效决策比例', sub: 'valid fraction', share: true, fmtVal: (v) => fmt.pct(v, 1),
+      series: [{ key: 'v', label: '有效比例', color: 'p8', get: (r) => r.valid_fraction }] },
+  ];
+  const OPT_CHARTS = [
     { id: 'entropy', title: '策略熵', sub: 'entropy', headKey: 'entropy_head',
       series: [{ key: 'all', label: '整体', color: 'p4', get: (r) => r.entropy }] },
     { id: 'kl', title: 'KL 散度', sub: '行为策略 · BC 参考', headKey: 'kl_ref_head', refCfg: 'target_kl', min0: true,
@@ -47,12 +80,13 @@
                { key: 'ref', label: 'BC 参考 KL', color: 'p6', get: (r) => r.kl_ref }] },
     { id: 'clip', title: '裁剪比例', sub: 'clip fraction', min0: true,
       series: [{ key: 'v', label: '裁剪比例', color: 'p2', get: (r) => r.clip_frac }] },
-    { id: 'vloss', title: '价值损失', sub: 'value loss', min0: true,
+    { id: 'vloss', title: '价值损失 (归一化)', sub: 'MSE / value_scale²', min0: true,
       series: [{ key: 'v', label: '价值损失', color: 'kill', get: (r) => r.value_loss }] },
+    { id: 'vrmse', title: '价值 RMS 误差', sub: '奖励单位 · √loss × value_scale', min0: true,
+      series: [{ key: 'v', label: 'RMS 误差', color: 'p2', get: (r) => M.valueRmse(r) },
+               { key: 'scale', label: 'value_scale', color: 'p8', get: (r) => r.value_scale }] },
     { id: 'ev', title: '解释方差', sub: 'explained variance', ref: [{ y: 0 }, { y: 1 }], max1: true,
       series: [{ key: 'v', label: '解释方差', color: 'p3', get: (r) => r.explained_variance }] },
-    { id: 'valid', title: '有效决策比例', sub: 'valid fraction', min0: true, fmtVal: (v) => fmt.pct(v, 1),
-      series: [{ key: 'v', label: '有效比例', color: 'p8', get: (r) => r.valid_fraction }] },
     { id: 'sched', title: '调度系数', sub: '熵系数 · KL β', min0: true,
       series: [{ key: 'ent', label: '熵系数', color: 'p4', get: (r) => r.ent_coef }, { key: 'beta', label: 'KL β', color: 'p6', get: (r) => r.kl_beta }] },
     { id: 'grad', title: '梯度范数', sub: 'actor · critic', min0: true,
@@ -66,6 +100,19 @@
         { key: 'upd', label: '更新', color: 'p3', get: tm((t) => t.update) },
       ] },
   ];
+  const GROUPS = [
+    { id: 'vs', kind: M.KIND_SCRIPT, cls: 'g-vs', title: '对脚本局', tag: 'vs script', charts: kindCharts(M.KIND_SCRIPT),
+      desc: '策略对脚本飞行员 · 主要考核指标' },
+    { id: 'sp', kind: M.KIND_SELF, cls: 'g-sp', title: '自博弈局', tag: 'self-play', charts: kindCharts(M.KIND_SELF), optional: true,
+      desc: '双方都是当前策略 · 平均回报按构造约 −0.5，胜率与交换比看的是对称性，不是强弱' },
+    { id: 'mix', cls: 'g-mix', title: '全部训练轨迹 (混合)', tag: 'all trajectories', charts: MIX_CHARTS,
+      desc: '对脚本局与自博弈局合并 · 奖励、事件与采样' },
+    { id: 'opt', cls: 'g-opt', title: '优化与价值网络', tag: 'PPO update', charts: OPT_CHARTS,
+      desc: '策略熵 · KL · 裁剪 · 价值损失、RMS 误差 (奖励单位) 与解释方差并列' },
+  ];
+  GROUPS.forEach((g) => g.charts.forEach((c) => { c.group = g; }));
+  const CHARTS = [].concat(...GROUPS.map((g) => g.charts));
+  const shownCharts = () => CHARTS.filter((d) => !d.group.hidden);
 
   // ------------------------------------------------------------------ small utils
   const isNum = (v) => typeof v === 'number' && isFinite(v);
@@ -211,11 +258,24 @@
   }
 
   // ------------------------------------------------------------------ chart cards
+  /** the chart's series without the optional ones no selected run has data for (e.g. the unsplit "none" of old runs) */
+  function shownSeries(def) {
+    return def.series.filter((s) => !s.optional || (def.$has && def.$has.has(s.key)));
+  }
+  function computeHas(def) {
+    def.$has = new Set();
+    for (const s of def.series) {
+      if (!s.optional) continue;
+      const runs = def.primaryOnly ? [T.primary] : T.sel;
+      const has = s.has || ((r) => isNum(s.get(r)));
+      if (runs.some((rid) => { const d = T.data[rid]; return d && d.m && d.m.rounds.some(has); })) def.$has.add(s.key);
+    }
+  }
   function activeSet(def) {
-    const keys = def.series.map((s) => s.key);
+    const keys = shownSeries(def).map((s) => s.key);
     const sel = T.opt.sel[def.id];
     if (Array.isArray(sel)) { const s = new Set(sel.filter((k) => keys.includes(k))); if (s.size) return s; }
-    if (multi()) return new Set(def.multiDefault || [keys[0]]);
+    if (multi()) return new Set((def.multiDefault || [keys[0]]).filter((k) => keys.includes(k)));
     return new Set(keys);
   }
   /** line style of a series when several runs are overlaid: the 1st shown series is solid, the next dashed, dotted ... */
@@ -226,7 +286,7 @@
     return shown.length > 1 && i > 0 ? i % 4 : 0;
   }
   function seriesOf(def) {
-    const list = def.series.slice();
+    const list = shownSeries(def);
     if (def.headKey && T.opt.head) {
       const hk = def.headKey, h = T.opt.head;
       list.push({ key: 'head', label: '头 · ' + h, color: 'p5', get: (r) => (r[hk] ? r[hk][h] : null), isHead: true });
@@ -237,17 +297,83 @@
   function buildCards() {
     const host = $('#charts');
     host.innerHTML = '';
-    for (const def of CHARTS) {
-      const canvas = el('canvas');
-      const tip = el('div', { class: 'chart-tip', hidden: true });
-      const skel = el('div', { class: 'skel', style: 'position:absolute;inset:10px 14px 16px 10px' });
-      const box = el('div', { class: 'chart-box' + (def.kind === 'stack' ? '' : '') }, canvas, tip, skel);
-      const legend = el('div', { class: 'legend' });
-      const card = el('div', { class: 'card chart-card', style: def.wide ? 'grid-column: 1 / -1;' : '' },
-        el('div', { class: 'card-h' }, el('h3', { text: def.title }), el('span', { class: 'sub', text: def.sub })),
-        legend, box);
-      host.appendChild(card);
-      def.canvas = canvas; def.legend = legend; def.skel = skel; def.box = box; def.card = card;
+    for (const g of GROUPS) {
+      const grid = el('div', { class: 'grid charts' });
+      g.stats = el('div', { class: 'cgroup-stats' });
+      g.sec = el('section', { class: 'cgroup ' + g.cls, 'aria-label': g.title },
+        el('div', { class: 'cgroup-h' },
+          el('div', { class: 'cgroup-t' }, el('span', { class: 'cgroup-mark' }),
+            el('div', null, el('h2', null, g.title, el('em', { text: g.tag })), el('p', { text: g.desc }))),
+          g.stats),
+        grid);
+      host.appendChild(g.sec);
+      for (const def of g.charts) {
+        const canvas = el('canvas');
+        const tip = el('div', { class: 'chart-tip', hidden: true });
+        const skel = el('div', { class: 'skel', style: 'position:absolute;inset:10px 14px 16px 10px' });
+        const empty = el('div', { class: 'chart-empty', hidden: true, text: '所选运行的记录里没有这项指标' });
+        const box = el('div', { class: 'chart-box' }, canvas, tip, skel, empty);
+        const legend = el('div', { class: 'legend' });
+        const card = el('div', { class: 'card chart-card', style: def.wide ? 'grid-column: 1 / -1;' : '' },
+          el('div', { class: 'card-h' }, el('h3', { text: def.title }), el('span', { class: 'sub', text: def.sub })),
+          legend, box);
+        grid.appendChild(card);
+        def.canvas = canvas; def.legend = legend; def.skel = skel; def.box = box; def.card = card; def.empty = empty;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ group headers
+  const gstat = (label, value, sub, cls) => el('div', { class: 'gstat' + (cls ? ' ' + cls : '') },
+    el('div', { class: 'l', text: label }), el('div', { class: 'v', text: value }), sub ? el('div', { class: 's', text: sub }) : null);
+  /** which groups show (self-play only when a selected run has self-play data) and their header tiles (primary run) */
+  function updateGroups() {
+    const d = T.data[T.primary];
+    const rs = d && d.m ? d.m.rounds : [];
+    for (const g of GROUPS) {
+      const was = g.hidden;
+      g.hidden = !!g.optional && !T.sel.some((rid) => { const x = T.data[rid]; return x && x.m && M.hasKind(x.m.rounds, g.kind); });
+      g.sec.hidden = g.hidden;
+      if (was && !g.hidden) g.charts.forEach((def) => { if (def.chart) { def.chart.destroy(); def.chart = null; } updateLegend(def); });
+      if (!g.hidden) renderGroupStats(g, rs);
+    }
+  }
+  function renderGroupStats(g, rs) {
+    const host = g.stats;
+    host.innerHTML = '';
+    const last = rs[rs.length - 1];
+    if (g.kind) {
+      const p = M.pooled(rs, g.kind, POOL_ROUNDS);
+      if (!p) { host.appendChild(el('span', { class: 'cgroup-note', text: '主要运行没有这类回合' })); return; }
+      const none = p.none_timeout_rate != null
+        ? gstat('存活无击落', fmt.pct(p.none_timeout_rate + p.none_other_rate, 1), '超时 ' + fmt.pct(p.none_timeout_rate, 0) + ' · 其他 ' + fmt.pct(p.none_other_rate, 0))
+        : gstat('存活无击落', fmt.pct(p.none_rate, 1), p.none_rate == null ? '' : '未细分 (旧记录)');
+      host.append(
+        gstat('胜率', fmt.pct(p.win_rate, 1), p.n ? 'n = ' + fmt.int(p.n) : '', 'hl'),
+        gstat('交换比', fmt.num(p.exchange, 2), p.n ? fmt.int(p.kills) + ' / ' + fmt.int(p.deaths) : ''),
+        gstat('平均回报', fmt.num(p.ret, 3), ''),
+        gstat('同归于尽', fmt.pct(p.trade_rate, 1), ''),
+        gstat('超时率', fmt.pct(p.timeout_rate, 1), p.timeout_rate == null ? '旧记录无此项' : ''),
+        none,
+        el('span', { class: 'cgroup-note', text: '近 ' + p.rounds + ' 轮合计 · ' + fmt.int(p.episodes) + ' 回合' }));
+    } else if (g.id === 'mix') {
+      if (!last) return;
+      const tail = rs.slice(-POOL_ROUNDS);
+      const sum = (f) => tail.reduce((a, r) => a + (isNum(f(r)) ? f(r) : 0), 0);
+      const eps = sum((r) => r.episodes_finished);
+      const sp = sum((r) => { const s = M.kindStats(r, M.KIND_SELF); return s ? s.episodes : 0; });
+      const late = tail.some((r) => r.late_rewards);
+      host.append(gstat('回合', fmt.int(eps), '近 ' + tail.length + ' 轮'),
+        gstat('自博弈占比', eps ? fmt.pct(sp / eps, 0) : '—', 'agent 回合'),
+        gstat('迟到战果', late ? fmt.int(sum((r) => r.late_rewards && r.late_rewards.credited)) : '—',
+          late ? '丢弃 ' + fmt.int(sum((r) => r.late_rewards && r.late_rewards.dropped)) : '旧记录无此项'));
+      // sampler statistics without a chart of their own (e.g. from a newer rollout), listed as they come
+      for (const [k, v] of M.samplerExtras(last).slice(0, 8)) host.appendChild(gstat(k, typeof v === 'boolean' ? String(v) : Number.isInteger(v) ? fmt.int(v) : fmt.num(v), '采样统计 · 最近一轮', 'extra'));
+    } else if (g.id === 'opt') {
+      if (!last) return;
+      host.append(gstat('价值损失', fmt.num(last.value_loss, 3), '归一化'),
+        gstat('价值 RMS 误差', fmt.num(M.valueRmse(last), 3), '奖励单位', 'hl'),
+        gstat('解释方差', fmt.num(last.explained_variance, 3), '最近一轮'));
     }
   }
 
@@ -256,15 +382,16 @@
     lg.innerHTML = '';
     const act = activeSet(def);
     const one = !multi();
-    if (def.series.length > 1) {
-      def.series.forEach((s, i) => {
+    const list = shownSeries(def);
+    if (list.length > 1) {
+      list.forEach((s, i) => {
         const on = act.has(s.key);
         const di = !one && on ? dashIndex(def, s.key) : 0;
         const sample = el('span', { class: 'lg-sample' + (di === 1 || di === 3 ? ' dash' : di === 2 ? ' dot' : ''), style: { color: one ? col(s.color) : R.C.muted } });
         const b = el('button', { class: 'chip-btn' + (on ? ' on' : ''), title: s.label, on: { click: () => {
           const cur = new Set(activeSet(def));
           if (cur.has(s.key)) { if (cur.size > 1) cur.delete(s.key); } else cur.add(s.key);
-          T.opt.sel[def.id] = def.series.map((x) => x.key).filter((k) => cur.has(k));
+          T.opt.sel[def.id] = list.map((x) => x.key).filter((k) => cur.has(k));
           saveOpt(); updateChart(def); updateLegend(def);
         } } }, sample, s.label);
         if (on && one) b.style.color = col(s.color);
@@ -273,7 +400,7 @@
     }
     if (def.headKey) {
       const sel = el('select', { title: '叠加某个动作头的曲线', 'aria-label': '动作头', on: { change: (e) => {
-        T.opt.head = e.target.value; saveOpt(); CHARTS.filter((d) => d.headKey).forEach((d) => { updateChart(d); updateLegend(d); });
+        T.opt.head = e.target.value; saveOpt(); shownCharts().filter((d) => d.headKey).forEach((d) => { updateChart(d); updateLegend(d); });
       } } }, el('option', { value: '', text: '动作头: 无' }));
       for (const h of T.heads || []) sel.appendChild(el('option', { value: h, text: h }));
       sel.value = T.opt.head || '';
@@ -304,6 +431,11 @@
       },
     };
     if (def.max1) opts.scales.y.suggestedMax = 1;
+    if (def.share) {                   // fractions: 0 .. (100 %), ticks in percent
+      opts.scales.y.min = 0;
+      if (def.max1) opts.scales.y.max = 1;
+      opts.scales.y.ticks.callback = (v) => String(+(v * 100).toPrecision(3)) + '%';
+    }
     const chart = new Chart(def.canvas.getContext('2d'), { type: stack ? 'bar' : 'line', data: { labels: [], datasets: [] }, options: opts, plugins: [crossPlugin] });
     chart.$def = def;
     return chart;
@@ -356,6 +488,7 @@
   }
 
   function updateChart(def) {
+    if (def.group.hidden) return;
     if (!def.chart) {
       def.chart = makeChart(def);
       if (!def.chart) { def.skel.textContent = '无法加载 Chart.js (cdnjs.cloudflare.com) — 图表不可用'; def.skel.classList.remove('skel'); def.skel.style.cssText = 'position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:12.5px;text-align:center;padding:20px'; return; }
@@ -370,14 +503,16 @@
     }
     ch.$refs = refLines(def);
     ch.update('none');
+    def.empty.hidden = ch.data.datasets.some((ds) => (ds.data || []).some((p) => p != null));
+    def.canvas.style.visibility = def.empty.hidden ? '' : 'hidden';       // no axes without data
   }
 
-  function updateAllCharts() { CHARTS.forEach(updateChart); }
+  function updateAllCharts() { shownCharts().forEach(updateChart); }
   function rebuildCharts(animate) {
     T.animateNext = !!animate;
     for (const def of CHARTS) { if (def.chart) { def.chart.destroy(); def.chart = null; } }
     updateAllCharts();
-    CHARTS.forEach(updateLegend);
+    shownCharts().forEach(updateLegend);
     T.animateNext = false;
   }
 
@@ -387,7 +522,7 @@
     { id: 'dec', label: '总决策数' },
     { id: 'rate', label: '决策 / 小时' },
     { id: 'eta', label: '预计完成' },
-    { id: 'rew', label: '每决策奖励' },
+    { id: 'rew', label: '每决策奖励 · 混合' },
     { id: 'ev', label: '解释方差' },
   ];
   function buildKPIs() {
@@ -534,7 +669,7 @@
     { k: 'share', label: '占比' },
     { k: 'rpd', label: '每决策奖励' },
     { k: 'episodes', label: '回合数' },
-    { k: 'ret', label: '平均回报' },
+    { k: 'ret', label: '平均回报 (混合)' },
   ];
   function renderAircraft() {
     const host = $('#aircraftTable');
@@ -994,8 +1129,10 @@
   function renderAll(first) {
     if (T.stageMode) { renderStage(); renderBC(); renderLog(); renderMeta(); return; }
     renderKPIs();
-    if (first || !CHARTS[0].chart) { CHARTS.forEach(updateLegend); T.animateNext = true; updateAllCharts(); T.animateNext = false; }
-    else { updateAllCharts(); CHARTS.forEach((d) => { if (d.headKey || d.series.length > 1) updateLegend(d); }); }
+    CHARTS.forEach(computeHas);
+    updateGroups();
+    if (first || !CHARTS[0].chart) { shownCharts().forEach(updateLegend); T.animateNext = true; updateAllCharts(); T.animateNext = false; }
+    else { updateAllCharts(); shownCharts().forEach((d) => { if (d.headKey || d.series.length > 1) updateLegend(d); }); }
     renderAircraft(); renderBC(); renderLog(); renderMeta();
   }
   function updateRefreshText() {

@@ -164,6 +164,23 @@ class FrameTests(unittest.TestCase):
         after = proxy.decoys_at(eng.time+20.)   # past the 15 s lifetime
         self.assertEqual(after, [])
 
+    def test_search_chaff_identity_survives_pruning_earlier_releases(self):
+        eng = duel(Scripted(0.), Scripted(180.), seed=2, seeker_search={})
+        target = eng.planes[1]
+        eng.drop_chaff(target, 1)
+        eng.tick = 48
+        eng.drop_chaff(target, 3)
+        proxy = MissileTarget(eng, SimpleNamespace(target=target, t_launch=0.))
+        eng.tick = 744
+        before = proxy.decoys_at(eng.time)
+        self.assertEqual(len(before), 3)
+        self.assertEqual(len({r.identity for r in before}), 3)
+        eng.drop_chaff(target, 1)  # Removes t=0 while retaining every t=1 bundle.
+        self.assertEqual(len(target.bundles), 4)
+        after = proxy.decoys_at(eng.time+.1)  # New release is visible after its initial zero-RCS interval.
+        self.assertEqual([r.identity for r in after[:3]], [r.identity for r in before])
+        self.assertEqual(len({r.identity for r in after}), 4)
+
 
 @unittest.skipUnless(HAVE_MISSILE_SIM, "missile_sim not present")
 class HeadOnTests(unittest.TestCase):
@@ -507,6 +524,27 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(len(flying[0]), len(rows[0]["missile_columns"]))
         self.assertTrue(0. <= flying[0][9] < 360.)
         self.assertEqual({r["type"] for r in rows}, {"header", "frame", "event"})
+
+    def test_replay_records_which_radars_track_each_missile(self):
+        from wt_overlay.engagement import MISSILE_TRUTH
+        eng = duel(Scripted(0.), Scripted(180., fire_range=45000.), radar_sees_missiles=True)
+        eng.run(until_s=15.)
+        rows = [json.loads(line) for line in eng.replay.lines]
+        self.assertEqual(rows[0]["missile_columns"][-1], "tracked_by")
+        flying = [m for r in rows if r["type"] == "frame" for m in r["missiles"]]
+        self.assertTrue(flying)
+        self.assertTrue(all(len(m) == len(rows[0]["missile_columns"]) and isinstance(m[-1], list) for m in flying))
+        self.assertIn([0], [m[-1] for m in flying])                       # the Eagle's radar found the Su's missile
+        found = events(eng, "radar_missile_track")
+        self.assertEqual([(e["plane"], e["uid"]) for e in found], [(0, 0)])
+        self.assertFalse([e for e in events(eng, "track_lost") if e["target"] >= MISSILE_TRUTH])
+        self.assertFalse([e for e in events(eng, "launch") if e["target"] >= MISSILE_TRUTH])
+        self.assertTrue(all(i < MISSILE_TRUTH for marks in eng.marks for i in marks))   # missiles are not map marks
+        plain = duel(Scripted(0.), Scripted(180., fire_range=45000.))
+        plain.run(until_s=15.)
+        rows = [json.loads(line) for line in plain.replay.lines]
+        self.assertNotIn("tracked_by", rows[0]["missile_columns"])
+        self.assertFalse(events(plain, "radar_missile_track"))
 
 
 @unittest.skipUnless(HAVE_MISSILE_SIM, "missile_sim not present")

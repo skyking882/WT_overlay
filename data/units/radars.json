@@ -237,7 +237,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "cn_jl_10ag": {
   "id": "cn_jl_10ag",
@@ -477,7 +478,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "cn_klj_10a": {
   "id": "cn_klj_10a",
@@ -734,7 +736,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "cn_klj_7": {
   "id": "cn_klj_7",
@@ -956,7 +959,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "cn_klj_j16": {
   "id": "cn_klj_j16",
@@ -1213,7 +1217,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "cn_rwr_esm": {
   "id": "cn_rwr_esm",
@@ -1279,7 +1284,8 @@
     ]
    }
   },
-  "stt_coast_s": 16.0
+  "stt_coast_s": 16.0,
+  "identifies_missiles": false
  },
  "cn_type_1473": {
   "id": "cn_type_1473",
@@ -1443,7 +1449,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "cn_type_1492": {
   "id": "cn_type_1492",
@@ -1645,7 +1652,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "cn_type_1493_pd": {
   "id": "cn_type_1493_pd",
@@ -1885,7 +1893,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "fr_antilope_5": {
   "id": "fr_antilope_5",
@@ -1969,7 +1978,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "fr_antilope_5_hmd": {
   "id": "fr_antilope_5_hmd",
@@ -2053,7 +2063,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "fr_as37_armat_esm": {
   "id": "fr_as37_armat_esm",
@@ -2119,7 +2130,8 @@
     ]
    }
   },
-  "stt_coast_s": 10.0
+  "stt_coast_s": 10.0,
+  "identifies_missiles": false
  },
  "fr_cyrano_iv": {
   "id": "fr_cyrano_iv",
@@ -2185,7 +2197,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "fr_cyrano_ivmr": {
   "id": "fr_cyrano_ivmr",
@@ -2251,7 +2264,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "fr_thales_rbe2": {
   "id": "fr_thales_rbe2",
@@ -2524,7 +2538,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "fr_thales_rdy": {
   "id": "fr_thales_rdy",
@@ -2784,7 +2799,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "fr_thomson-csf_rdi": {
   "id": "fr_thomson-csf_rdi",
@@ -3004,7 +3020,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "fr_thomson-csf_rdm": {
   "id": "fr_thomson-csf_rdm",
@@ -3224,7 +3241,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "il_el_m_2001b": {
   "id": "il_el_m_2001b",
@@ -3232,7 +3250,8 @@
   "search_patterns": [],
   "search_waveforms": [],
   "tws": null,
-  "stt_coast_s": 0.5
+  "stt_coast_s": 0.5,
+  "identifies_missiles": false
  },
  "il_el_m_2032": {
   "id": "il_el_m_2032",
@@ -3472,7 +3491,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "il_el_m_2052": {
   "id": "il_el_m_2052",
@@ -3709,7 +3729,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "ir_tracker_tgp": {
   "id": "ir_tracker_tgp",
@@ -3717,7 +3738,8 @@
   "search_patterns": [],
   "search_waveforms": [],
   "tws": null,
-  "stt_coast_s": 2.0
+  "stt_coast_s": 2.0,
+  "identifies_missiles": false
  },
  "it_grifo_346": {
   "id": "it_grifo_346",
@@ -3957,7 +3979,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "jp_an_apg_66j": {
   "id": "jp_an_apg_66j",
@@ -4061,7 +4084,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "jp_j_apg_2": {
   "id": "jp_j_apg_2",
@@ -4298,7 +4322,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "optic_tracker_tgp": {
   "id": "optic_tracker_tgp",
@@ -4306,7 +4331,8 @@
   "search_patterns": [],
   "search_waveforms": [],
   "tws": null,
-  "stt_coast_s": 2.0
+  "stt_coast_s": 2.0,
+  "identifies_missiles": false
  },
  "su_kopio": {
   "id": "su_kopio",
@@ -4562,7 +4588,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "su_n_001": {
   "id": "su_n_001",
@@ -4710,7 +4737,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_001k": {
   "id": "su_n_001k",
@@ -4858,7 +4886,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_001ve": {
   "id": "su_n_001ve",
@@ -5006,7 +5035,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_001vep": {
   "id": "su_n_001vep",
@@ -5154,7 +5184,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "su_n_010": {
   "id": "su_n_010",
@@ -5410,7 +5441,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_010a": {
   "id": "su_n_010a",
@@ -5667,7 +5699,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "su_n_010m": {
   "id": "su_n_010m",
@@ -5923,7 +5956,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_010m_ols_ue": {
   "id": "su_n_010m_ols_ue",
@@ -6179,7 +6213,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_011m": {
   "id": "su_n_011m",
@@ -6436,7 +6471,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "su_n_011r": {
   "id": "su_n_011r",
@@ -6693,7 +6729,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "su_n_019": {
   "id": "su_n_019",
@@ -6841,7 +6878,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_019e": {
   "id": "su_n_019e",
@@ -6989,7 +7027,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_019me": {
   "id": "su_n_019me",
@@ -7137,7 +7176,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": false
  },
  "su_n_035e": {
   "id": "su_n_035e",
@@ -7394,7 +7434,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "su_spo_150_esm": {
   "id": "su_spo_150_esm",
@@ -7460,7 +7501,8 @@
     ]
    }
   },
-  "stt_coast_s": 16.0
+  "stt_coast_s": 16.0,
+  "identifies_missiles": false
  },
  "su_v_004": {
   "id": "su_v_004",
@@ -7697,7 +7739,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "sw_es_05": {
   "id": "sw_es_05",
@@ -7970,7 +8013,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "sw_ps-46a": {
   "id": "sw_ps-46a",
@@ -8134,7 +8178,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "sw_ps_05a": {
   "id": "sw_ps_05a",
@@ -8354,7 +8399,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "tv_tracker_tgp": {
   "id": "tv_tracker_tgp",
@@ -8362,7 +8408,8 @@
   "search_patterns": [],
   "search_waveforms": [],
   "tws": null,
-  "stt_coast_s": 2.0
+  "stt_coast_s": 2.0,
+  "identifies_missiles": false
  },
  "tv_tracker_tgp_platan": {
   "id": "tv_tracker_tgp_platan",
@@ -8370,7 +8417,8 @@
   "search_patterns": [],
   "search_waveforms": [],
   "tws": null,
-  "stt_coast_s": 2.0
+  "stt_coast_s": 2.0,
+  "identifies_missiles": false
  },
  "uk_alarm_esm": {
   "id": "uk_alarm_esm",
@@ -8436,7 +8484,8 @@
     ]
    }
   },
-  "stt_coast_s": 10.0
+  "stt_coast_s": 10.0,
+  "identifies_missiles": false
  },
  "uk_ari_23274_ids": {
   "id": "uk_ari_23274_ids",
@@ -8499,7 +8548,8 @@
   ],
   "search_waveforms": [],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "uk_captor_ecrs_1_pirate": {
   "id": "uk_captor_ecrs_1_pirate",
@@ -8772,7 +8822,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "uk_captor_ecrs_2_pirate": {
   "id": "uk_captor_ecrs_2_pirate",
@@ -9045,7 +9096,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "uk_captor_m": {
   "id": "uk_captor_m",
@@ -9303,7 +9355,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "uk_captor_m_pirate": {
   "id": "uk_captor_m_pirate",
@@ -9541,7 +9594,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "uk_ferranti_blue_vixen": {
   "id": "uk_ferranti_blue_vixen",
@@ -9761,7 +9815,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "uk_marconi_ai_mk24_stage_2g": {
   "id": "uk_marconi_ai_mk24_stage_2g",
@@ -9963,7 +10018,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "uk_marconi_ai_mk24_stage_3g": {
   "id": "uk_marconi_ai_mk24_stage_3g",
@@ -10165,7 +10221,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_59_f_4j": {
   "id": "us_an_apg_59_f_4j",
@@ -10269,7 +10326,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_59u": {
   "id": "us_an_apg_59u",
@@ -10373,7 +10431,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_60": {
   "id": "us_an_apg_60",
@@ -10477,7 +10536,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_61": {
   "id": "us_an_apg_61",
@@ -10581,7 +10641,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_63": {
   "id": "us_an_apg_63",
@@ -10725,7 +10786,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_63_baz": {
   "id": "us_an_apg_63_baz",
@@ -10965,7 +11027,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_63_psp": {
   "id": "us_an_apg_63_psp",
@@ -11089,7 +11152,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_63_v_1": {
   "id": "us_an_apg_63_v_1",
@@ -11329,7 +11393,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_63_v_3": {
   "id": "us_an_apg_63_v_3",
@@ -11586,7 +11651,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_65": {
   "id": "us_an_apg_65",
@@ -11826,7 +11892,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_65gy": {
   "id": "us_an_apg_65gy",
@@ -12066,7 +12133,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_65q": {
   "id": "us_an_apg_65q",
@@ -12306,7 +12374,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_66": {
   "id": "us_an_apg_66",
@@ -12410,7 +12479,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_66_v_1": {
   "id": "us_an_apg_66_v_1",
@@ -12514,7 +12584,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_66_v_2_hms": {
   "id": "us_an_apg_66_v_2_hms",
@@ -12696,7 +12767,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_66_v_3": {
   "id": "us_an_apg_66_v_3",
@@ -12878,7 +12950,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_66_v_3_hms": {
   "id": "us_an_apg_66_v_3_hms",
@@ -13060,7 +13133,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_66s": {
   "id": "us_an_apg_66s",
@@ -13242,7 +13316,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_67": {
   "id": "us_an_apg_67",
@@ -13462,7 +13537,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_68": {
   "id": "us_an_apg_68",
@@ -13644,7 +13720,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_68_v_5": {
   "id": "us_an_apg_68_v_5",
@@ -13846,7 +13923,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_68_v_7": {
   "id": "us_an_apg_68_v_7",
@@ -14048,7 +14126,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_68_v_9": {
   "id": "us_an_apg_68_v_9",
@@ -14250,7 +14329,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_70": {
   "id": "us_an_apg_70",
@@ -14490,7 +14570,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_70i": {
   "id": "us_an_apg_70i",
@@ -14730,7 +14811,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_71": {
   "id": "us_an_apg_71",
@@ -14932,7 +15014,8 @@
     ]
    }
   },
-  "stt_coast_s": null
+  "stt_coast_s": null,
+  "identifies_missiles": true
  },
  "us_an_apg_73": {
   "id": "us_an_apg_73",
@@ -15172,7 +15255,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_73_hms": {
   "id": "us_an_apg_73_hms",
@@ -15412,7 +15496,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_76_an_asx_1": {
   "id": "us_an_apg_76_an_asx_1",
@@ -15496,7 +15581,8 @@
    }
   ],
   "tws": null,
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": false
  },
  "us_an_apg_79": {
   "id": "us_an_apg_79",
@@ -15753,7 +15839,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_apg_83": {
   "id": "us_an_apg_83",
@@ -16010,7 +16097,8 @@
     ]
    }
   },
-  "stt_coast_s": 3.0
+  "stt_coast_s": 3.0,
+  "identifies_missiles": true
  },
  "us_an_asq_213_esm": {
   "id": "us_an_asq_213_esm",
@@ -16076,7 +16164,8 @@
     ]
    }
   },
-  "stt_coast_s": 10.0
+  "stt_coast_s": 10.0,
+  "identifies_missiles": false
  },
  "us_an_awg_9": {
   "id": "us_an_awg_9",
@@ -16278,7 +16367,8 @@
     ]
    }
   },
-  "stt_coast_s": 5.0
+  "stt_coast_s": 5.0,
+  "identifies_missiles": false
  },
  "us_an_awg_9_tiseo": {
   "id": "us_an_awg_9_tiseo",
@@ -16480,7 +16570,8 @@
     ]
    }
   },
-  "stt_coast_s": 5.0
+  "stt_coast_s": 5.0,
+  "identifies_missiles": false
  },
  "us_harm_a_esm": {
   "id": "us_harm_a_esm",
@@ -16546,7 +16637,8 @@
     ]
    }
   },
-  "stt_coast_s": 10.0
+  "stt_coast_s": 10.0,
+  "identifies_missiles": false
  },
  "us_harm_c_esm": {
   "id": "us_harm_c_esm",
@@ -16612,6 +16704,7 @@
     ]
    }
   },
-  "stt_coast_s": 10.0
+  "stt_coast_s": 10.0,
+  "identifies_missiles": false
  }
 }

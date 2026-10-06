@@ -6,6 +6,7 @@ import http.client
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -256,6 +257,18 @@ class ReplayFiles(unittest.TestCase):
         self.assertEqual(r["bad_lines"], 1)
         self.assertEqual(r["frames_total"], 41)
 
+    def test_missiles_found_by_radar(self):
+        self.assertNotIn("r", dash.convert_replay(self.path, hz=1.0)["missiles"][0])     # an older replay: no column
+        rows = [json.loads(line) for line in self.path.read_text().splitlines()]
+        rows[0]["missile_columns"] = MISSILE_COLUMNS + ["tracked_by"]
+        for row in rows:
+            for m in row.get("missiles") or ():
+                m.append([1] if m[10] >= 1. else [])
+        p = Path(self.tmp.name) / "radar.jsonl"
+        p.write_text(jl(*rows))
+        m = dash.convert_replay(p, hz=1.0)["missiles"][0]
+        self.assertEqual(m["r"], [[], [], [1], [1]])                                    # samples at 2.5, 3, 4, 4.25 s
+
     def test_convert_rejects_a_file_without_header(self):
         p = Path(self.tmp.name) / "x.jsonl"
         p.write_text(jl(dict(type="frame", t=0, planes=[], missiles=[])))
@@ -487,7 +500,8 @@ class HttpEndpoints(unittest.TestCase):
         self.assertEqual(resp.status, 200)
         self.assertIn("text/html", resp.getheader("Content-Type"))
         self.assertIn("WT 控制台".encode(), body)
-        for name, ctype in (("app.js", "javascript"), ("training.js", "javascript"), ("replay.js", "javascript"), ("style.css", "css")):
+        for name, ctype in (("app.js", "javascript"), ("metrics.js", "javascript"), ("training.js", "javascript"),
+                            ("replay.js", "javascript"), ("style.css", "css")):
             resp, body = self.get("/static/" + name, raw=True)
             self.assertEqual(resp.status, 200, name)
             self.assertIn(ctype, resp.getheader("Content-Type"))
@@ -657,6 +671,114 @@ class StaticFiles(unittest.TestCase):
         self.assertRegex(html, r'<script src="https://cdnjs\.cloudflare\.com/ajax/libs/Chart\.js/[\d.]+/chart\.umd\.min\.js"')
         for src in re.findall(r'<script[^>]+src="([^"]+)"', html):
             self.assertTrue(src.startswith("/static/") or src.startswith("https://cdnjs.cloudflare.com/"), src)
+
+
+STATIC = ROOT / "scripts" / "rl_dashboard"
+NODE = shutil.which("node")
+
+
+def run_node(script, payload):
+    """Run a node script that reads JSON from stdin and prints JSON; returns the parsed output."""
+    out = subprocess.run([NODE, "-e", script], input=json.dumps(payload), capture_output=True, text=True, timeout=60,
+                         cwd=str(STATIC))
+    if out.returncode:
+        raise AssertionError(out.stderr)
+    return json.loads(out.stdout)
+
+
+class TrainingTabByKind(unittest.TestCase):
+    """The training tab separates vs-script, self-play and mixed numbers (metrics.js) and still reads older runs."""
+
+    # an old run (no outcomes at all), a pre-self-play run (top-level outcomes), a run with outcomes_by_kind but no
+    # per-kind return, and a record with every new key
+    OLD = dict(round=1, decisions_total=100, episode_return_mean=0.2, episodes_finished=29, value_loss=0.25, value_scale=0.4)
+    TOP = dict(round=2, episode_return_mean=0.5, episodes_finished=10, outcomes=dict(win=6, loss=2, trade=1, none=1,
+               kills=7, deaths=3), win_rate=0.6, exchange=7 / 3)
+    MID = dict(round=3, episode_return_mean=-0.3, outcomes_by_kind=dict(
+        vs_script=dict(win=3, loss=1, trade=0, none=1, kills=3, deaths=1, episodes=5, win_rate=0.6, exchange=3.0),
+        self_play=dict(win=4, loss=4, trade=1, none=1, kills=5, deaths=5, episodes=10, win_rate=0.4, exchange=1.0)))
+    NEW = dict(round=4, episode_return_mean=-0.25, value_loss=0.25, value_scale=0.4, value_rmse=0.2,
+               episode_return_by_kind=dict(vs_script=0.4, self_play=-0.6),
+               sampler_stats=dict(settle_ticks=80, by_env={"0": 2}, flag=True),
+               outcomes_by_kind=dict(
+                   vs_script=dict(win=5, loss=2, trade=1, none=2, kills=6, deaths=3, episodes=10, win_rate=0.5,
+                                  exchange=2.0, trade_rate=0.1, timeouts=2, timeout_rate=0.2, none_timeout=1, none_other=1),
+                   self_play=dict(win=6, loss=6, trade=2, none=2, kills=8, deaths=8, episodes=16, win_rate=0.375,
+                                  exchange=1.0, trade_rate=0.125, timeouts=2, timeout_rate=0.125, none_timeout=2,
+                                  none_other=0)))
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_js_files_parse(self):
+        for f in sorted(STATIC.glob("*.js")):
+            out = subprocess.run([NODE, "--check", str(f)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(out.returncode, 0, "%s: %s" % (f.name, out.stderr))
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_per_kind_numbers_from_old_and_new_records(self):
+        script = """
+const M = require('./metrics.js');
+const recs = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const pick = (s) => s && { win_rate: s.win_rate, exchange: s.exchange, ret: s.ret, trade_rate: s.trade_rate,
+  timeout_rate: s.timeout_rate, split: s.split, episodes: s.episodes };
+const out = {};
+for (const [name, r] of Object.entries(recs)) {
+  out[name] = { vs: pick(M.kindStats(r, 'vs_script')), sp: pick(M.kindStats(r, 'self_play')), rmse: M.valueRmse(r),
+    shares: ['win', 'none', 'none_timeout', 'none_other'].map((k) => M.outcomeShare(r, 'vs_script', k)) };
+}
+out.pooled = M.pooled([recs.MID, recs.NEW], 'vs_script', 10);
+out.pooled_new = M.pooled([recs.NEW], 'vs_script', 10);
+out.has_sp = [M.hasKind([recs.OLD, recs.TOP], 'self_play'), M.hasKind([recs.OLD, recs.MID], 'self_play')];
+out.extras = M.samplerExtras(recs.NEW);
+console.log(JSON.stringify(out));
+"""
+        o = run_node(script, dict(OLD=self.OLD, TOP=self.TOP, MID=self.MID, NEW=self.NEW))
+        # no outcome keys at all: only the return (all vs-script) and the value error from value_loss * value_scale
+        self.assertEqual(o["OLD"]["vs"], dict(win_rate=None, exchange=None, ret=0.2, trade_rate=None, timeout_rate=None,
+                                              split=False, episodes=29))
+        self.assertIsNone(o["OLD"]["sp"])
+        self.assertAlmostEqual(o["OLD"]["rmse"], 0.5 * 0.4)
+        # before outcomes_by_kind: the top-level keys are the vs-script numbers; "none" is shown unsplit
+        self.assertEqual((o["TOP"]["vs"]["win_rate"], o["TOP"]["vs"]["ret"], o["TOP"]["vs"]["trade_rate"]), (0.6, 0.5, 0.1))
+        self.assertEqual(o["TOP"]["shares"], [0.6, 0.1, None, None])
+        # both kinds but no per-kind return: the mixed mean belongs to neither
+        self.assertEqual((o["MID"]["vs"]["ret"], o["MID"]["sp"]["ret"], o["MID"]["sp"]["win_rate"]), (None, None, 0.4))
+        # new records: per-kind return, rates and the none split; the unsplit share is gone
+        self.assertEqual(o["NEW"]["vs"], dict(win_rate=0.5, exchange=2.0, ret=0.4, trade_rate=0.1, timeout_rate=0.2,
+                                              split=True, episodes=10))
+        self.assertEqual(o["NEW"]["sp"]["ret"], -0.6)
+        self.assertEqual(o["NEW"]["shares"], [0.5, None, 0.1, 0.1])
+        self.assertEqual(o["NEW"]["rmse"], 0.2)
+        # pooling: counts summed (8 wins of 15), the none split only when every pooled round has it
+        self.assertAlmostEqual(o["pooled"]["win_rate"], 8 / 15)
+        self.assertIsNone(o["pooled"]["none_timeout_rate"])
+        self.assertAlmostEqual(o["pooled"]["ret"], 0.4)                        # MID has no vs-script return
+        self.assertEqual((o["pooled_new"]["none_timeout_rate"], o["pooled_new"]["timeout_rate"]), (0.1, 0.2))
+        self.assertEqual(o["has_sp"], [False, True])
+        self.assertEqual(o["extras"], [["by_env.0", 2], ["flag", True], ["settle_ticks", 80]])
+
+    def test_labels_and_chart_order(self):
+        html = (STATIC / "index.html").read_text()
+        order = [html.index('src="/static/%s"' % n) for n in ("app.js", "metrics.js", "training.js")]
+        self.assertEqual(order, sorted(order))                                # metrics.js hangs off RLD from app.js
+        js = (STATIC / "training.js").read_text()
+        self.assertIn("全部训练轨迹 (混合)", js)
+        self.assertIn("对脚本局", js)
+        self.assertIn("自博弈局", js)
+        # "none" (survived without a kill) is never called a timeout; timeouts have their own series
+        for m in re.finditer(r"\{ key: 'none[^']*', label: '([^']*)'", js):
+            self.assertNotEqual(m.group(1), "超时")
+        self.assertIn("key: 'none_timeout'", js)
+        self.assertIn("key: 'none_other'", js)
+        # the value RMS chart sits between the value loss and the explained variance
+        pos = [js.index("id: '%s'" % c) for c in ("vloss", "vrmse", "ev")]
+        self.assertEqual(pos, sorted(pos))
+
+    def test_new_record_keys_reach_the_page(self):
+        rec = round_record(1, 1, 100, value_rmse=0.2, episode_ends_by_kind=dict(vs_script=dict(terminal=3)),
+                           sampler_stats=dict(settle_ticks=80), outcomes_by_kind=self.NEW["outcomes_by_kind"])
+        slim = dash.slim_records([rec, round_record(2, 2, 200)])[0]
+        for k in ("value_rmse", "episode_ends_by_kind", "sampler_stats", "outcomes_by_kind"):
+            self.assertEqual(slim[k], rec[k])
 
 
 if __name__ == "__main__":

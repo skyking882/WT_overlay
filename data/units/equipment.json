@@ -244,11 +244,11 @@
   "rwr": "us_an_alr_45v",
   "mlws": false,
   "missiles": {
-   "us_aim7e2_dogfight_sparrow": 4,
-   "us_aim7f_sparrow_f_14": 4,
+   "us_aim7e2_dogfight_sparrow": 5,
+   "us_aim7f_sparrow_f_14": 6,
    "us_aim9h_sidewinder": 4,
    "us_aim9l_sidewinder": 4,
-   "us_aim_54a": 4
+   "us_aim_54a": 6
   },
   "countermeasures": 60,
   "countermeasures_max": 60
@@ -259,12 +259,12 @@
   "rwr": "us_an_alr_45v",
   "mlws": false,
   "missiles": {
-   "ir_fakour_90": 4,
+   "ir_fakour_90": 6,
    "ir_sedjil": 2,
    "su_r_27r1": 2,
-   "us_aim7e2_dogfight_sparrow": 4,
+   "us_aim7e2_dogfight_sparrow": 6,
    "us_aim9p_sidewinder": 4,
-   "us_aim_54a": 4
+   "us_aim_54a": 6
   },
   "countermeasures": 60,
   "countermeasures_max": 60
@@ -275,11 +275,11 @@
   "rwr": "us_an_alr_67",
   "mlws": false,
   "missiles": {
-   "us_aim7m_sparrow_f_14": 4,
+   "us_aim7m_sparrow_f_14": 6,
    "us_aim9l_sidewinder": 4,
    "us_aim9m_sidewinder": 4,
-   "us_aim_54a": 4,
-   "us_aim_54c": 4
+   "us_aim_54a": 6,
+   "us_aim_54c": 6
   },
   "countermeasures": 60,
   "countermeasures_max": 700
@@ -290,11 +290,11 @@
   "rwr": "us_an_alr_67",
   "mlws": false,
   "missiles": {
-   "us_aim7m_sparrow_f_14": 4,
+   "us_aim7m_sparrow_f_14": 6,
    "us_aim9l_sidewinder": 4,
    "us_aim9m_sidewinder": 4,
-   "us_aim_54a": 4,
-   "us_aim_54c_plus": 4
+   "us_aim_54a": 6,
+   "us_aim_54c_plus": 6
   },
   "countermeasures": 60,
   "countermeasures_max": 700
@@ -305,11 +305,11 @@
   "rwr": "us_an_alr_67",
   "mlws": false,
   "missiles": {
-   "us_aim7m_sparrow_f_14": 4,
+   "us_aim7m_sparrow_f_14": 6,
    "us_aim9l_sidewinder": 4,
    "us_aim9m_sidewinder": 4,
-   "us_aim_54a": 4,
-   "us_aim_54c_plus": 4
+   "us_aim_54a": 6,
+   "us_aim_54c_plus": 6
   },
   "countermeasures": 60,
   "countermeasures_max": 700
@@ -392,11 +392,11 @@
   "rwr": "us_an_alr_56c",
   "mlws": false,
   "missiles": {
-   "us_aim7m_sparrow_f_15": 2,
+   "us_aim7m_sparrow_f_15": 4,
    "us_aim9l_sidewinder": 4,
    "us_aim9m_sidewinder": 4,
-   "us_aim_120b": 6,
-   "us_aim_120c_5": 6
+   "us_aim_120b": 8,
+   "us_aim_120c_5": 8
   },
   "countermeasures": 0,
   "countermeasures_max": 180
@@ -407,11 +407,11 @@
   "rwr": "us_an_alr_56c",
   "mlws": false,
   "missiles": {
-   "us_aim7m_sparrow_f_15": 2,
+   "us_aim7m_sparrow_f_15": 4,
    "us_aim9l_sidewinder": 4,
    "us_aim9m_sidewinder": 4,
-   "us_aim_120b": 6,
-   "us_aim_120c_5": 6
+   "us_aim_120b": 8,
+   "us_aim_120c_5": 8
   },
   "countermeasures": 60,
   "countermeasures_max": 240
@@ -730,7 +730,7 @@
   "mlws": false,
   "missiles": {
    "us_aim9l_sidewinder": 2,
-   "us_aim_120a": 1
+   "us_aim_120a": 4
   },
   "countermeasures": 60,
   "countermeasures_max": 60
@@ -972,7 +972,7 @@
   "rwr": "cn_kj8602a",
   "mlws": false,
   "missiles": {
-   "cn_pl12": 4,
+   "cn_pl12": 6,
    "cn_pl8b": 6,
    "su_pl5e2": 6
   },
@@ -985,8 +985,8 @@
   "rwr": "cn_krkz2200",
   "mlws": true,
   "missiles": {
-   "cn_pl12": 5,
-   "cn_pl12a": 5,
+   "cn_pl12": 8,
+   "cn_pl12a": 8,
    "cn_pl8b": 6
   },
   "countermeasures": 72,
@@ -1041,8 +1041,8 @@
   "rwr": "cn_krkz2200",
   "mlws": true,
   "missiles": {
-   "cn_pl12": 8,
-   "cn_pl12a": 8,
+   "cn_pl12": 10,
+   "cn_pl12a": 10,
    "cn_pl8b": 6
   },
   "countermeasures": 48,
@@ -1081,7 +1081,7 @@
   "rwr": "us_an_alr_400",
   "mlws": true,
   "missiles": {
-   "cn_sd10a": 2,
+   "cn_sd10a": 4,
    "su_pl5e2": 4
   },
   "countermeasures": 64,
@@ -1108,9 +1108,9 @@
   "mlws": false,
   "missiles": {
    "cn_pl12": 2,
-   "su_pl5b": 4,
-   "su_pl5c": 4,
-   "su_pl5e2": 4,
+   "su_pl5b": 6,
+   "su_pl5c": 6,
+   "su_pl5e2": 6,
    "su_pl8": 2
   },
   "countermeasures": 84,
@@ -1698,7 +1698,7 @@
    "su_r_27r": 6,
    "su_r_27t": 2,
    "su_r_73": 6,
-   "su_r_77": 6
+   "su_r_77": 8
   },
   "countermeasures": 96,
   "countermeasures_max": 96
@@ -1742,7 +1742,7 @@
    "su_r_27er1": 10,
    "su_r_27et1": 2,
    "su_r_73e": 6,
-   "su_rvv_sd": 10
+   "su_rvv_sd": 12
   },
   "countermeasures": 98,
   "countermeasures_max": 98
@@ -1756,7 +1756,7 @@
    "su_r_27er": 10,
    "su_r_27et": 2,
    "su_r_73": 6,
-   "su_r_77_1": 10
+   "su_r_77_1": 12
   },
   "countermeasures": 98,
   "countermeasures_max": 98
@@ -1770,7 +1770,7 @@
    "su_r_27er": 10,
    "su_r_27et": 2,
    "su_r_73": 6,
-   "su_r_77_1": 10
+   "su_r_77_1": 12
   },
   "countermeasures": 98,
   "countermeasures_max": 98
@@ -1810,9 +1810,9 @@
   "rwr": "uk_ari_18241_1",
   "mlws": false,
   "missiles": {
-   "uk_skyflash_aim_7_dogfight_tornado": 1,
-   "uk_skyflash_temp": 1,
-   "us_aim9l_sidewinder": 2
+   "uk_skyflash_aim_7_dogfight_tornado": 4,
+   "uk_skyflash_temp": 4,
+   "us_aim9l_sidewinder": 4
   },
   "countermeasures": 32,
   "countermeasures_max": 352
@@ -1823,9 +1823,9 @@
   "rwr": "uk_ari_18241_1",
   "mlws": false,
   "missiles": {
-   "uk_skyflash_aim_7_dogfight_tornado": 1,
-   "uk_skyflash_temp": 1,
-   "us_aim9l_sidewinder": 2
+   "uk_skyflash_aim_7_dogfight_tornado": 4,
+   "uk_skyflash_temp": 4,
+   "us_aim9l_sidewinder": 4
   },
   "countermeasures": 32,
   "countermeasures_max": 352
@@ -1836,10 +1836,10 @@
   "rwr": "uk_ari_18241_1",
   "mlws": false,
   "missiles": {
-   "uk_skyflash_temp": 1,
-   "us_aim9l_sidewinder": 2,
-   "us_aim9m_sidewinder": 2,
-   "us_aim_120b": 1
+   "uk_skyflash_temp": 4,
+   "us_aim9l_sidewinder": 4,
+   "us_aim9m_sidewinder": 4,
+   "us_aim_120b": 4
   },
   "countermeasures": 32,
   "countermeasures_max": 352

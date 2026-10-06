@@ -30,6 +30,10 @@ missile aimed at him within 30 km with the plane's ``flame_probability`` (drawn 
 are seen, a spotted enemy stays on the map 20 s, leaving the map for 15 s is a loss, a missile whose
 target died continues and may reacquire a living aircraft, including a friend, and a match with no missile in the air for 60 s while the teams are
 more than 120 km apart ends.
+
+Opt-in ``radar_sees_missiles`` (docs/radar_missile_detection_spec.md): the radars also see enemy missiles in flight
+(MISSILE_RCS_M2, D; a TWS track slot each), an NCTR radar names them, a missile track is never a launch target and,
+unless ``allow_missile_targets``, never locked in STT or selectable as a target by the action masks.
 """
 from __future__ import annotations
 
@@ -66,6 +70,15 @@ DEFAULT_MISSILE_SIM = Path(__file__).resolve().parents[2]/"missle_sim"
 LAUNCH_OPTIONS = dict(observation_mode="sensor_track", loft=True, clutter_model="look_down_angle",
                       clutter_min_depression_deg=2., cw_on_clear_beam=True, require_seeker_lock=True)
 KILL_EVENTS = ("fuse",)
+# radar_sees_missiles (opt-in): enemy missiles in flight are radar targets with truth id MISSILE_TRUTH+uid.
+# MISSILE_RCS_M2 (D) is set so a typical top-tier radar sees a missile at about 70 km (user, C). Reference: the
+# APG-63(V)3's MPRF search waveform (mprfSearch, the TWS waveform the simulator flies): 70 km for its 1 m^2 reference
+# RCS; range ~ RCS^(1/4), so RCS = 1 m^2 * (70 km / 70 km)^4 = 1 m^2. Over the 19 top-tier aircraft weighted by match
+# frequency the median detection range is then 68 km (N011M 46 km ... N035E 114 km). The N035E as the reference would
+# give 3 m^2 * (70 / 150)^4 = 0.14 m^2 and a 42 km median.
+MISSILE_RCS_M2 = 1.
+MISSILE_TRUTH = 1000000        # as the RWR emitter ids of missile seekers
+NCTR_RANGE_M = math.inf        # D: an NCTR radar names a missile track at any range, as a tracked aircraft gets its type
 
 
 # -- missile_sim ---------------------------------------------------------------------------------------------
@@ -245,6 +258,10 @@ class Observation:
     boxes: tuple = ()
     contrails: tuple = ()
     missile_marks: tuple = ()
+    # radar_sees_missiles: per ``radar`` contact the uid of the missile behind it, None for an aircraft. Truth, read only
+    # by the action masks and the scripts' choice of targets (never encoded); ``missile_targets``: allow_missile_targets.
+    radar_missiles: tuple = ()
+    missile_targets: bool = False
 
 
 class Camera:
@@ -399,9 +416,13 @@ class MissileTarget:
 
     def __init__(self, engagement, missile: MissileFlight):
         self.eng, self.m = engagement, missile
+        if getattr(engagement, 'seeker_search', None) is not None:
+            self.rcs_m2 = missile.target.rcs_m2
         self._state, self._reflector = engagement.library.TargetState, engagement.library.Reflector
 
     def state_at(self, t):
+        if getattr(self.eng, 'seeker_search', None) is not None:
+            self.rcs_m2 = self.m.target.rcs_m2
         position, velocity = self.m.target.state_at(self.m.t_launch+t)
         return self._state(from_enu(position), from_enu(velocity))
 
@@ -416,15 +437,23 @@ class MissileTarget:
         spec = self.eng.chaff_specs[self.m.target.ident]
         tau = spec.stop_time_constant_s
         out = []
+        release_counts = {}
         for t0, p0, v0 in bundles:
+            # Pruning removes complete release times, so each release's ordinal stays stable.
+            release_index = release_counts.get(t0, 0)
+            release_counts[t0] = release_index+1
             age = now-t0
             rcs = spec.rcs_ratio*spec.envelope(age)
+            if getattr(self.eng, 'seeker_search', None) is not None:
+                rcs *= self.rcs_m2
             if age < 0 or rcs <= 0:
                 continue
             decay = math.exp(-age/tau)
             k = tau*(1-decay)
             out.append(self._reflector("chaff", (p0[0]+v0[0]*k, p0[1]+v0[1]*k, p0[2]+v0[2]*k),
-                                       (v0[0]*decay, v0[1]*decay, v0[2]*decay), rcs))
+                                       (v0[0]*decay, v0[1]*decay, v0[2]*decay), rcs,
+                                       **({'identity': (self.m.target.ident, t0, release_index)}
+                                          if getattr(self.eng, 'seeker_search', None) is not None else {})))
         return out
 
 
@@ -498,9 +527,13 @@ class ObservationBuilder:
         shots = self._shots(plane)
         boxes, contrails, missile_marks = self._view_items(plane, visual, t)
         rwr = plane.rwr_picture.contacts if plane.rwr_picture is not None else ()
+        extra = {}
+        if eng.radar_sees_missiles:
+            extra = dict(missile_targets=eng.allow_missile_targets, radar_missiles=() if picture is None else tuple(
+                i-MISSILE_TRUTH if i >= MISSILE_TRUTH else None for i in picture.truth_ids))
         return Observation(t, self._own(plane, t), picture.contacts if picture is not None else (), rwr, tuple(maw),
                            tuple(flames), tuple(visual), tuple(marks), tuple(shots), eng.map_half_m,
-                           eng if eng.truth_debug else None, tuple(boxes), tuple(contrails), tuple(missile_marks))
+                           eng if eng.truth_debug else None, tuple(boxes), tuple(contrails), tuple(missile_marks), **extra)
 
     def _own(self, plane: Plane, t) -> OwnObs:
         own, f, radar = plane.own, plane.flight, plane.radar
@@ -510,18 +543,26 @@ class ObservationBuilder:
                       radar.stt_state if radar is not None else None, plane.has_maw)
 
     def _radar(self, plane: Plane, t):
-        """The radar picture (ungated); its tracks also put the enemies on the team's map."""
+        """The radar picture (ungated); its aircraft tracks also put the enemies on the team's map. A missile contact
+        (radar_sees_missiles) has no map mark; an NCTR radar names it 'missile' within NCTR_RANGE_M."""
         radar = plane.radar
         picture = radar.picture(t, plane.own) if radar is not None and radar.mode != "off" else None
         plane.picture = picture
         if picture is not None:
             team_marks = self.eng.marks[plane.team]
             for contact, truth in zip(picture.contacts, picture.truth_ids):
-                if contact.position is not None:
+                if contact.position is not None and truth < MISSILE_TRUTH:
                     team_marks[truth] = (contact.position[0], contact.position[1], contact.position[2], contact.updated_s)
         if picture is not None:
-            picture = replace(picture, contacts=tuple(replace(c, mark_id=self.eng.mark_ids[ident])
-                              for c, ident in zip(picture.contacts, picture.truth_ids)))
+            if self.eng.radar_sees_missiles:
+                nctr = radar.radar.identifies_missiles
+                contacts = tuple(replace(c, mark_id=self.eng.mark_ids[ident]) if ident < MISSILE_TRUTH else
+                                 replace(c, target_type="missile") if nctr and (c.range_m or 0.) <= NCTR_RANGE_M else c
+                                 for c, ident in zip(picture.contacts, picture.truth_ids))
+            else:
+                contacts = tuple(replace(c, mark_id=self.eng.mark_ids[ident])
+                                 for c, ident in zip(picture.contacts, picture.truth_ids))
+            picture = replace(picture, contacts=contacts)
             plane.picture = picture
         return picture
 
@@ -605,7 +646,7 @@ class ObservationBuilder:
         eng, own = self.eng, plane.own
         seen = {s.ref for s in visual}
         radar = {c.mark_id: c for c in (plane.picture.contacts if plane.picture else ())
-                 if c.kind in ("track", "stt")}
+                 if c.kind in ("track", "stt") and c.mark_id is not None}
         boxes, contrails, missiles = [], [], []
         for q in eng.live:
             if q is plane or q.team == plane.team:
@@ -643,14 +684,21 @@ class ObservationBuilder:
 class Engagement:
     def __init__(self, specs, seed=0, *, map_half_m=MAP_HALF_M, time_limit_s=TIME_LIMIT_S, library=None, replay=None,
                  truth_debug=False, decision_ticks=DECISION_TICKS, multipath_gain=None,
-                 missile_marker_range_m=10000., retarget_dead=True, structural_speed=False):
+                 missile_marker_range_m=10000., retarget_dead=True, structural_speed=False, seeker_search=None,
+                 radar_sees_missiles=False, allow_missile_targets=False):
         if not specs:
             raise ValueError("an engagement needs aircraft")
         self.seed, self.map_half_m, self.time_limit_s = seed, float(map_half_m), float(time_limit_s)
         self.library = library or default_library()
+        if seeker_search is not None:
+            from aim120_model.radar_seeker import validate_seeker_search
+            seeker_search = validate_seeker_search(seeker_search)
+        self.seeker_search = seeker_search
         self.multipath_gain, self.missile_marker_range_m = multipath_gain, missile_marker_range_m
         self.retarget_dead = retarget_dead
         self.structural_speed = structural_speed   # opt-in: VNE tears the wings off (flight.Aircraft)
+        # opt-in: radars also see enemy missiles in flight; a missile track may be locked only with allow_missile_targets
+        self.radar_sees_missiles, self.allow_missile_targets = bool(radar_sees_missiles), bool(allow_missile_targets)
         self.replay = replay
         self.truth_debug, self.decision_ticks = truth_debug, decision_ticks
         self.rng = random.Random(f"{seed}:engagement")
@@ -716,7 +764,7 @@ class Engagement:
                     frame_dt_s=FRAME_TICKS*SUBSTEP_S, time_limit_s=self.time_limit_s, planes=planes,
                     plane_columns=["id", "x", "y", "z", "vx", "vy", "vz", "heading_deg", "missiles", "chaff", "phase"],
                     missile_columns=["uid", "owner", "target", "x", "y", "z", "vx", "vy", "vz", "heading_deg", "age_s", "seeker",
-                                     "datalink"])
+                                     "datalink", *(["tracked_by"] if self.radar_sees_missiles else [])])
 
     # -- helpers ---------------------------------------------------------------------------------------------
 
@@ -811,6 +859,9 @@ class Engagement:
             self.drop_chaff(plane, action.chaff)
 
     def _set_radar(self, plane, command: RadarCommand):
+        if command.mode == "stt" and self.radar_sees_missiles and not self.allow_missile_targets and \
+                (plane.radar.track_truth(command.stt_track) or 0) >= MISSILE_TRUTH:
+            command = replace(command, mode="tws", stt_track=None)   # a missile track is not locked: the scan goes on
         try:
             plane.radar.set_mode(command.mode, command.pattern, command.azimuth_deg, command.elevation_deg,
                                  stt_track=command.stt_track, t=self.time)
@@ -839,8 +890,8 @@ class Engagement:
             if (contact.kind == "stt" and track == STT_TRACK) or (contact.track_id is not None and contact.track_id == track):
                 truth = ident
                 break
-        if truth is None or truth not in plane.tracked:
-            return None
+        if truth is None or truth not in plane.tracked or truth >= MISSILE_TRUTH:
+            return None   # a missile track is never a launch target (no missile-on-missile model)
         from .intent import launch_limit
         contact = next(c for c, ident in zip(picture.contacts, picture.truth_ids) if ident == truth)
         if abs(contact.azimuth_deg) > launch_limit(plane.aircraft, plane.missile_id):
@@ -865,7 +916,8 @@ class Engagement:
         m.runtime = self.library.create(
             self.library.profile(plane.missile_id), launch_position_m=from_enu(state.position),
             launch_velocity_mps=from_enu(v), launch_pitch_deg=pitch, launch_heading_deg=heading, target=m.proxy,
-            launcher_support=LauncherSupport(m), multipath_gain=self.multipath_gain, **LAUNCH_OPTIONS)
+            launcher_support=LauncherSupport(m), multipath_gain=self.multipath_gain,
+            **({"seeker_search": self.seeker_search} if self.seeker_search is not None else {}), **LAUNCH_OPTIONS)
         m.pos_enu, m.vel_enu = state.position, v
         plane.missiles -= 1
         plane.launches += 1
@@ -1055,6 +1107,10 @@ class Engagement:
             heading, pitch, roll = f.attitude()
             p.own = own = OwnState(f.state.position, f.state.velocity, heading, pitch, roll)
             truths[p.team].append(TargetTruth(p.ident, own.position, own.velocity, p.rcs_m2))
+        if self.radar_sees_missiles:
+            for m in self.missiles:
+                if not m.done:
+                    truths[m.shooter.team].append(TargetTruth(MISSILE_TRUTH+m.uid, m.pos_enu, m.vel_enu, MISSILE_RCS_M2))
         radar_timing = self.radar_timing
         for p in live:
             radar = p.radar
@@ -1065,8 +1121,12 @@ class Engagement:
             tracked = radar.tracked_ids()
             if tracked != p.tracked:
                 for gone in sorted(p.tracked-tracked):
-                    self.event("track_lost", plane=p.ident, target=gone, supporting=any(
-                        m.shooter is p and m.target.ident == gone and not m.done for m in self.missiles))
+                    if gone < MISSILE_TRUTH:
+                        self.event("track_lost", plane=p.ident, target=gone, supporting=any(
+                            m.shooter is p and m.target.ident == gone and not m.done for m in self.missiles))
+                for new in sorted(tracked-p.tracked):
+                    if new >= MISSILE_TRUTH:
+                        self.event("radar_missile_track", plane=p.ident, uid=new-MISSILE_TRUTH)
                 p.tracked = tracked
             key = (p.aircraft, radar.mode)
             slot = radar_timing.get(key)
@@ -1140,8 +1200,13 @@ class Engagement:
         missiles = [[m.uid, m.shooter.ident, m.target.ident, r1(m.pos_enu[0]), r1(m.pos_enu[1]), r1(m.pos_enu[2]),
                      r1(m.vel_enu[0]), r1(m.vel_enu[1]), r1(m.vel_enu[2]),
                      r1(math.degrees(math.atan2(m.vel_enu[0], m.vel_enu[1])) % 360.) % 360., round(m.time_s, 2), int(m.seeker_on),
-                     int(m.datalink)] for m in self.missiles if not m.done]
+                     int(m.datalink), *([self.tracked_by(m)] if self.radar_sees_missiles else [])]
+                    for m in self.missiles if not m.done]
         self.replay.write(dict(type="frame", t=round(self.time, 3), planes=planes, missiles=missiles))
+
+    def tracked_by(self, m):
+        """Idents of the living aircraft whose radar holds a track (TWS or STT) on missile ``m``."""
+        return [p.ident for p in self.live if MISSILE_TRUTH+m.uid in p.tracked]
 
     def alive_counts(self):
         counts = [0, 0]

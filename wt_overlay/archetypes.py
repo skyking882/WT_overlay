@@ -97,6 +97,14 @@ def bearing_of(dx, dy):
     return math.degrees(math.atan2(dx, dy)) % 360.
 
 
+def aircraft_contacts(obs):
+    """The radar contacts without the missile tracks (radar_sees_missiles; truth, as the action masks): a script never
+    anchors on or shoots at a missile."""
+    if not obs.radar_missiles:
+        return obs.radar
+    return tuple(c for c, uid in zip(obs.radar, obs.radar_missiles) if uid is None)
+
+
 def direction(heading_deg, gamma_deg=0.):
     h, g = math.radians(heading_deg), math.radians(gamma_deg)
     return (math.sin(h)*math.cos(g), math.cos(h)*math.cos(g), math.sin(g))
@@ -351,7 +359,7 @@ class Pilot:
                 return (near.own.position[0], near.own.position[1], near.own.position[2], "truth")
         now = obs.time_s
         best, best_d, best_v = None, math.inf, (0., 0.)
-        for c in obs.radar:
+        for c in aircraft_contacts(obs):
             if c.position is not None:
                 d = math.hypot(c.position[0]-px, c.position[1]-py)
                 if d < best_d:
@@ -511,7 +519,7 @@ class Pilot:
 
     def _tracks(self, obs):
         out = []
-        for c in obs.radar:
+        for c in aircraft_contacts(obs):
             if c.track_id is not None or c.kind == "stt":
                 if c.range_m is not None:
                     out.append(c)
@@ -655,7 +663,7 @@ class Pilot:
     def _estimated_anchor(self, obs):
         now,own=obs.time_s,obs.own
         # Keys are observed mark ids, never the simulator's aircraft slots.
-        for c in obs.radar:
+        for c in aircraft_contacts(obs):
             if c.position is not None:
                 key=c.mark_id if getattr(c,"mark_id",None) is not None else ("track",c.track_id)
                 self.estimates[key]=(c.position,c.velocity or (0.,0.,0.),now,300.+100.*c.age_s)

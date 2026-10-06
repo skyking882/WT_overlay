@@ -10,6 +10,12 @@ episode and the unused streams idle (padding) until the env's next reset; valid_
 
 The behaviour policy is fixed for the whole round: the actor lives in this process, workers
 only step envs and receive action tuples.
+
+Settle ticks: when an env still owes late credit after the T ticks (a downed policy aircraft's missile is still
+flying while another controlled agent of the env lives on: self-play), the round goes on for those envs only, with
+the same actor, L ticks at a time, until none of them owes credit (at most settle_cap ticks). Their agents' steps are
+stored in the extended round like any other, so the late reward reaches the downed agent's final step before the
+update that trains on it. Streams of the other envs idle there; their running episodes bootstrap at tick T-1.
 """
 from __future__ import annotations
 
@@ -64,6 +70,8 @@ class Sampler:
         self.ep_air = [""] * self.S
         self.ep_kind = [spec.KIND_SCRIPT] * self.S
         self.finished = {}                  # (env, agent) -> final step of an agent whose env episode still runs
+        self.env_pending = [False] * self.n_envs    # env still owes late credit (worker "pending")
+        self.settle_cap = self.T            # max settle ticks per round; 0 = off (late credit after the round dropped)
         self.h_actor = torch.zeros(self.S, H, device=device)
         self.h_critic_end = torch.zeros(self.S, H)
         self.h_ref_end = torch.zeros(self.S, H)
@@ -105,7 +113,7 @@ class Sampler:
 
     # ------------------------------------------------------------------ one round
     def collect(self, actor, greedy=None, abort=None):
-        """Run T ticks with the (fixed) actor. Returns (RoundBuffer, stats).
+        """Run T ticks (plus settle ticks, see _settle) with the (fixed) actor. Returns (RoundBuffer, stats).
 
         abort: optional callable checked every tick; if it returns True RoundAborted is raised and
         the partial round is dropped (the networks have not been touched, so the last checkpoint is
@@ -114,7 +122,6 @@ class Sampler:
         assert self.started
         greedy = self.cfg.rollout.greedy if greedy is None else greedy
         S, T, L, B, P = self.S, self.T, self.L, self.B, self.B
-        K = T // L
         dev = self.device
         buf = RoundBuffer(S, T, L, B)
         if self.tail is not None:
@@ -127,43 +134,11 @@ class Sampler:
         st = {"t_infer": 0.0, "t_env": 0.0, "t_worker": 0.0, "episodes": [], "events": {}, "lost": 0,
               "mask_fallbacks": 0, "decisions_by_kind": {}}
         for t in range(T):
-            if abort is not None and abort():
-                raise RoundAborted()
-            if (t + B) % L == 0 and t + B >= L:
-                buf.h_actor[(t + B) // L] = self.h_actor.clone()
-            active = [s for s in range(S) if self.pending[s] is not None]
-            if not active:
+            if self._tick(actor, greedy, abort, t, buf, st, range(S)) is None:
                 raise RuntimeError("no active stream at tick %d (all envs returned empty resets?)" % t)
-            for s in active:
-                st["decisions_by_kind"][self.ep_kind[s]] = st["decisions_by_kind"].get(self.ep_kind[s], 0) + 1
-            t0 = time.time()
-            act_t = torch.tensor(active)
-            dec = Decoded([self.pending[s] for s in active])
-            first = torch.tensor([self.pending_first[s] for s in active])
-            batch = dec.to_batch(first=first).to(dev)
-            with torch.no_grad():
-                out, h_new = actor.act(batch, self.h_actor[act_t.to(dev)], self.gen, greedy)
-            self.h_actor[act_t.to(dev)] = h_new
-            actions = out.actions.cpu()
-            st["mask_fallbacks"] += int(out.fallback.sum())
-            flat = (t + P) * S + act_t
-            buf.store.put(flat, dec, first=first, act=actions)
-            buf.logp[flat] = out.logp.sum(-1).cpu()
-            buf.logp_heads[flat] = out.logp.cpu()
-            buf.aircraft[flat] = torch.tensor([self._air(n) for n in dec.aircraft])
-            by_env: Dict[int, dict] = {}
-            acts_l = actions.tolist()
-            for i, s in enumerate(active):
-                by_env.setdefault(self.stream_env[s], {})[self.slot_agent[s]] = tuple(acts_l[i])
-                self.pending_first[s] = False
-            st["t_infer"] += time.time() - t0
-            t0 = time.time()
-            res = self.pool.step(by_env)
-            st["t_env"] += time.time() - t0
-            st["t_worker"] += self.pool.last_worker_time
-            self._process(res, t, buf, st)
+        self._settle(actor, greedy, abort, buf, st)
         if B == 0:
-            buf.h_actor[K] = self.h_actor.clone()
+            buf.h_actor[buf.K] = self.h_actor.clone()
         for s in range(S):
             if self.pending[s] is not None:
                 buf.end_obs[s] = self.pending[s]
@@ -172,14 +147,82 @@ class Sampler:
         st["n_valid"] = buf.n_valid()
         return buf, st
 
+    def _tick(self, actor, greedy, abort, t, buf, st, streams):
+        """One decision of every stream in `streams` that has an observation; returns the step results (None if no
+        stream acted)."""
+        if abort is not None and abort():
+            raise RoundAborted()
+        S, L, B, P, dev = self.S, self.L, self.B, self.B, self.device
+        if (t + B) % L == 0 and t + B >= L:
+            buf.h_actor[(t + B) // L] = self.h_actor.clone()
+        active = [s for s in streams if self.pending[s] is not None]
+        if not active:
+            return None
+        for s in active:
+            st["decisions_by_kind"][self.ep_kind[s]] = st["decisions_by_kind"].get(self.ep_kind[s], 0) + 1
+        t0 = time.time()
+        act_t = torch.tensor(active)
+        dec = Decoded([self.pending[s] for s in active])
+        first = torch.tensor([self.pending_first[s] for s in active])
+        batch = dec.to_batch(first=first).to(dev)
+        with torch.no_grad():
+            out, h_new = actor.act(batch, self.h_actor[act_t.to(dev)], self.gen, greedy)
+        self.h_actor[act_t.to(dev)] = h_new
+        actions = out.actions.cpu()
+        st["mask_fallbacks"] += int(out.fallback.sum())
+        flat = (t + P) * S + act_t
+        buf.store.put(flat, dec, first=first, act=actions)
+        buf.logp[flat] = out.logp.sum(-1).cpu()
+        buf.logp_heads[flat] = out.logp.cpu()
+        buf.aircraft[flat] = torch.tensor([self._air(n) for n in dec.aircraft])
+        by_env: Dict[int, dict] = {}
+        acts_l = actions.tolist()
+        for i, s in enumerate(active):
+            by_env.setdefault(self.stream_env[s], {})[self.slot_agent[s]] = tuple(acts_l[i])
+            self.pending_first[s] = False
+        st["t_infer"] += time.time() - t0
+        t0 = time.time()
+        res = self.pool.step(by_env)
+        st["t_env"] += time.time() - t0
+        st["t_worker"] += self.pool.last_worker_time
+        self._process(res, t, buf, st)
+        return res
+
+    def _settle(self, actor, greedy, abort, buf, st):
+        """Settle ticks (module docstring): extend the round by L ticks at a time and step only the envs that owe
+        late credit, until none does at the end of a block. An env that resets meanwhile (the worker settled it)
+        stops; its new episode starts next round."""
+        envs = {j for j in range(self.n_envs) if self.env_pending[j]}
+        if not envs or self.settle_cap <= 0:
+            return
+        S, L, T0 = self.S, self.L, buf.T
+        for s in range(S):
+            # Idle from tick T0 on with the episode going on: bootstrap at T0-1 from the next observation, the value
+            # the end of the round would have given (GAE stops there as it does at the round end).
+            if self.stream_env[s] not in envs and self.pending[s] is not None and not self.pending_first[s]:
+                f = buf.flat(T0 - 1, s)
+                buf.trunc[f] = buf.boot_final[f] = True
+                buf.boot_obs.append((f, self.pending[s]))
+        st["settle_envs"] = len(envs)
+        while envs and buf.T - T0 < self.settle_cap:
+            buf.extend(L)
+            for t in range(buf.T - L, buf.T):
+                res = self._tick(actor, greedy, abort, t, buf, st, [s for j in sorted(envs) for s in self.env_streams[j]])
+                envs -= {j for j, r in (res or {}).items() if r["new_episode"]}
+            envs = {j for j in envs if self.env_pending[j]}
+        st["settle_ticks"] = buf.T - T0
+        st["settle_decisions"] = int(buf.store.valid[(T0 + self.B) * S:].sum())
+
     def _process(self, res, t, buf, st):
         S, P = self.S, self.B
         for j, r in res.items():
             for k, v in r["events"].items():
                 st["events"][k] = st["events"].get(k, 0) + v
+            self.env_pending[j] = bool(r.get("pending"))
             tallies = r.get("tallies")
             # Rewards owed to agents that finished earlier in this env's episode (a missile of a downed aircraft
-            # scored): added to their final step if that step is in this round's buffer.
+            # scored): added to their final step if that step is in this round's buffer (settle ticks keep it there;
+            # still dropped past settle_cap, or for credit the env does not report as pending).
             for a, v in (r.get("late") or {}).items():
                 f = self.finished.get((j, a))
                 if f is None or f["buf"] is not buf:

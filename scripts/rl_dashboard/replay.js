@@ -11,6 +11,7 @@
   const KINDS = {
     launch: '发射', kill: '击杀', death: '阵亡', assist: '助攻', rwr: '告警', seeker_on: '导引头', datalink_lost: '数据链',
     missile_end: '导弹结束', chaff: '干扰弹', phase: '阶段', track_lost: '丢跟踪', end: '结束', missile_error: '错误',
+    radar_missile_track: '雷达发现导弹',
   };
   const KIND_DEFAULT_ON = { launch: 1, kill: 1, death: 1, assist: 1, rwr: 1, end: 1, missile_error: 1 };
   const PHASE_ZH = { climb: '爬升', advance: '推进', suppress: '压制', evade: '规避', crawl: '低空潜行', popup: '跃升', round2: '第二轮', recommit: '重新切入', rush: '突进', home: '返航', '': '—' };
@@ -55,7 +56,7 @@
     out.h = tr.h[i] + dh * f;
     out.i = i;
     if (tr.vx) { out.vx = tr.vx[i] + (tr.vx[j] - tr.vx[i]) * f; out.vy = tr.vy[i] + (tr.vy[j] - tr.vy[i]) * f; out.vz = tr.vz[i] + (tr.vz[j] - tr.vz[i]) * f; out.m = tr.m[i]; out.c = tr.c[i]; out.p = tr.p[i]; }
-    else { out.s = tr.s[i]; out.d = tr.d[i]; }
+    else { out.s = tr.s[i]; out.d = tr.d[i]; out.r = tr.r ? tr.r[i] : null; }
     return true;
   }
   const alive = (pl, t) => pl.deathT == null || t < pl.deathT;
@@ -300,6 +301,7 @@
       case 'chaff': return nameHtml(e.plane) + ' 投放干扰 ×' + e.n + ' <span class="m">· 余 ' + e.left + '</span>';
       case 'phase': return nameHtml(e.plane) + ' <span class="m">' + esc(phaseZh(e.frm)) + ' → </span>' + esc(phaseZh(e.to));
       case 'track_lost': return nameHtml(e.plane) + ' 丢失对 ' + nameHtml(e.target) + ' 的跟踪' + (e.supporting ? ' <span class="m">· 影响制导</span>' : '');
+      case 'radar_missile_track': return nameHtml(e.plane) + ' 雷达发现导弹 #' + e.uid;
       case 'end': return '对局结束 · ' + esc(END_ZH[e.reason] || e.reason);
       default: return esc(e.kind) + ' <span class="m">' + esc(JSON.stringify(e).slice(0, 80)) + '</span>';
     }
@@ -605,6 +607,8 @@
       ctx.shadowBlur = 0; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x - dx * L * 0.55, y - dy * L * 0.55); ctx.lineTo(x, y); ctx.stroke();
       if (c.s) { ctx.strokeStyle = rgba(C.kill, 0.85); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(x, y, 4.6, 0, 6.2832); ctx.stroke(); }
+      // radar box: an enemy radar holds a track on this missile (replays with radar_sees_missiles)
+      if (c.r && c.r.length) { ctx.strokeStyle = rgba(tcol(1 - team), 0.9); ctx.lineWidth = 1; ctx.strokeRect(x - 7, y - 7, 14, 14); }
       ctx.restore();
     }
   }
@@ -734,7 +738,8 @@
         '<div class="row"><span>目标</span><b>' + nameHtml(m.target).replace(/<[^>]+>/g, '') + '</b></div>' +
         '<div class="row"><span>飞行时间</span><b>' + (P.t - m.t0 + (L ? 0 : 0)).toFixed(1) + ' s</b></div>' +
         '<div class="row"><span>高度</span><b>' + fmt.int(c.z) + ' m</b></div>' +
-        '<div class="row"><span>导引头 / 数据链</span><b>' + (c.s ? '开' : '关') + ' / ' + (c.d ? '通' : '断') + '</b></div>';
+        '<div class="row"><span>导引头 / 数据链</span><b>' + (c.s ? '开' : '关') + ' / ' + (c.d ? '通' : '断') + '</b></div>' +
+        (c.r != null ? '<div class="row"><span>被雷达发现</span><b>' + (c.r.length ? c.r.map((id) => nameHtml(id).replace(/<[^>]+>/g, '')).join(', ') : '否') + '</b></div>' : '');
     }
     tip.innerHTML = html; tip.hidden = false;
     const W = P.w, tw = tip.offsetWidth, th = tip.offsetHeight;

@@ -242,7 +242,7 @@ def round_record(cfg, trainer, buf, st, m, sampler):
         per_air.setdefault(name, {})["episodes"] = n
         per_air[name]["episode_return_mean"] = tot / n
     outcomes = st.get("outcomes", [])
-    by_kind = outcomes_by_kind(outcomes, st.get("decisions_by_kind"))
+    by_kind = outcomes_by_kind(outcomes, st.get("decisions_by_kind"), eps)
     # The long-standing keys describe the policy against scripts: self-play results are ~50/50 by construction and
     # would hide them, so they leave these (they stay in outcomes_by_kind). Without any vs-script episode: all.
     base = [o for o in outcomes if _kind_of(o) != spec.KIND_SELF] or outcomes
@@ -251,6 +251,8 @@ def round_record(cfg, trainer, buf, st, m, sampler):
         "valid_fraction": n_valid / float(S * T),
         "reward_per_decision": float(rew[v].sum()) / max(n_valid, 1),
         "episodes_finished": len(eps), "episode_kinds": kinds,
+        "episode_ends_by_kind": episode_ends_by_kind(eps),
+        # Mean over every finished agent-episode of the round, vs-script and self-play mixed.
         "episode_return_mean": (sum(e[1] for e in eps) / len(eps)) if eps else None,
         # Self-play returns are about -0.5 by construction (+1 / -2 between two copies), so mixed returns mislead.
         "episode_return_by_kind": {k: tot / n for k, (n, tot) in ret_by_kind.items()},
@@ -260,6 +262,9 @@ def round_record(cfg, trainer, buf, st, m, sampler):
         "outcomes_by_kind": by_kind,
         "per_aircraft": per_air,
     }
+    extra = sampler_extras(st)
+    if extra:
+        rec["sampler_stats"] = extra
     rec.update(outcome_rates(rec["outcomes"]))
     for o in base:
         pa = per_air.setdefault(o[0], {})
@@ -268,9 +273,46 @@ def round_record(cfg, trainer, buf, st, m, sampler):
     return rec
 
 
+# Sampler stats keys round_record turns into keys of its own; anything else a sampler reports goes to sampler_stats.
+ST_KNOWN = frozenset(("t_infer", "t_env", "t_worker", "episodes", "events", "lost", "mask_fallbacks",
+                      "decisions_by_kind", "outcomes", "late_credited", "late_dropped", "n_valid"))
+
+
+def _is_num(x):
+    return isinstance(x, (int, float))
+
+
+def sampler_extras(st):
+    """Sampler statistics without a record key of their own (e.g. added by a newer rollout): numbers and flat dicts
+    of numbers pass through unchanged, so they are kept in metrics.jsonl and the dashboard can list them."""
+    return {k: v for k, v in st.items() if k not in ST_KNOWN and
+            (_is_num(v) or (isinstance(v, dict) and all(_is_num(x) for x in v.values())))}
+
+
 def _kind_of(outcome):
     """Episode kind of an outcome tuple (air, outcome, kills, deaths[, kind]); older 4-tuples are vs-script."""
     return outcome[4] if len(outcome) > 4 else spec.KIND_SCRIPT
+
+
+def episode_ends_by_kind(episodes):
+    """{episode kind: {end kind: agent-episodes}} from the sampler's (aircraft, return, length, end, kind) tuples.
+    End kinds: terminal, timeout (also a time limit made terminal by timeout_reward), lost."""
+    out = {}
+    for e in episodes:
+        d = out.setdefault(_kind_of(e), {})
+        d[e[3]] = d.get(e[3], 0) + 1
+    return out
+
+
+def _paired(outcomes, episodes):
+    """The sampler appends an agent-episode's outcome and its episode tuple together, so the i-th of each describe
+    the same agent-episode. None when the lists do not line up (then no outcome is split by how the episode ended)."""
+    if episodes is None or len(episodes) != len(outcomes):
+        return None
+    pairs = list(zip(outcomes, episodes))
+    if any(o[0] != e[0] or _kind_of(o) != _kind_of(e) for o, e in pairs):
+        return None
+    return pairs
 
 
 def outcome_counts(outcomes):
@@ -290,21 +332,39 @@ def outcome_rates(oc):
             "exchange": oc["kills"] / oc["deaths"] if oc["deaths"] else None}
 
 
-def outcomes_by_kind(outcomes, decisions=None):
+def outcomes_by_kind(outcomes, decisions=None, episodes=None):
     """{episode kind: outcome counts + episodes, win_rate, exchange, decisions} for every kind that finished an
     episode or acted this round. Counts are per agent-episode, so a self-play episode contributes two outcomes
-    (its win and its loss), and its win_rate is ~0.5 by construction."""
+    (its win and its loss), and its win_rate is ~0.5 by construction.
+
+    With the sampler's ``episodes`` (aircraft, return, length, end, kind) also: trade_rate (trades per agent-episode),
+    timeouts / timeout_rate (agent-episodes that ran into the time limit, whatever their outcome), and the "none"
+    outcomes (survived without a kill) split into none_timeout (time ran out) and none_other (e.g. the opponent
+    crashed); the split is None when outcomes and episodes do not line up."""
     groups = {}
     for o in outcomes:
         groups.setdefault(_kind_of(o), []).append(o)
     for kind in decisions or {}:
         groups.setdefault(kind, [])
+    pairs = _paired(outcomes, episodes)
     out = {}
     for kind, rows in groups.items():
         c = outcome_counts(rows)
         c["episodes"] = len(rows)
         c.update(outcome_rates(c))
         c["decisions"] = int((decisions or {}).get(kind, 0))
+        if episodes is not None:
+            n = len(rows)
+            ends = [e[3] for e in episodes if _kind_of(e) == kind]
+            c["trade_rate"] = c["trade"] / n if n else None
+            c["timeouts"] = sum(1 for x in ends if x == "timeout")
+            c["timeout_rate"] = c["timeouts"] / len(ends) if ends else None
+            if pairs is None:
+                c["none_timeout"] = c["none_other"] = None
+            else:
+                nones = [e[3] for o, e in pairs if _kind_of(o) == kind and o[1] == "none"]
+                c["none_timeout"] = sum(1 for x in nones if x == "timeout")
+                c["none_other"] = len(nones) - c["none_timeout"]
         out[kind] = c
     return out
 
@@ -312,20 +372,21 @@ def outcomes_by_kind(outcomes, decisions=None):
 def summary_line(r):
     t = r["time"]
     line = ("round %d  dec %d  valid %.2f  rew/dec %.4f  ent %.3f  klT %.4f  klBC %.4f  clip %.3f  vloss %.3f  "
-            "EV %.2f  | sample %.1fs (inf %.1f env %.1f) post %.1fs upd %.1fs" % (
+            "vrms %.3f  EV %.2f  | sample %.1fs (inf %.1f env %.1f) post %.1fs upd %.1fs" % (
                 r["round"], r["decisions_total"], r["valid_fraction"], r["reward_per_decision"],
                 r.get("entropy", float("nan")), r.get("kl_target", float("nan")), r.get("kl_ref", float("nan")),
                 r.get("clip_frac", float("nan")), r.get("value_loss", float("nan")),
-                r.get("explained_variance", float("nan")), t["sample"], t["inference"], t["env_wait"],
-                t["postpass"], t["update"]))
+                r.get("value_rmse", float("nan")), r.get("explained_variance", float("nan")), t["sample"],
+                t["inference"], t["env_wait"], t["postpass"], t["update"]))
     kinds = r.get("outcomes_by_kind") or {}
     if spec.KIND_SELF in kinds:         # with self-play, the vs-script result must not be lost in the totals
         def f(x):
             return "-" if x is None else "%.2f" % x
         vs, sp = kinds.get(spec.KIND_SCRIPT) or {}, kinds[spec.KIND_SELF]
-        line += "  | vs-script: eps %d win %s ex %s dec %d  self-play: eps %d dec %d" % (
-            vs.get("episodes", 0), f(vs.get("win_rate")), f(vs.get("exchange")), vs.get("decisions", 0),
-            sp["episodes"], sp["decisions"])
+        ret = r.get("episode_return_by_kind") or {}
+        line += "  | vs-script: eps %d win %s ex %s ret %s dec %d  self-play: eps %d ret %s dec %d" % (
+            vs.get("episodes", 0), f(vs.get("win_rate")), f(vs.get("exchange")), f(ret.get(spec.KIND_SCRIPT)),
+            vs.get("decisions", 0), sp["episodes"], f(ret.get(spec.KIND_SELF)), sp["decisions"])
     return line
 
 

@@ -300,7 +300,9 @@ def from_flight_action(action, obs, entities, *, phase='', home_xy=(0.,0.), guar
     """
     f, own = action.flight, obs.own
     target=next((e for e in entities if e.track_id==action.fire),None) if action.fire is not None else None
-    candidates=[e for e in entities if e.bearing is not None and e.kind in ('radar','box','map','visual','contrail','rwr') and not e.friend]
+    # A script never takes a missile track (radar_sees_missiles) as its reference or radar target.
+    candidates=[e for e in entities if e.bearing is not None and e.kind in ('radar','box','map','visual','contrail','rwr')
+                and not e.friend and e.missile is None]
     ref=target or (min(candidates,key=lambda e:abs(wrap(e.bearing-(own.heading_deg+action.radar.azimuth_deg)))) if candidates and action.radar else None)
     heading=own.heading_deg if f.heading_deg is None else f.heading_deg
     if f.direction is not None:
@@ -323,7 +325,8 @@ def from_flight_action(action, obs, entities, *, phase='', home_xy=(0.,0.), guar
     speed=2 if f.airbrake_allowed else 0 if f.speed_mps is None else 1
     radar_target=target
     if radar_target is None and action.radar is not None:
-        tracks=[e for e in entities if e.kind=='radar' and e.track_id is not None and e.bearing is not None]
+        tracks=[e for e in entities if e.kind=='radar' and e.track_id is not None and e.bearing is not None
+                and e.missile is None]
         if tracks:
             wanted=own.heading_deg+action.radar.azimuth_deg
             radar_target=min(tracks,key=lambda e:abs(wrap(e.bearing-wanted)))

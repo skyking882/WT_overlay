@@ -61,6 +61,26 @@ class RoundBuffer:
         self.h_critic_end = None  # [S,256] critic state after the last tick
         self.h_ref_end = None
 
+    def extend(self, n):
+        """Append n ticks (a multiple of L) of padding to the loss region, before the post-pass: room for the settle
+        ticks of Sampler._settle. Flat indices of the stored steps (and the stored entity rows) do not change."""
+        assert n % self.L == 0 and not self.h_critic
+        add = n * self.S
+        st = self.store
+        for obj, names in ((st, ("own", "prev", "mask", "ent_start", "ent_n", "tr_start", "tr_n", "act", "valid",
+                                 "first")),
+                           (self, ("logp", "logp_heads", "reward", "done", "trunc", "boot_final", "aircraft"))):
+            for name in names:
+                x = getattr(obj, name)
+                setattr(obj, name, torch.cat([x, x.new_zeros((add,) + tuple(x.shape[1:]))]))
+        st.dt = torch.cat([st.dt, torch.full((add,), spec.DT_STEP)])
+        st.N += add
+        self.T += n
+        self.K = self.T // self.L
+        self.n_steps += add
+        TS = self.T * self.S
+        self.value, self.boot_value, self.adv, self.ret = (torch.zeros(TS) for _ in range(4))
+
     # step index helpers
     def flat(self, t, s):
         return (t + self.P) * self.S + s
