@@ -194,7 +194,7 @@ class PPOTrainer:
 
         acc = {"pg": 0.0, "v": 0.0, "kl_old": 0.0, "clip": 0.0, "ent": 0.0, "kl_ref": 0.0,
                "gn_a": 0.0, "gn_c": 0.0, "n_a": 0, "n_c": 0, "illegal": 0, "fallback": 0, "steps": 0.0,
-               "kl_max": 0.0, "kl_last": 0.0,
+               "kl_max": 0.0, "kl_last": 0.0, "kl_skips": 0,
                "ratio_max": 0.0}
         head_ent = torch.zeros(spec.N_HEADS)
         head_cnt = torch.zeros(spec.N_HEADS)
@@ -202,7 +202,7 @@ class PPOTrainer:
         head_klc = torch.zeros(spec.N_HEADS)
         actor_stopped = False
         stopped_at = -1
-        stop_diag = None
+        stop_diag = skip_diag = None
         mb_count = 0
         actor_steps = 0
         self.actor.train()
@@ -236,22 +236,36 @@ class PPOTrainer:
                         clipf = (((ratio - 1.0).abs() > p.clip).to(torch.float32) * lmf).sum() / n_lm
                     acc["kl_last"] = float(kl_old)
                     acc["kl_max"] = max(acc["kl_max"], float(kl_old))
-                    if float(kl_old) > p.target_kl:
+                    skip_mb = False
+                    if p.kl_mode == "skip":
+                        if float(kl_old) > p.target_kl_skip:
+                            skip_mb = True
+                            acc["kl_skips"] += 1
+                        elif (acc["kl_old"] + float(kl_old)) / (acc["n_a"] + 1) > p.target_kl:
+                            actor_stopped = True
+                            stopped_at = mb_count
+                    elif float(kl_old) > p.target_kl:
                         actor_stopped = True
                         stopped_at = mb_count
-                        # Diagnostics: which heads moved in the minibatch that stopped the actor (per-head k3 KL to
-                        # the behaviour policy, and how many valid steps changed a head's log-prob by more than 1).
+                    if actor_stopped or (skip_mb and skip_diag is None):
+                        # Diagnostics: which heads moved in the minibatch that stopped the actor (or the first one
+                        # skipped): per-head k3 KL to the behaviour policy, and how many valid steps changed a head's
+                        # log-prob by more than 1.
                         with torch.no_grad():
                             old_h = buf.logp_heads[widx[:, B:]].reshape(-1, spec.N_HEADS).to(dev)
                             lr_h = (out.logp.reshape(-1, spec.N_HEADS) - old_h).clamp(-20.0, 20.0)
                             k3 = ((lr_h.exp() - 1.0) - lr_h) * lmf.unsqueeze(-1)
                             big = ((lr_h.abs() > 1.0).to(torch.float32) * lmf.unsqueeze(-1)).sum(0)
-                            stop_diag = {"minibatch": mb_count, "kl": float(kl_old), "steps": int(n_lm),
-                                         "kl_heads": {h: round(float(v), 5) for h, v in
-                                                      zip(spec.HEAD_NAMES, (k3.sum(0) / n_lm).cpu()) if v > 1e-5},
-                                         "steps_logp_moved_gt1": {h: int(v) for h, v in
-                                                                  zip(spec.HEAD_NAMES, big.cpu()) if v > 0}}
-                    else:
+                            diag = {"minibatch": mb_count, "kl": float(kl_old), "steps": int(n_lm),
+                                    "kl_heads": {h: round(float(v), 5) for h, v in
+                                                 zip(spec.HEAD_NAMES, (k3.sum(0) / n_lm).cpu()) if v > 1e-5},
+                                    "steps_logp_moved_gt1": {h: int(v) for h, v in
+                                                             zip(spec.HEAD_NAMES, big.cpu()) if v > 0}}
+                        if actor_stopped:
+                            stop_diag = diag
+                        else:
+                            skip_diag = diag
+                    if not actor_stopped and not skip_mb:
                         pg = -clipped_surrogate(ratio, a_b, p.clip)
                         pg_loss = (pg * lmf).sum() / n_lm
                         active = (out.k > 1).to(torch.float32)
@@ -308,6 +322,8 @@ class PPOTrainer:
             "kl_target_max": acc["kl_max"],          # largest per-minibatch KL seen, incl. the one that stopped the actor
             "kl_target_last": acc["kl_last"],
             "kl_stop": stop_diag,                    # per-head view of the minibatch that stopped the actor, if any
+            "kl_skipped_minibatches": acc["kl_skips"],   # kl_mode "skip": minibatches left out for a KL spike
+            "kl_skip_first": skip_diag,
             "kl_ref": acc["kl_ref"] / na if self.ref is not None else float("nan"),   # to the frozen BC policy
             "clip_frac": acc["clip"] / na,
             "ratio_max": acc["ratio_max"],

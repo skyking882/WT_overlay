@@ -346,6 +346,23 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(r[2],-2.);self.assertNotIn(0,r);self.assertEqual(i['late_rewards'],{0:1.})
         self.assertEqual(i['tallies'][0],[1,0]);self.assertEqual(i['tallies'][2],[0,1])
 
+    def test_structural_speed_tears_the_wings_off_beyond_vne(self):
+        for structural in (False,True):
+            e=env(structural_speed=structural)
+            p0=e.engagement.planes[0]
+            p0.flight.state=replace(p0.flight.state,position=(0.,0.,600.),velocity=(0.,560.,0.))
+            deaths=[]
+            for _ in range(4):
+                obs,r,d,i=e.step(e.scripted_actions())
+                deaths+=[x for x in e.engagement.log if x['kind']=='death' and x['plane']==0]
+                if 0 not in e._observations:
+                    break
+            if structural:
+                self.assertEqual(deaths[0]['cause'],'overspeed');self.assertEqual(r[0],-2.)
+                self.assertEqual(i['events']['overspeed'],1)
+            else:
+                self.assertEqual(deaths,[])
+
     def test_timeout_reward_makes_the_time_limit_terminal(self):
         e=env(time_limit_s=DT_STEP,timeout_reward=-.5)
         obs,rewards,dones,info=e.step(e.scripted_actions())

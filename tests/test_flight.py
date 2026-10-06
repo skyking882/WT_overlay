@@ -389,6 +389,54 @@ class KeyboardTests(unittest.TestCase):
         self.assertEqual(runs[0], runs[1])
 
 
+class StructuralSpeedTests(unittest.TestCase):
+    """VNE from the FM file (user 2026-10-06: exceeding it tears the wings off in the game)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.model = aircraft_model("su_30sm2", mass_factor=1.3)
+
+    def fly(self, structural, position, velocity, cmd, seconds):
+        a = Aircraft(self.model, position, velocity, params=FlightParams(), structural_speed=structural)
+        peak = 0.
+        for _ in range(int(seconds*48)):
+            a.step(cmd)
+            peak = max(peak, a.indicated())
+            if not a.alive:
+                break
+        return a, peak*3.6
+
+    def test_fm_file_gives_vne_and_vne_control(self):
+        st = self.model.structure
+        self.assertEqual((st.vne_kmh, st.vne_control_kmh), (1540., 1400.))
+
+    def test_the_pilot_holds_the_deck_speed_below_vne(self):
+        full = FlightCommand(heading_deg=0., altitude_m=100., throttle_percent=self.model.max_throttle)
+        free, peak_free = self.fly(False, (0., 0., 100.), (0., 330., 0.), full, 60.)
+        held, peak_held = self.fly(True, (0., 0., 100.), (0., 330., 0.), full, 60.)
+        self.assertGreater(peak_free, 1540.)          # without the limit the FM runs past VNE on the deck
+        self.assertLess(peak_held, 1540.)
+        self.assertTrue(held.alive and not held.overspeed)
+
+    def test_overspeed_tears_the_wings_off_after_the_tolerance_and_only_when_enabled(self):
+        # Already far beyond VNE at 500 m, idle and airbrake cannot save it within a second.
+        fast = (0., 560., 0.)
+        cmd = FlightCommand(heading_deg=0., altitude_m=500., throttle_percent=0., airbrake_allowed=True)
+        torn, _ = self.fly(True, (0., 0., 500.), fast, cmd, 3.)
+        self.assertTrue(torn.overspeed)
+        self.assertFalse(torn.alive or torn.crashed)
+        self.assertAlmostEqual(torn.time, 1., delta=2*SUBSTEP_S)
+        intact, _ = self.fly(False, (0., 0., 500.), fast, cmd, 3.)
+        self.assertTrue(intact.alive and not intact.overspeed)
+
+    def test_controls_stiffen_above_vne_control(self):
+        a = Aircraft(self.model, (0., 0., 500.), (0., 400., 0.), params=FlightParams(), structural_speed=True)
+        ias = a.indicated()
+        self.assertGreater(ias, a.vne_control_mps)
+        self.assertLess(a._control_share(ias), 1.)
+        self.assertEqual(a._control_share(a.vne_control_mps-1.), 1.)
+
+
 class FMEvaderUnchangedTests(unittest.TestCase):
     """The shared physics must leave FMEvader bit-identical: compare against the pre-refactor body."""
 

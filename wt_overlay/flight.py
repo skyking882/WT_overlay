@@ -53,6 +53,12 @@ MACH_LIMIT = 2.         # Autothrottle ceiling (D): the FM tables end at Mach 2.
 MACH_BAND_MPS = 20.     # Throttle fades out over this much speed below the limit.
 ENGINE_MARGIN_MPS = 8.  # Stay this far below the engine table's top TAS.
 MAX_ALTITUDE_M = 19500.  # ManeuverModel's atmosphere ends at 20 km.
+# Structural speed (opt-in, Aircraft(structural_speed=True)): the FM file's VNE (indicated, km/h) tears the wings off
+# (user, 2026-10-06: in the game exceeding VNE rips the aircraft apart); above VneControl the controls stiffen.
+OVERSPEED_TOLERANCE_S = 1.   # time above VNE before the wings fail (D)
+VNE_GOVERNOR = .97           # the pilot pulls the throttle back approaching this share of VNE and brakes above it (D)
+VNE_GOVERNOR_BAND_KMH = 60.  # throttle fades to idle over this much indicated speed below the governor point (D)
+VNE_CONTROL_LOSS = .6        # share of the load factor above 1 g lost between VneControl and VNE (D)
 CEILING_BAND_M = 1500.  # Climb angle fades out over this much altitude below the ceiling.
 
 
@@ -157,6 +163,8 @@ class Structure:
     mult_pos: float = 1.
     cap_neg: float | None = None          # Instructor.loadFactorLimit, if limitLoadfactor is true
     cap_pos: float | None = None
+    vne_kmh: float | None = None          # Aerodynamics.WingPlane.Strength.VNE: indicated speed that tears the wings off
+    vne_control_kmh: float | None = None  # VneControl: indicated speed above which the controls stiffen
 
     def limits(self, mass_kg: float):
         """(negative, positive) load factor the airframe allows at ``mass_kg`` (weight = mass x g): the critical wing
@@ -193,7 +201,10 @@ def read_structure(raw: dict) -> Structure:
     cap_neg = cap_pos = None
     if instructor.get("limitLoadfactor") and isinstance(cap, list) and len(cap) == 2:
         cap_neg, cap_pos = float(cap[0]), float(cap[1])
-    return Structure(neg, pos, mult_neg, mult_pos, cap_neg, cap_pos)
+    vne = (wing.get("Strength") or {}).get("VNE")
+    vne_control = raw.get("VneControl")
+    number = lambda x: float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 else None  # noqa: E731
+    return Structure(neg, pos, mult_neg, mult_pos, cap_neg, cap_pos, number(vne), number(vne_control))
 
 
 # -- commands ------------------------------------------------------------------------------------------------
@@ -273,9 +284,16 @@ class Aircraft:
     """One aircraft stepping 1/48 s at a time under ``command``. ``state_at`` answers missile queries."""
 
     def __init__(self, model: ManeuverModel, position, velocity, *, normal=None, params: FlightParams = FlightParams(),
-                 t0=0., engine_percent=None, history=96, keep_history=False, limit_structure=False):
+                 t0=0., engine_percent=None, history=96, keep_history=False, limit_structure=False,
+                 structural_speed=False):
         self.model, self.params = model, params
         self.limit_structure = limit_structure    # also cap a FlightCommand's max_load at the airframe limit
+        # VNE / VneControl from the FM file: overspeed tears the wings off (self.overspeed), the controls stiffen
+        # above VneControl, and the pilot holds the speed below VNE with throttle and airbrake.
+        structure = getattr(model, "structure", None)
+        self.vne_mps = structure.vne_kmh/3.6 if structural_speed and structure and structure.vne_kmh else None
+        self.vne_control_mps = structure.vne_control_kmh/3.6 if self.vne_mps and structure.vne_control_kmh else None
+        self.overspeed, self.overspeed_s = False, 0.
         self._roll_rate = 0.                      # keyboard mode: rad/s about the velocity
         self._kb_throttle = None                  # keyboard mode: the throttle setting, percent
         self.t0, self.tick = float(t0), 0
@@ -359,6 +377,28 @@ class Aircraft:
     @property
     def altitude(self):
         return self.state.position[2]
+
+    def indicated(self, s=None):
+        """Indicated (equivalent) airspeed, m/s: TAS x sqrt(rho / rho0)."""
+        s = s or self.state
+        rho = atmosphere(max(0., min(19999., s.position[2])))[0]
+        return norm(s.velocity)*math.sqrt(rho/1.225)
+
+    def _control_share(self, ias):
+        """Share of the load factor above 1 g still available: 1 below VneControl, falling to 1-VNE_CONTROL_LOSS at VNE."""
+        if self.vne_control_mps is None or ias <= self.vne_control_mps or self.vne_mps <= self.vne_control_mps:
+            return 1.
+        return 1.-VNE_CONTROL_LOSS*min(1., (ias-self.vne_control_mps)/(self.vne_mps-self.vne_control_mps))
+
+    def _governed(self, ias, throttle, brake, top):
+        """The pilot keeps clear of VNE: throttle fades to idle approaching the governor point, airbrake above it."""
+        limit = VNE_GOVERNOR*self.vne_mps
+        band = VNE_GOVERNOR_BAND_KMH/3.6
+        if ias > limit-band:
+            throttle = min(throttle, top*max(0., (limit-ias)/band))
+            if ias > limit:
+                brake = 1.
+        return throttle, brake
 
     @property
     def load_limits(self):
@@ -481,6 +521,10 @@ class Aircraft:
                     demand = add(demand, scale(unit(perp), speed*error/p.turn_time_constant_s))
             throttle, brake = self._throttle(s, cmd, speed)
             max_load = min(cmd.max_load, self.load_limits[1]) if self.limit_structure else cmd.max_load
+            if self.vne_mps is not None:
+                ias = self.indicated(s)
+                throttle, brake = self._governed(ias, throttle, brake, self.model.max_throttle)
+                max_load = 1.+self._control_share(ias)*(max_load-1.)
             new, self.load = advance(self.model, s, SUBSTEP_S, demand, max_load, p.alpha_max_deg, p.roll_rate_deg_s,
                                      p.load_response_s, p.engine_response_s, self.model.max_throttle, throttle, brake)
         except ValueError:
@@ -499,16 +543,24 @@ class Aircraft:
             self._kb_throttle = s.engine_percent
         a = cmd.authority
         n_neg, n_pos = self.load_limits
+        if self.vne_mps is not None:
+            ias = self.indicated(s)
+            share = self._control_share(ias)
+            n_neg, n_pos = 1.-share*(1.-n_neg), 1.+share*(n_pos-1.)
         base = KeyboardTurnSettings()
         settings = KeyboardTurnSettings(max_load=1.+a*(n_pos-1.), min_load=1.-a*(1.-n_neg), roll_rate_deg_s=base.roll_rate_deg_s*a)
         top = self.model.max_throttle
         limit = min(MACH_LIMIT*atmosphere(max(0., min(19999., s.position[2])))[1], self.v_engine_mps)
         if speed > limit-MACH_BAND_MPS:               # the tables end: the throttle fades out as in the other mode
             self._kb_throttle = min(self._kb_throttle, top*max(0., (limit-speed)/MACH_BAND_MPS))
+        airbrake = cmd.airbrake
+        if self.vne_mps is not None:
+            self._kb_throttle, brake = self._governed(ias, self._kb_throttle, 1. if airbrake else 0., top)
+            airbrake = airbrake or brake > 0.
         try:
             motion = Motion(s.position[2], s.velocity, s.normal, self._roll_rate, self.load, self._kb_throttle,
                             s.engine_percent, s.aoa_deg, s.airbrake)
-            m = self.model.step(motion, KeyAction(cmd.roll, cmd.pitch, cmd.throttle, 1 if cmd.airbrake else 0), SUBSTEP_S,
+            m = self.model.step(motion, KeyAction(cmd.roll, cmd.pitch, cmd.throttle, 1 if airbrake else 0), SUBSTEP_S,
                                 settings)
             position = add(s.position, scale(add(s.velocity, m.velocity), SUBSTEP_S/2))
             new = FlightState(position, m.velocity, m.normal, m.aoa_deg, m.engine_throttle_percent, m.airbrake_fraction)
@@ -532,4 +584,11 @@ class Aircraft:
             self.min_altitude_m = new.position[2]
         if new.position[2] <= 0.:
             self.alive, self.crashed = False, True
+        elif self.vne_mps is not None:
+            if self.indicated(new) > self.vne_mps:
+                self.overspeed_s += SUBSTEP_S
+                if self.overspeed_s >= OVERSPEED_TOLERANCE_S:
+                    self.alive, self.overspeed = False, True      # wings torn off
+            else:
+                self.overspeed_s = 0.
         return new

@@ -64,6 +64,12 @@ class PPOCfg:
     epochs: int = 3
     minibatch_segments: int = 16
     target_kl: float = 0.02
+    # "stop" (default): the first minibatch whose KL to the behaviour policy exceeds target_kl stops the actor for
+    # the rest of the round. "skip": a minibatch above target_kl_skip is left out and the actor goes on; it stops
+    # once the mean KL of the applied minibatches would exceed target_kl. In s1_ego "stop" ended most rounds after a
+    # few minibatches, on spikes of single heads (vertical, antenna).
+    kl_mode: str = "stop"
+    target_kl_skip: float = 0.08
     ent_coef: float = 0.01
     ent_coef_end: float = 0.003
     ent_hold: float = 1.0e6        # decisions
@@ -151,6 +157,10 @@ class Config:
             raise ValueError("rollout.burn_in must not exceed rollout.seg_len")
         if r.n_streams % self.env.streams_per_env:
             raise ValueError("rollout.n_streams must be a multiple of env.streams_per_env")
+        if self.ppo.kl_mode not in ("stop", "skip"):
+            raise ValueError("ppo.kl_mode must be 'stop' or 'skip', got %r" % (self.ppo.kl_mode,))
+        if self.ppo.kl_mode == "skip" and self.ppo.target_kl_skip < self.ppo.target_kl:
+            raise ValueError("ppo.target_kl_skip must not be below ppo.target_kl")
         e = self.env
         if not isinstance(e.config, dict):
             raise ValueError("env.config must be a dict, got %r (a --set value is parsed with ast.literal_eval: "

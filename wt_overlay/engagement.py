@@ -643,13 +643,14 @@ class ObservationBuilder:
 class Engagement:
     def __init__(self, specs, seed=0, *, map_half_m=MAP_HALF_M, time_limit_s=TIME_LIMIT_S, library=None, replay=None,
                  truth_debug=False, decision_ticks=DECISION_TICKS, multipath_gain=None,
-                 missile_marker_range_m=10000., retarget_dead=True):
+                 missile_marker_range_m=10000., retarget_dead=True, structural_speed=False):
         if not specs:
             raise ValueError("an engagement needs aircraft")
         self.seed, self.map_half_m, self.time_limit_s = seed, float(map_half_m), float(time_limit_s)
         self.library = library or default_library()
         self.multipath_gain, self.missile_marker_range_m = multipath_gain, missile_marker_range_m
         self.retarget_dead = retarget_dead
+        self.structural_speed = structural_speed   # opt-in: VNE tears the wings off (flight.Aircraft)
         self.replay = replay
         self.truth_debug, self.decision_ticks = truth_debug, decision_ticks
         self.rng = random.Random(f"{seed}:engagement")
@@ -685,7 +686,7 @@ class Engagement:
 
     def _add_plane(self, ident, spec, data):
         model = aircraft_model(spec.aircraft, mass_factor=spec.mass_factor)
-        flight = Aircraft(model, spec.position, spec.velocity, params=FlightParams())
+        flight = Aircraft(model, spec.position, spec.velocity, params=FlightParams(), structural_speed=self.structural_speed)
         equipment = data.equipment.get(spec.aircraft)
         radar_data = data.radars.get(equipment.radar) if equipment and equipment.radar else None
         rwr_data = data.rwrs.get(equipment.rwr) if equipment and equipment.rwr else None
@@ -963,6 +964,8 @@ class Engagement:
         for p in self.live:
             if p.flight.crashed:
                 self._kill(p, None, "crash", None)
+            elif p.flight.overspeed:
+                self._kill(p, None, "overspeed", None)
             elif abs(p.flight.state.position[0]) > self.map_half_m or abs(p.flight.state.position[1]) > self.map_half_m:
                 p.oob_s += SUBSTEP_S
                 if p.oob_s >= OUT_OF_BOUNDS_S:

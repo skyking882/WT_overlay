@@ -166,6 +166,7 @@ class MatchEnv:
             raise ValueError('time_limit_s must be positive')
         self.engagement=generated.engagement(time_limit_s=limit,decision_ticks=20,intent_layer=False,
                                             multipath_gain=c.get('multipath_gain'),
+                                            structural_speed=bool(c.get('structural_speed',False)),
                                             missile_marker_range_m=c.get('missile_marker_range_m',10000.))
         eng=self.engagement
         self.executors={}
@@ -274,7 +275,7 @@ class MatchEnv:
         new=eng.log[start:]
         rewards={aid:0. for aid in active}
         events=dict(launch=0,kill=0,assist=0,death=0,dropped_entities=0,friendly_fire=0,retarget=0,
-                    crash=0,out_of_bounds=0,missile_error=0)
+                    crash=0,out_of_bounds=0,overspeed=0,missile_error=0)
         # A policy aircraft that is already down still scores with the missiles it left in the air: those rewards
         # go to info['late_rewards'] (the trainer adds them to its final step). tallies: kills / deaths per policy
         # aircraft this step, so episode outcomes need not be read back from summed rewards.
@@ -300,7 +301,7 @@ class MatchEnv:
                     rewards[e['plane']]-=2.
                 if e['plane'] in self.policy_ids:
                     tallies.setdefault(e['plane'],[0,0])[1]+=1
-                if e['cause'] in ('crash','out_of_bounds'):
+                if e['cause'] in ('crash','out_of_bounds','overspeed'):
                     events[e['cause']]+=1
             elif kind=='launch':
                 self.last_launch[e['shooter']]=eng.planes[e['shooter']].last_launch
