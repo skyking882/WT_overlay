@@ -161,6 +161,105 @@ class ExecutorTests(unittest.TestCase):
         self.assertIsInstance(e.engagement.planes[0].flight.command,FlightCommand)
         self.assertAlmostEqual(e.executors[0].hold_until,DT_STEP+2.)
 
+    def test_leaving_free_look_is_never_rejected_and_draws_stay_in_order(self):
+        e=env();raw=e._raw[0]
+        runs=[]
+        for p in (0.,1.):
+            x=IntentExecutor(3,reject_p=0.)
+            x.publish(Intent(view_mode=2,kb_pitch=0),raw)
+            x.reject_p=p
+            x.publish(Intent(maneuver=6),replace(raw,time_s=1.))
+            runs.append(x)
+        taken,certain=runs
+        self.assertEqual(certain.rejected,0)
+        self.assertTrue(certain.pending[-1][4])                      # the event is the exit (leaving)
+        self.assertEqual(certain.pending,taken.pending)              # its rejection draw is still made, and ignored
+        certain.publish(Intent(view_mode=2),replace(raw,time_s=2.))  # entering free look can still be rejected
+        self.assertEqual((certain.rejected,certain.unheeded_at),(1,2.))
+
+    def test_rejected_proposal_is_noticed_again_every_renotice_s_while_published(self):
+        e=env();raw=e._raw[0]
+        x=IntentExecutor(2,reject_p=1.)
+        proposal=Intent(maneuver=6)
+        for j in range(11):                                          # repeated every 0.4 s
+            x.publish(proposal,replace(raw,time_s=.4*j))
+        self.assertEqual((x.rejected,x.sequence,x.pending),(3,1,[]))  # passed over at 0, 2 and 4 s
+        x.reject_p=0.
+        x.publish(proposal,replace(raw,time_s=5.6))
+        self.assertEqual(x.pending,[])
+        x.publish(proposal,replace(raw,time_s=6.))
+        t,seq,intent,_,leaving=x.pending[0]
+        self.assertEqual((seq,intent,leaving,x.unheeded_at),(1,proposal,False,None))
+        self.assertTrue(6.+.25-1e-9<=t<=6.+2.5+1e-9)
+        x.publish(proposal,replace(raw,time_s=9.))                  # taken up: repeats are ignored again
+        self.assertEqual(len(x.pending),1)
+        never=IntentExecutor(2,reject_p=1.,renotice_s=math.inf)
+        for j in range(30):
+            never.publish(proposal,replace(raw,time_s=float(j)))
+        self.assertEqual(never.rejected,1)
+        for bad in (-1.,math.nan):
+            with self.assertRaises(ValueError):
+                IntentExecutor(1,renotice_s=bad)
+
+    def test_rejected_publication_is_executed_when_the_policy_keeps_publishing_it(self):
+        e=env(execution=dict(reject_p=0.))
+        ex=e.executors[0]
+        for _ in range(40):
+            if not ex.held(e.engagement.time):
+                break
+            e.step(e.scripted_actions())
+        self.assertFalse(ex.held(e.engagement.time))
+
+        def turn():
+            acts=e.scripted_actions();n=len(e._entities[0])
+            acts[0]=dict(maneuver_ref=n,target=n,view_object=n,maneuver=6,vertical=0,speed=0,chaff=0,radar_mode=0,
+                         antenna=2,weapon=0,view_mode=0,look_az=0,look_el=1,kb_roll=1,kb_pitch=1)
+            return acts
+        ex.reject_p=1.
+        before=ex.sequence
+        e.step(turn())
+        wanted,seq=ex.published,ex.sequence
+        self.assertEqual((wanted.maneuver,seq,ex.rejected),(6,before+1,1))
+        counts=[]
+        for _ in range(5):
+            e.step(turn());counts.append(ex.rejected)
+        self.assertEqual(counts,[1,1,1,1,2])         # noticed again (and passed over) 5 steps = 2.08 s >= renotice_s later
+        self.assertFalse(any(ev[1]==seq for ev in ex.pending))
+        ex.reject_p=0.
+        t1=e.engagement.time
+        while ex.executed!=wanted and e.engagement.time<t1+ex.renotice_s+ex.distribution.bounds[1]+DT_STEP:
+            e.step(turn())
+        self.assertEqual(ex.executed,wanted)
+        self.assertEqual((ex.sequence,ex.rejected),(seq,2))
+        self.assertIsInstance(e.engagement.planes[0].flight.command,FlightCommand)
+
+    def test_rejected_exit_from_free_look_still_returns_to_manoeuvre_flying(self):
+        # Self-play exam (round 214): free look with the keyboard pitched down, the exit rejected and then repeated
+        # unchanged, so the executor stayed on the keys. An exit is never rejected: a FlightCommand within the delay.
+        teams=copy.deepcopy(TEAMS)
+        teams[0][0]['altitude_m']=3000.
+        e=env(teams=teams,execution=dict(reject_p=0.))
+        p=e.engagement.planes[0];ex=e.executors[0]
+
+        def free_look():
+            acts=e.scripted_actions();n=len(e._entities[0])
+            acts[0].update(view_mode=2,maneuver_ref=n,view_object=n,maneuver=0,vertical=0,look_az=4,look_el=1,
+                           kb_roll=1,kb_pitch=0)
+            return acts
+        for _ in range(8):
+            e.step(free_look())
+            if ex.executed.view_mode:
+                break
+        self.assertIsInstance(p.flight.command,KeyboardCommand);self.assertEqual(p.flight.command.pitch,-1)
+        ex.reject_p=1.
+        t0=e.engagement.time
+        e.step(e.scripted_actions())
+        self.assertEqual((ex.published.view_mode,ex.rejected),(0,0))
+        while ex.executed.view_mode and e.engagement.time<t0+ex.distribution.bounds[1]+DT_STEP:
+            e.step(e.scripted_actions())
+        self.assertEqual(ex.executed.view_mode,0)
+        self.assertIsInstance(p.flight.command,FlightCommand)
+
 
 class ContractTests(unittest.TestCase):
     def test_script_climb_completes_at_discrete_altitude_and_edge_target_updates(self):

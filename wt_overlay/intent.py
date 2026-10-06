@@ -114,12 +114,17 @@ class IntentExecutor:
     its delay. One-shot weapon/chaff requests are events even when repeated.
     Pending events execute in publication order; older delayed events cannot
     undo a newer event that already executed. All state is snapshot-copyable.
+    Leaving free look (view_mode != 0 -> 0) is never rejected: the pilot always
+    takes back normal control. Another rejected proposal that is still being
+    published is noticed again renotice_s after it was passed over (D) and
+    offered afresh. RNG draws per offer, in order: rejection (also drawn, and
+    ignored, when leaving), then delay and error if it is taken up.
     """
     def __init__(self, seed, *, path='follow', delay=None, hold_s=2., error_deg=5.,
-                 reject_p=.05, authority=1., home_xy=(0.,0.)):
+                 reject_p=.05, renotice_s=2., authority=1., home_xy=(0.,0.)):
         if path not in ('follow','autonomous'):
             raise ValueError('unknown execution path')
-        if hold_s<0 or error_deg<0 or not 0<=reject_p<=1 or not 0<authority<=1:
+        if hold_s<0 or error_deg<0 or not 0<=reject_p<=1 or not renotice_s>=0 or not 0<authority<=1:
             raise ValueError('invalid execution parameters')
         self.rng = random.Random(seed)
         settings = {'follow':DelayPath((.5,1.2),.3,(.25,2.5)),
@@ -133,6 +138,8 @@ class IntentExecutor:
         self.path, self.distribution = path, settings[path]
         self.personal_median = self.rng.uniform(*self.distribution.median_range)
         self.hold_s,self.error_deg,self.reject_p,self.authority = hold_s,error_deg,reject_p,authority
+        self.renotice_s = renotice_s
+        self.unheeded_at = None   # when the latest publication was last rejected (None: it was taken up)
         self.home_xy = home_xy
         self.published = self.executed = Intent()
         self.hold_until = self.published_at = 0.
@@ -170,6 +177,8 @@ class IntentExecutor:
                 raise ValueError('held high-level intent cannot change without a visible new warning')
         changed = self.initial or intent != old or intent.weapon or intent.chaff==1
         if not changed:
+            if self.unheeded_at is not None and now >= self.unheeded_at+self.renotice_s-1e-9:
+                self._offer(intent,now,False)
             return
         high = any(getattr(intent,h)!=getattr(old,h) for h in ('maneuver_ref','maneuver','vertical'))
         if intent.view_mode==0 and (high or leaving or self.initial):
@@ -180,9 +189,15 @@ class IntentExecutor:
         self.initial = False
         self.published, self.published_at = intent, now
         self.sequence += 1
-        if self.rng.random() < self.reject_p:
+        self._offer(intent,now,leaving)
+
+    def _offer(self, intent, now, leaving):
+        # A re-notice keeps the publication's sequence number: it is the same event, taken up late.
+        if self.rng.random() < self.reject_p and not leaving:
             self.rejected += 1
+            self.unheeded_at = now
             return
+        self.unheeded_at = None
         d = self.distribution
         delay = max(d.bounds[0],min(d.bounds[1],self.rng.lognormvariate(math.log(self.personal_median),d.sigma)))
         self.last_delay = delay
