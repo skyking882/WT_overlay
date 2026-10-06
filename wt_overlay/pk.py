@@ -32,7 +32,8 @@ FEATURES = ("launch_altitude_m", "launch_speed_kmh", "alt_diff_m", "target_altit
 MIN_RANGE_M, MAX_RANGE_M = 2000., 45000.
 MASS_FACTOR = 1.3  # Total / empty mass of the assumed target (fuel and missiles), as in training.
 # Game units with identical parameters share one network.
-ALIASES = {"cn_sd10a": "cn_pl12", "su_rvv_ae": "su_r_77", "us_aim_120b": "us_aim_120a", "us_aim_120c_7": "us_aim_120c_5"}
+ALIASES = {"cn_sd10a": "cn_pl12", "su_rvv_ae": "su_r_77", "su_rvv_sd": "su_r_77_1", "us_aim_120b": "us_aim_120a",
+           "us_aim_120c_7": "us_aim_120c_5"}
 
 
 def descriptors(model, altitude_m, speed_mps):

@@ -84,14 +84,16 @@ class PkModelTests(unittest.TestCase):
 
 
 class ShippedModelTests(unittest.TestCase):
-    @unittest.skipUnless((pk.DATA_DIR/"cn_pl12.json").exists(), "no distilled PL-12 model")
-    def test_pl12_head_on_close_shot_beats_a_long_cold_one(self):
-        advisor = OffenseAdvisor("cn_pl12", pk.Assumption())
-        close = advisor.model.evaluate(8000., 1200., advisor.assumption, 5000., 0.)
-        far_cold = advisor.model.evaluate(8000., 1200., advisor.assumption, 40000., 180.)
-        self.assertGreater(close["p_reach"], .9)
-        self.assertGreater(close["normal_tws"], far_cold["normal_tws"])
-        self.assertTrue(all(0. <= v <= 1. and math.isfinite(v) for v in close.values()))
+    @unittest.skipUnless(list(pk.DATA_DIR.glob("*.json")), "no distilled models")
+    def test_every_shipped_model_prefers_a_close_head_on_shot(self):
+        for path in sorted(pk.DATA_DIR.glob("*.json")):
+            with self.subTest(missile=path.stem):
+                advisor = OffenseAdvisor(path.stem, pk.Assumption())
+                close = advisor.model.evaluate(8000., 1200., advisor.assumption, 5000., 0.)
+                far_cold = advisor.model.evaluate(8000., 1200., advisor.assumption, 40000., 180.)
+                self.assertGreater(close["p_reach"], .9)
+                self.assertGreater(close["normal_tws"], far_cold["normal_tws"])
+                self.assertTrue(all(0. <= v <= 1. and math.isfinite(v) for v in close.values()))
 
 
 if __name__ == "__main__":

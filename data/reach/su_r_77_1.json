@@ -1,0 +1,4725 @@
+{
+ "version": 1,
+ "missile": "su_r_77_1",
+ "axes": {
+  "altitude_m": [
+   2000.0,
+   5000.0,
+   8000.0,
+   11000.0
+  ],
+  "speed_mps": [
+   200.0,
+   300.0,
+   400.0
+  ],
+  "delta_altitude_m": [
+   -4000.0,
+   0.0,
+   4000.0
+  ],
+  "aspect_deg": [
+   0.0,
+   90.0,
+   180.0
+  ]
+ },
+ "options": {
+  "target_speed_mps": 300.0,
+  "max_range_m": 120000.0,
+  "tolerance_m": 250.0,
+  "missile_sim": "../missle_sim"
+ },
+ "assumptions": "D: straight target, unlimited tracked launcher support; reach is not Pk.",
+ "cells": [
+  {
+   "point": [
+    2000.0,
+    200.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 74677.734375,
+   "samples": [
+    {
+     "range_m": 7467.7734375,
+     "flight_s": 7.7703492059823205,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18669.43359375,
+     "flight_s": 18.46855462290892,
+     "seeker_on_s": 3.8125000000000098,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 37338.8671875,
+     "flight_s": 46.42313083032121,
+     "seeker_on_s": 21.60416666666653,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 56008.30078125,
+     "flight_s": 80.86013701397304,
+     "seeker_on_s": 49.458333333334586,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 74677.734375,
+     "flight_s": 119.58751592556972,
+     "seeker_on_s": 85.54166666666467,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9640145149896853
+  },
+  {
+   "point": [
+    2000.0,
+    200.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 14480.46875,
+   "samples": [
+    {
+     "range_m": 1448.046875,
+     "flight_s": 4.966844006006769,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 3620.1171875,
+     "flight_s": 6.989662635126651,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7240.234375,
+     "flight_s": 10.78198059390049,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10860.3515625,
+     "flight_s": 16.261279256883956,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14480.46875,
+     "flight_s": 27.576139838201172,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.890531351964455
+  },
+  {
+   "point": [
+    2000.0,
+    200.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 9134.765625,
+   "samples": [
+    {
+     "range_m": 913.4765625,
+     "flight_s": 5.298196840487423,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 2283.69140625,
+     "flight_s": 7.25825726503071,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4567.3828125,
+     "flight_s": 10.73393982148103,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6851.07421875,
+     "flight_s": 15.945108362351215,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9134.765625,
+     "flight_s": 29.24163813245206,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.8112787220161408
+  },
+  {
+   "point": [
+    2000.0,
+    200.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 76084.765625,
+   "samples": [
+    {
+     "range_m": 7608.4765625,
+     "flight_s": 8.832278847789198,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19021.19140625,
+     "flight_s": 19.060764255002372,
+     "seeker_on_s": 4.333333333333339,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 38042.3828125,
+     "flight_s": 45.94391837233761,
+     "seeker_on_s": 22.437499999999815,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 57063.57421875,
+     "flight_s": 79.2795978482551,
+     "seeker_on_s": 50.729166666668064,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 76084.765625,
+     "flight_s": 119.98393153210111,
+     "seeker_on_s": 87.33333333333093,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0471286959946156
+  },
+  {
+   "point": [
+    2000.0,
+    200.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 16323.828125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.978885170011045,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8161.9140625,
+     "flight_s": 12.221426174559218,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12242.87109375,
+     "flight_s": 18.59437599700982,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16323.828125,
+     "flight_s": 32.95309447329253,
+     "seeker_on_s": 1.2499999999999998,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.0191737550194375
+  },
+  {
+   "point": [
+    2000.0,
+    200.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 10211.9140625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 9.378226297495113,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5105.95703125,
+     "flight_s": 10.798458412650115,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7658.935546875,
+     "flight_s": 20.150629823155228,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10211.9140625,
+     "flight_s": 38.973986967748246,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.3654617440188304
+  },
+  {
+   "point": [
+    2000.0,
+    300.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 77699.21875,
+   "samples": [
+    {
+     "range_m": 7769.921875,
+     "flight_s": 7.5114098070911615,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19424.8046875,
+     "flight_s": 18.079426500036977,
+     "seeker_on_s": 4.208333333333341,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 38849.609375,
+     "flight_s": 46.181130988543615,
+     "seeker_on_s": 21.89583333333318,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 58274.4140625,
+     "flight_s": 80.83289128909733,
+     "seeker_on_s": 49.8750000000013,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 77699.21875,
+     "flight_s": 119.55966641227776,
+     "seeker_on_s": 85.97916666666457,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0759581470047124
+  },
+  {
+   "point": [
+    2000.0,
+    300.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 16107.421875,
+   "samples": [
+    {
+     "range_m": 1610.7421875,
+     "flight_s": 4.461048011766293,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4026.85546875,
+     "flight_s": 6.736483094944042,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8053.7109375,
+     "flight_s": 10.70214170843647,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12080.56640625,
+     "flight_s": 16.48807438009832,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16107.421875,
+     "flight_s": 29.497512172692584,
+     "seeker_on_s": 0.3541666666666666,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.410581596021075
+  },
+  {
+   "point": [
+    2000.0,
+    300.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 10529.296875,
+   "samples": [
+    {
+     "range_m": 1052.9296875,
+     "flight_s": 4.31166809823255,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 2632.32421875,
+     "flight_s": 6.713986564085886,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5264.6484375,
+     "flight_s": 10.416858623162367,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7896.97265625,
+     "flight_s": 15.884847891495447,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10529.296875,
+     "flight_s": 30.53726589553334,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.8583534290082753
+  },
+  {
+   "point": [
+    2000.0,
+    300.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 80159.375,
+   "samples": [
+    {
+     "range_m": 8015.9375,
+     "flight_s": 8.427723550436165,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20039.84375,
+     "flight_s": 18.81122819051877,
+     "seeker_on_s": 4.937499999999997,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 40079.6875,
+     "flight_s": 46.09593275624421,
+     "seeker_on_s": 23.229166666666437,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60119.53125,
+     "flight_s": 79.4331386259876,
+     "seeker_on_s": 51.791666666668185,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 80159.375,
+     "flight_s": 119.84542873372848,
+     "seeker_on_s": 88.39583333333069,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.940738814009819
+  },
+  {
+   "point": [
+    2000.0,
+    300.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 18134.765625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.388411624416054,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4533.69140625,
+     "flight_s": 8.222466452298423,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9067.3828125,
+     "flight_s": 12.078710722560828,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13601.07421875,
+     "flight_s": 18.773876913677828,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18134.765625,
+     "flight_s": 33.878183533821336,
+     "seeker_on_s": 4.104166666666676,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.831954330962617
+  },
+  {
+   "point": [
+    2000.0,
+    300.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 12022.8515625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.536584243384045,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6011.42578125,
+     "flight_s": 12.014393203668424,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9017.138671875,
+     "flight_s": 18.635848187616023,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12022.8515625,
+     "flight_s": 35.670247915456,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.430223797040526
+  },
+  {
+   "point": [
+    2000.0,
+    400.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 80953.125,
+   "samples": [
+    {
+     "range_m": 8095.3125,
+     "flight_s": 7.3003022989652715,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20238.28125,
+     "flight_s": 17.786024210670256,
+     "seeker_on_s": 4.583333333333336,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 40476.5625,
+     "flight_s": 46.172120726567485,
+     "seeker_on_s": 22.312499999999822,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60714.84375,
+     "flight_s": 82.81309752451804,
+     "seeker_on_s": 51.08333333333477,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 80953.125,
+     "flight_s": 119.88154737176848,
+     "seeker_on_s": 86.7291666666644,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.1034947900334373
+  },
+  {
+   "point": [
+    2000.0,
+    400.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 17501.953125,
+   "samples": [
+    {
+     "range_m": 1750.1953125,
+     "flight_s": 3.9596703846758574,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4375.48828125,
+     "flight_s": 6.458384946922783,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8750.9765625,
+     "flight_s": 10.525948007793332,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13126.46484375,
+     "flight_s": 16.44722661986371,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17501.953125,
+     "flight_s": 28.993633171721818,
+     "seeker_on_s": 2.750000000000002,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.8599025389994495
+  },
+  {
+   "point": [
+    2000.0,
+    400.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 11923.828125,
+   "samples": [
+    {
+     "range_m": 1192.3828125,
+     "flight_s": 3.806562540837391,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 2980.95703125,
+     "flight_s": 6.420627173396377,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5961.9140625,
+     "flight_s": 10.228762096388296,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8942.87109375,
+     "flight_s": 15.95165518714843,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11923.828125,
+     "flight_s": 32.778032802273835,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.5895896619767882
+  },
+  {
+   "point": [
+    2000.0,
+    400.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 84460.3515625,
+   "samples": [
+    {
+     "range_m": 8446.03515625,
+     "flight_s": 8.12608079110155,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 21115.087890625,
+     "flight_s": 18.63361346652616,
+     "seeker_on_s": 5.43749999999999,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 42230.17578125,
+     "flight_s": 46.42206814074276,
+     "seeker_on_s": 24.083333333333055,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 63345.263671875,
+     "flight_s": 79.79603518423335,
+     "seeker_on_s": 52.958333333334984,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 84460.3515625,
+     "flight_s": 119.99348256113642,
+     "seeker_on_s": 89.58333333333042,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0560482410364784
+  },
+  {
+   "point": [
+    2000.0,
+    400.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 19945.703125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.8696035382649985,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4986.42578125,
+     "flight_s": 7.771025889257355,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9972.8515625,
+     "flight_s": 11.985032284956906,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14959.27734375,
+     "flight_s": 19.00492115259068,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19945.703125,
+     "flight_s": 35.19311619925533,
+     "seeker_on_s": 5.666666666666654,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.337506050011143
+  },
+  {
+   "point": [
+    2000.0,
+    400.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 13833.7890625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.772549428840839,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6916.89453125,
+     "flight_s": 11.191805143728521,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10375.341796875,
+     "flight_s": 18.972159693176568,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13833.7890625,
+     "flight_s": 38.48079727395097,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.1944773450377397
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 82423.046875,
+   "samples": [
+    {
+     "range_m": 8242.3046875,
+     "flight_s": 8.77517119104627,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20605.76171875,
+     "flight_s": 19.429983552839236,
+     "seeker_on_s": 5.458333333333323,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 41211.5234375,
+     "flight_s": 49.52624118144044,
+     "seeker_on_s": 24.187499999999716,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 61817.28515625,
+     "flight_s": 92.82051729327259,
+     "seeker_on_s": 57.00000000000211,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 82423.046875,
+     "flight_s": 119.92693666723903,
+     "seeker_on_s": 86.91666666666436,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.1666459849802777
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 17002.9296875,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.4182343167522,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4250.732421875,
+     "flight_s": 8.328905461515147,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8501.46484375,
+     "flight_s": 11.945695208132584,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12752.197265625,
+     "flight_s": 18.082626708237218,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17002.9296875,
+     "flight_s": 29.92566938577729,
+     "seeker_on_s": 2.8125000000000027,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.7249521949561313
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 11343.75,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 9.036514712848069,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5671.875,
+     "flight_s": 11.138945429579099,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8507.8125,
+     "flight_s": 16.90424052534814,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11343.75,
+     "flight_s": 31.071727155711113,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.9029143670341
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 88158.203125,
+   "samples": [
+    {
+     "range_m": 8815.8203125,
+     "flight_s": 8.65150425557772,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 22039.55078125,
+     "flight_s": 20.624174345749164,
+     "seeker_on_s": 6.749999999999972,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 44079.1015625,
+     "flight_s": 49.14169629712957,
+     "seeker_on_s": 27.14583333333288,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 66118.65234375,
+     "flight_s": 82.59225217295631,
+     "seeker_on_s": 56.000000000002,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 88158.203125,
+     "flight_s": 119.74435556586859,
+     "seeker_on_s": 90.47916666666355,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9602865369524807
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 19826.171875,
+   "samples": [
+    {
+     "range_m": 1982.6171875,
+     "flight_s": 5.4618671215734205,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4956.54296875,
+     "flight_s": 8.080069118169156,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9913.0859375,
+     "flight_s": 13.384388076623255,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14869.62890625,
+     "flight_s": 20.966364779626623,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19826.171875,
+     "flight_s": 36.06780874768466,
+     "seeker_on_s": 6.437499999999976,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.389720748004038
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 13085.9375,
+   "samples": [
+    {
+     "range_m": 1308.59375,
+     "flight_s": 6.118617774863906,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 3271.484375,
+     "flight_s": 8.35436215252767,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6542.96875,
+     "flight_s": 13.606342049504649,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9814.453125,
+     "flight_s": 21.04504433308211,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13085.9375,
+     "flight_s": 40.1723796127967,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.226460001023952
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 92383.203125,
+   "samples": [
+    {
+     "range_m": 9238.3203125,
+     "flight_s": 9.631548364812273,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23095.80078125,
+     "flight_s": 21.809723282555332,
+     "seeker_on_s": 7.687499999999958,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 46191.6015625,
+     "flight_s": 50.26298220962337,
+     "seeker_on_s": 29.395833333332753,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 69287.40234375,
+     "flight_s": 82.60691291033069,
+     "seeker_on_s": 59.250000000002366,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 92383.203125,
+     "flight_s": 119.99458944101559,
+     "seeker_on_s": 94.10416666666272,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.054054123000242
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 22662.109375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 9.034909108118974,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5665.52734375,
+     "flight_s": 9.414633808583668,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11331.0546875,
+     "flight_s": 15.280294169355331,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16996.58203125,
+     "flight_s": 24.332864049479458,
+     "seeker_on_s": 2.8125000000000027,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 22662.109375,
+     "flight_s": 44.04072040425643,
+     "seeker_on_s": 9.208333333333321,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.5988489069859497
+  },
+  {
+   "point": [
+    5000.0,
+    200.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 15191.9921875,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 9.11589407870077,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7595.99609375,
+     "flight_s": 16.959818253230143,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11393.994140625,
+     "flight_s": 25.98991891544872,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 15191.9921875,
+     "flight_s": 49.282997117595514,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.3889484720421024
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 85818.5546875,
+   "samples": [
+    {
+     "range_m": 8581.85546875,
+     "flight_s": 8.435010789880717,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 21454.638671875,
+     "flight_s": 19.09176370779914,
+     "seeker_on_s": 5.729166666666653,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 42909.27734375,
+     "flight_s": 49.8248890597104,
+     "seeker_on_s": 24.645833333333023,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 64363.916015625,
+     "flight_s": 95.26509930003313,
+     "seeker_on_s": 58.93750000000233,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 85818.5546875,
+     "flight_s": 119.91322272410893,
+     "seeker_on_s": 87.24999999999761,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9838767600012943
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 18813.8671875,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.977767431846993,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4703.466796875,
+     "flight_s": 7.89645496432798,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9406.93359375,
+     "flight_s": 11.884252585606978,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14110.400390625,
+     "flight_s": 18.34091869358803,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18813.8671875,
+     "flight_s": 31.975849345348852,
+     "seeker_on_s": 4.874999999999998,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.116278872010298
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 12701.953125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.167385151442646,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6350.9765625,
+     "flight_s": 10.91481501725257,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9526.46484375,
+     "flight_s": 16.82606449712718,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12701.953125,
+     "flight_s": 31.744010830844786,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.7660063820076175
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 93039.0625,
+   "samples": [
+    {
+     "range_m": 9303.90625,
+     "flight_s": 8.470052375929761,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23259.765625,
+     "flight_s": 20.505418066165547,
+     "seeker_on_s": 7.166666666666632,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 46519.53125,
+     "flight_s": 49.50792690043001,
+     "seeker_on_s": 28.02083333333283,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 69779.296875,
+     "flight_s": 83.13000025021593,
+     "seeker_on_s": 57.166666666668796,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 93039.0625,
+     "flight_s": 119.95117751927572,
+     "seeker_on_s": 91.49999999999665,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.002285384980496
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 21917.96875,
+   "samples": [
+    {
+     "range_m": 2191.796875,
+     "flight_s": 5.044291982203026,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5479.4921875,
+     "flight_s": 7.847497665132957,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10958.984375,
+     "flight_s": 13.340713825159954,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16438.4765625,
+     "flight_s": 21.278201499947926,
+     "seeker_on_s": 1.2083333333333333,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 21917.96875,
+     "flight_s": 37.78577312701629,
+     "seeker_on_s": 7.77083333333329,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.1182585040223785
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 14945.3125,
+   "samples": [
+    {
+     "range_m": 1494.53125,
+     "flight_s": 5.051619341473319,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 3736.328125,
+     "flight_s": 7.841128664867462,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7472.65625,
+     "flight_s": 13.13160648700987,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11208.984375,
+     "flight_s": 21.064783130858206,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14945.3125,
+     "flight_s": 40.951657621245594,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.932272664969787
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 98268.75,
+   "samples": [
+    {
+     "range_m": 9826.875,
+     "flight_s": 9.325594183471345,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 24567.1875,
+     "flight_s": 21.759661523648056,
+     "seeker_on_s": 8.249999999999961,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 49134.375,
+     "flight_s": 50.76656490184396,
+     "seeker_on_s": 30.583333333332686,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 73701.5625,
+     "flight_s": 82.84497117708486,
+     "seeker_on_s": 60.562500000002515,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 98268.75,
+     "flight_s": 119.67072972327114,
+     "seeker_on_s": 95.12499999999582,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.065811757987831
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 25152.1484375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.480196100317837,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6288.037109375,
+     "flight_s": 9.088267684190926,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12576.07421875,
+     "flight_s": 15.273679211850368,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18864.111328125,
+     "flight_s": 24.810911898867886,
+     "seeker_on_s": 4.937499999999997,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25152.1484375,
+     "flight_s": 46.62941735377533,
+     "seeker_on_s": 10.916666666666703,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.9713156910147518
+  },
+  {
+   "point": [
+    5000.0,
+    300.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 17682.03125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.347626723535098,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4420.5078125,
+     "flight_s": 8.381664635445299,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8841.015625,
+     "flight_s": 15.846630845677888,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13261.5234375,
+     "flight_s": 26.135538055381204,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17682.03125,
+     "flight_s": 51.441516047458634,
+     "seeker_on_s": 5.645833333333321,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.3713716049678624
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 89214.0625,
+   "samples": [
+    {
+     "range_m": 8921.40625,
+     "flight_s": 8.14450030402481,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 22303.515625,
+     "flight_s": 18.795235404308627,
+     "seeker_on_s": 5.979166666666649,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 44607.03125,
+     "flight_s": 50.151041005166626,
+     "seeker_on_s": 25.10416666666633,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 66910.546875,
+     "flight_s": 88.68769752361634,
+     "seeker_on_s": 56.08333333333534,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 89214.0625,
+     "flight_s": 119.74822473313888,
+     "seeker_on_s": 87.43749999999757,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9890461260220036
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 20398.4375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.584663950191406,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5099.609375,
+     "flight_s": 7.536225623424154,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10199.21875,
+     "flight_s": 11.720669019156444,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 15298.828125,
+     "flight_s": 18.343777019587083,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20398.4375,
+     "flight_s": 32.041375728423304,
+     "seeker_on_s": 5.958333333333316,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.070198269037064
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 14060.15625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.442141880357328,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7030.078125,
+     "flight_s": 10.73612629549367,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10545.1171875,
+     "flight_s": 16.797963019391993,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14060.15625,
+     "flight_s": 32.83468010409909,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.6663762939861044
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 97919.921875,
+   "samples": [
+    {
+     "range_m": 9791.9921875,
+     "flight_s": 8.303064443906269,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 24479.98046875,
+     "flight_s": 20.401352707595,
+     "seeker_on_s": 7.541666666666627,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 48959.9609375,
+     "flight_s": 49.8529110537451,
+     "seeker_on_s": 28.812499999999453,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 73439.94140625,
+     "flight_s": 83.53090884470525,
+     "seeker_on_s": 58.187500000002245,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 97919.921875,
+     "flight_s": 119.8224383676672,
+     "seeker_on_s": 92.16666666666316,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9346553049981594
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 23912.923177083332,
+   "samples": [
+    {
+     "range_m": 2391.2923177083335,
+     "flight_s": 4.629878049068172,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5978.230794270833,
+     "flight_s": 7.62848783892643,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11956.461588541666,
+     "flight_s": 13.273698748352704,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17934.6923828125,
+     "flight_s": 21.495059304745386,
+     "seeker_on_s": 3.312500000000006,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23912.923177083332,
+     "flight_s": 38.95763246584032,
+     "seeker_on_s": 8.916666666666647,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.149941023963038
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 16804.6875,
+   "samples": [
+    {
+     "range_m": 1680.46875,
+     "flight_s": 4.566950287184884,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4201.171875,
+     "flight_s": 7.579805661240863,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8402.34375,
+     "flight_s": 12.998946239893964,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12603.515625,
+     "flight_s": 21.21220788880308,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16804.6875,
+     "flight_s": 41.785767624007406,
+     "seeker_on_s": 3.166666666666672,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.4851884479867294
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 104607.03125,
+   "samples": [
+    {
+     "range_m": 10460.703125,
+     "flight_s": 9.122878627031788,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 26151.7578125,
+     "flight_s": 21.817831284838704,
+     "seeker_on_s": 8.83333333333331,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 52303.515625,
+     "flight_s": 51.50428460140842,
+     "seeker_on_s": 31.89583333333261,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 78455.2734375,
+     "flight_s": 83.35731066645734,
+     "seeker_on_s": 62.04166666666935,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 104607.03125,
+     "flight_s": 119.73817809632352,
+     "seeker_on_s": 96.4166666666622,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0109569120104425
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 27642.1875,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.02167689030765,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6910.546875,
+     "flight_s": 8.82308508548749,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13821.09375,
+     "flight_s": 15.303325132887894,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20731.640625,
+     "flight_s": 25.311196991128714,
+     "seeker_on_s": 6.291666666666645,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 27642.1875,
+     "flight_s": 50.20427637052787,
+     "seeker_on_s": 12.562500000000083,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.397283805999905
+  },
+  {
+   "point": [
+    5000.0,
+    400.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 20398.4375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.638902099701486,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5099.609375,
+     "flight_s": 8.434632333178008,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10199.21875,
+     "flight_s": 15.986575913238315,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 15298.828125,
+     "flight_s": 27.062863427628436,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20398.4375,
+     "flight_s": 56.52957450946152,
+     "seeker_on_s": 8.18749999999996,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.621761112008244
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 98268.75,
+   "samples": [
+    {
+     "range_m": 9826.875,
+     "flight_s": 9.597652701340877,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 24567.1875,
+     "flight_s": 21.84672899079062,
+     "seeker_on_s": 8.249999999999961,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 49134.375,
+     "flight_s": 53.57137735363949,
+     "seeker_on_s": 30.583333333332686,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 73701.5625,
+     "flight_s": 86.52677976180881,
+     "seeker_on_s": 60.10416666666913,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 98268.75,
+     "flight_s": 119.96504895337131,
+     "seeker_on_s": 91.9791666666632,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.123119908035733
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 23793.9453125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.548417551716323,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5948.486328125,
+     "flight_s": 9.14889463744048,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11896.97265625,
+     "flight_s": 15.16221596960689,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17845.458984375,
+     "flight_s": 23.896480054203252,
+     "seeker_on_s": 4.145833333333342,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23793.9453125,
+     "flight_s": 40.4209520384875,
+     "seeker_on_s": 10.083333333333346,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.9135116359684616
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 15871.09375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.92753200080998,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7935.546875,
+     "flight_s": 14.065187558627386,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11903.3203125,
+     "flight_s": 22.15381937742795,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 15871.09375,
+     "flight_s": 41.7761850877815,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.3466096320189536
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 106751.953125,
+   "samples": [
+    {
+     "range_m": 10675.1953125,
+     "flight_s": 9.907330271983454,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 26687.98828125,
+     "flight_s": 23.705760983068895,
+     "seeker_on_s": 10.041666666666679,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 53375.9765625,
+     "flight_s": 53.60799838002458,
+     "seeker_on_s": 34.3541666666662,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 80063.96484375,
+     "flight_s": 85.41080976484416,
+     "seeker_on_s": 64.06250000000288,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 106751.953125,
+     "flight_s": 119.87834381825749,
+     "seeker_on_s": 96.8541666666621,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0745234710047953
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 28193.359375,
+   "samples": [
+    {
+     "range_m": 2819.3359375,
+     "flight_s": 6.222056995750773,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7048.33984375,
+     "flight_s": 9.86176650171004,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14096.6796875,
+     "flight_s": 17.558728950527225,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 21145.01953125,
+     "flight_s": 28.513807421100594,
+     "seeker_on_s": 7.583333333333293,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 28193.359375,
+     "flight_s": 50.68469664026249,
+     "seeker_on_s": 14.708333333333478,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.046334781043697
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 19593.75,
+   "samples": [
+    {
+     "range_m": 1959.375,
+     "flight_s": 7.084259860388313,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4898.4375,
+     "flight_s": 10.250116596531567,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9796.875,
+     "flight_s": 18.168323531032215,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14695.3125,
+     "flight_s": 29.573634120845796,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19593.75,
+     "flight_s": 56.38878772538046,
+     "seeker_on_s": 8.770833333333309,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.639157468045596
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 110945.3125,
+   "samples": [
+    {
+     "range_m": 11094.53125,
+     "flight_s": 10.67238590439186,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 27736.328125,
+     "flight_s": 24.73219746438003,
+     "seeker_on_s": 11.06250000000004,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 55472.65625,
+     "flight_s": 53.51244573740398,
+     "seeker_on_s": 36.20833333333308,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 83208.984375,
+     "flight_s": 85.33934687642544,
+     "seeker_on_s": 66.6250000000023,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 110945.3125,
+     "flight_s": 119.77790507705201,
+     "seeker_on_s": 99.7708333333281,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.946340174006764
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 32622.265625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 9.29870959041883,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8155.56640625,
+     "flight_s": 11.307484535994364,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16311.1328125,
+     "flight_s": 20.306428915223282,
+     "seeker_on_s": 1.2083333333333333,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 24466.69921875,
+     "flight_s": 33.61360238301813,
+     "seeker_on_s": 10.770833333333366,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 32622.265625,
+     "flight_s": 63.81984492868215,
+     "seeker_on_s": 20.187499999999943,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.1033550170250237
+  },
+  {
+   "point": [
+    8000.0,
+    200.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 25152.1484375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.958566338560482,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6288.037109375,
+     "flight_s": 13.209690544628673,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12576.07421875,
+     "flight_s": 24.646987068466057,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18864.111328125,
+     "flight_s": 41.21233868045529,
+     "seeker_on_s": 7.937499999999955,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25152.1484375,
+     "flight_s": 81.59887997641044,
+     "seeker_on_s": 17.479166666666764,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.434374050993938
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 103701.5625,
+   "samples": [
+    {
+     "range_m": 10370.15625,
+     "flight_s": 9.350497699004443,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25925.390625,
+     "flight_s": 21.79041888246479,
+     "seeker_on_s": 8.66666666666664,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 51850.78125,
+     "flight_s": 54.82778321430506,
+     "seeker_on_s": 31.770833333332618,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 77776.171875,
+     "flight_s": 86.70956344262106,
+     "seeker_on_s": 61.04166666666924,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 103701.5625,
+     "flight_s": 119.87490478711025,
+     "seeker_on_s": 92.62499999999639,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9330410420079716
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 26057.6171875,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.242726184118451,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6514.404296875,
+     "flight_s": 8.887268636321078,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13028.80859375,
+     "flight_s": 15.078634111791914,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19543.212890625,
+     "flight_s": 24.104668654264376,
+     "seeker_on_s": 5.5833333333333215,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 26057.6171875,
+     "flight_s": 41.683375418002676,
+     "seeker_on_s": 11.37500000000005,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.3465927219949663
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 17682.03125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.058076497116158,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4420.5078125,
+     "flight_s": 8.231658963967794,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8841.015625,
+     "flight_s": 13.80569684665153,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 13261.5234375,
+     "flight_s": 22.055181771944806,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17682.03125,
+     "flight_s": 42.390384225317895,
+     "seeker_on_s": 5.166666666666661,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.0227159030037
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 113724.609375,
+   "samples": [
+    {
+     "range_m": 11372.4609375,
+     "flight_s": 9.773578628506067,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 28431.15234375,
+     "flight_s": 23.78144477281219,
+     "seeker_on_s": 10.666666666666696,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 56862.3046875,
+     "flight_s": 54.19728120537908,
+     "seeker_on_s": 35.54166666666634,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 85293.45703125,
+     "flight_s": 85.81201911138477,
+     "seeker_on_s": 65.35416666666926,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 113724.609375,
+     "flight_s": 119.80139930476105,
+     "seeker_on_s": 97.8749999999952,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0140319500351325
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 30982.421875,
+   "samples": [
+    {
+     "range_m": 3098.2421875,
+     "flight_s": 5.870661517319618,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7745.60546875,
+     "flight_s": 9.63942432807555,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 15491.2109375,
+     "flight_s": 17.55423353411116,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23236.81640625,
+     "flight_s": 28.942957693469705,
+     "seeker_on_s": 8.770833333333309,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30982.421875,
+     "flight_s": 53.08598696009944,
+     "seeker_on_s": 16.47916666666682,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.6255795400356874
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 22615.234375,
+   "samples": [
+    {
+     "range_m": 2261.5234375,
+     "flight_s": 6.085605743065067,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5653.80859375,
+     "flight_s": 10.068076338686504,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11307.6171875,
+     "flight_s": 18.17236843093146,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16961.42578125,
+     "flight_s": 30.596151975231034,
+     "seeker_on_s": 4.229166666666674,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 22615.234375,
+     "flight_s": 61.764395832802464,
+     "seeker_on_s": 11.541666666666721,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.0169907700037584
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 119094.53125,
+   "samples": [
+    {
+     "range_m": 11909.453125,
+     "flight_s": 10.456838499689349,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 29773.6328125,
+     "flight_s": 24.893520235147044,
+     "seeker_on_s": 11.833333333333396,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 59547.265625,
+     "flight_s": 54.17451467936991,
+     "seeker_on_s": 37.60416666666657,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 89320.8984375,
+     "flight_s": 85.8902519632318,
+     "seeker_on_s": 68.20833333333528,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 119094.53125,
+     "flight_s": 119.90561029005693,
+     "seeker_on_s": 101.16666666666111,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0266100029693916
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 48241.6015625,
+   "samples": [
+    {
+     "range_m": 4824.16015625,
+     "flight_s": 8.4502242750245,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12060.400390625,
+     "flight_s": 13.84985464409168,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 24120.80078125,
+     "flight_s": 29.139650662946554,
+     "seeker_on_s": 9.583333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 36181.201171875,
+     "flight_s": 53.22579215942465,
+     "seeker_on_s": 23.24999999999977,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 48241.6015625,
+     "flight_s": 92.02248140643403,
+     "seeker_on_s": 40.66666666666692,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.744121232011821
+  },
+  {
+   "point": [
+    8000.0,
+    300.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 30132.2265625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.249586958012147,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7533.056640625,
+     "flight_s": 13.034261911188565,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 15066.11328125,
+     "flight_s": 25.280749568375693,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 22599.169921875,
+     "flight_s": 44.832160484713775,
+     "seeker_on_s": 11.666666666666725,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30132.2265625,
+     "flight_s": 92.2127171315026,
+     "seeker_on_s": 23.520833333333087,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.3370170579873957
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 109360.7421875,
+   "samples": [
+    {
+     "range_m": 10936.07421875,
+     "flight_s": 9.156836933169027,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 27340.185546875,
+     "flight_s": 21.811332085141338,
+     "seeker_on_s": 9.104166666666652,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 54680.37109375,
+     "flight_s": 56.24457042032199,
+     "seeker_on_s": 33.06249999999939,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 82020.556640625,
+     "flight_s": 86.95609717354758,
+     "seeker_on_s": 61.97916666666934,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 109360.7421875,
+     "flight_s": 119.7580800986643,
+     "seeker_on_s": 93.27083333332958,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.09676970198052
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 28321.2890625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.997907886516647,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7080.322265625,
+     "flight_s": 8.65029744620049,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14160.64453125,
+     "flight_s": 15.022342931455357,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 21240.966796875,
+     "flight_s": 24.348484153174216,
+     "seeker_on_s": 6.60416666666664,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 28321.2890625,
+     "flight_s": 43.22216034811866,
+     "seeker_on_s": 12.583333333333417,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.9759318020078354
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 19492.96875,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.355642459189625,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 4873.2421875,
+     "flight_s": 7.898228306184069,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9746.484375,
+     "flight_s": 13.620343056205657,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14619.7265625,
+     "flight_s": 22.037573262432737,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19492.96875,
+     "flight_s": 43.23687803637095,
+     "seeker_on_s": 6.6874999999999725,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.3843176410300657
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 9.60960675941627,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 23.708679381600824,
+     "seeker_on_s": 11.104166666666709,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 54.325009740930966,
+     "seeker_on_s": 36.31249999999976,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 85.46415075586738,
+     "seeker_on_s": 65.8958333333358,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 118.65901730865072,
+     "seeker_on_s": 97.81249999999521,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.6635599060100503
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 36909.1796875,
+   "samples": [
+    {
+     "range_m": 3690.91796875,
+     "flight_s": 5.782724506437947,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9227.294921875,
+     "flight_s": 10.104772990723479,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18454.58984375,
+     "flight_s": 19.421294438268625,
+     "seeker_on_s": 3.916666666666677,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 27681.884765625,
+     "flight_s": 33.914517685761744,
+     "seeker_on_s": 11.937500000000066,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 36909.1796875,
+     "flight_s": 61.29980563297659,
+     "seeker_on_s": 22.08333333333317,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.4410533740301616
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 25404.296875,
+   "samples": [
+    {
+     "range_m": 2540.4296875,
+     "flight_s": 5.653058075226105,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6351.07421875,
+     "flight_s": 9.728248507396804,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12702.1484375,
+     "flight_s": 18.21304641110905,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19053.22265625,
+     "flight_s": 31.060755085302546,
+     "seeker_on_s": 6.499999999999975,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25404.296875,
+     "flight_s": 60.85886270456329,
+     "seeker_on_s": 13.770833333333451,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.2445259999949485
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 9.881523117893042,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 23.5114191051594,
+     "seeker_on_s": 11.27083333333338,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 51.66462354515373,
+     "seeker_on_s": 35.645833333333016,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 80.67343334278492,
+     "seeker_on_s": 64.1458333333362,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 112.03174569043803,
+     "seeker_on_s": 94.6041666666626,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.7596309829968959
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 77216.6015625,
+   "samples": [
+    {
+     "range_m": 7721.66015625,
+     "flight_s": 9.267601024751004,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19304.150390625,
+     "flight_s": 20.05470232910105,
+     "seeker_on_s": 4.874999999999998,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 38608.30078125,
+     "flight_s": 50.82974558911894,
+     "seeker_on_s": 24.04166666666639,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 57912.451171875,
+     "flight_s": 96.19224411691165,
+     "seeker_on_s": 50.875000000001414,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 77216.6015625,
+     "flight_s": 119.89815424531658,
+     "seeker_on_s": 80.66666666666578,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.151435028994456
+  },
+  {
+   "point": [
+    8000.0,
+    400.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 35791.40625,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.584077953758134,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8947.8515625,
+     "flight_s": 13.175747068047647,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17895.703125,
+     "flight_s": 27.04573098298266,
+     "seeker_on_s": 5.124999999999995,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 26843.5546875,
+     "flight_s": 49.18513546516845,
+     "seeker_on_s": 15.791666666666842,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 35791.40625,
+     "flight_s": 100.18726291638035,
+     "seeker_on_s": 30.291666666666035,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.8572888299822807
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 118415.4296875,
+   "samples": [
+    {
+     "range_m": 11841.54296875,
+     "flight_s": 10.736316327583191,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 29603.857421875,
+     "flight_s": 24.90620815172477,
+     "seeker_on_s": 11.687500000000059,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 59207.71484375,
+     "flight_s": 58.39485691640062,
+     "seeker_on_s": 37.99999999999995,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 88811.572265625,
+     "flight_s": 87.60763810217023,
+     "seeker_on_s": 67.0625000000022,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 118415.4296875,
+     "flight_s": 119.86912314004695,
+     "seeker_on_s": 98.1666666666618,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9355453929747455
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 34659.5703125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.844514725703725,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 8664.892578125,
+     "flight_s": 11.269448097110308,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17329.78515625,
+     "flight_s": 20.485433777967593,
+     "seeker_on_s": 3.3750000000000067,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25994.677734375,
+     "flight_s": 33.369261025252904,
+     "seeker_on_s": 11.937500000000066,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 34659.5703125,
+     "flight_s": 57.87076692177392,
+     "seeker_on_s": 21.270833333333215,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.394864454981871
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 23114.84375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.936388021663646,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 5778.7109375,
+     "flight_s": 10.551150988454479,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11557.421875,
+     "flight_s": 18.74807954653457,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 17336.1328125,
+     "flight_s": 30.524633999289016,
+     "seeker_on_s": 5.395833333333324,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23114.84375,
+     "flight_s": 58.110703741098,
+     "seeker_on_s": 12.416666666666746,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.45896693400573
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 10.727331191419474,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 25.18810950092791,
+     "seeker_on_s": 12.33333333333341,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 53.35230616568936,
+     "seeker_on_s": 37.5624999999999,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 83.1592940441378,
+     "seeker_on_s": 66.1875000000024,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 114.20995413155752,
+     "seeker_on_s": 96.39583333332887,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.9763048770255409
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 72121.09375,
+   "samples": [
+    {
+     "range_m": 7212.109375,
+     "flight_s": 9.870858021636938,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18030.2734375,
+     "flight_s": 20.91004875776816,
+     "seeker_on_s": 4.354166666666672,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 36060.546875,
+     "flight_s": 48.52814071677505,
+     "seeker_on_s": 23.499999999999755,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 54090.8203125,
+     "flight_s": 84.12363780572747,
+     "seeker_on_s": 47.89583333333441,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 72121.09375,
+     "flight_s": 119.45057993141911,
+     "seeker_on_s": 75.95833333333351,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.138557039957959
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 36095.703125,
+   "samples": [
+    {
+     "range_m": 3609.5703125,
+     "flight_s": 8.731679275384463,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9023.92578125,
+     "flight_s": 15.888320115098923,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18047.8515625,
+     "flight_s": 31.425545460884752,
+     "seeker_on_s": 6.749999999999972,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 27071.77734375,
+     "flight_s": 55.02095075970736,
+     "seeker_on_s": 18.937500000000014,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 36095.703125,
+     "flight_s": 99.90996900328395,
+     "seeker_on_s": 34.95833333333294,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.6352419769973494
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 112982.6171875,
+   "samples": [
+    {
+     "range_m": 11298.26171875,
+     "flight_s": 10.789757857636896,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 28245.654296875,
+     "flight_s": 23.792528336409532,
+     "seeker_on_s": 11.229166666666712,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 56491.30859375,
+     "flight_s": 49.057631845454374,
+     "seeker_on_s": 34.3541666666662,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 84736.962890625,
+     "flight_s": 76.264581380033,
+     "seeker_on_s": 60.91666666666922,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 112982.6171875,
+     "flight_s": 119.27800366808174,
+     "seeker_on_s": 93.16666666666293,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.89284405100625
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 81291.2109375,
+   "samples": [
+    {
+     "range_m": 8129.12109375,
+     "flight_s": 11.152021892613345,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20322.802734375,
+     "flight_s": 23.40698760419564,
+     "seeker_on_s": 6.854166666666637,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 40645.60546875,
+     "flight_s": 53.397583791681996,
+     "seeker_on_s": 29.35416666666609,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60968.408203125,
+     "flight_s": 84.64831131728086,
+     "seeker_on_s": 57.50000000000217,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 81291.2109375,
+     "flight_s": 119.7161891010178,
+     "seeker_on_s": 89.27083333333049,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.105974665028043
+  },
+  {
+   "point": [
+    11000.0,
+    200.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 51410.7421875,
+   "samples": [
+    {
+     "range_m": 5141.07421875,
+     "flight_s": 9.82025951416753,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12852.685546875,
+     "flight_s": 23.20502614564201,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25705.37109375,
+     "flight_s": 47.199929900169394,
+     "seeker_on_s": 17.083333333333453,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 38558.056640625,
+     "flight_s": 80.23223544078415,
+     "seeker_on_s": 39.75000000000015,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 51410.7421875,
+     "flight_s": 119.25421562413666,
+     "seeker_on_s": 68.62500000000185,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.2760914670070633
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 10.20093719723766,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 23.73146794343499,
+     "seeker_on_s": 11.250000000000046,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 56.25131524372543,
+     "seeker_on_s": 36.58333333333312,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 83.31096848861736,
+     "seeker_on_s": 63.79166666666955,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 113.488691081096,
+     "seeker_on_s": 92.95833333332965,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.719453789992258
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 37602.34375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.784106260438524,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 9400.5859375,
+     "flight_s": 11.001705701192837,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18801.171875,
+     "flight_s": 20.320759636792285,
+     "seeker_on_s": 4.791666666666666,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 28201.7578125,
+     "flight_s": 33.46492078488688,
+     "seeker_on_s": 12.979166666666762,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 37602.34375,
+     "flight_s": 58.911700535971015,
+     "seeker_on_s": 22.791666666666462,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.5413049609633163
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 25604.8828125,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.027619750831233,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 6401.220703125,
+     "flight_s": 10.146786011350668,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 12802.44140625,
+     "flight_s": 18.42267623194888,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 19203.662109375,
+     "flight_s": 30.404404200748893,
+     "seeker_on_s": 6.937499999999969,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25604.8828125,
+     "flight_s": 60.17954606841773,
+     "seeker_on_s": 14.041666666666792,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 1.9503855019574985
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 10.08648646086621,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 23.57060397469737,
+     "seeker_on_s": 11.541666666666721,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 50.119713193658356,
+     "seeker_on_s": 35.10416666666629,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 77.54909857246533,
+     "seeker_on_s": 61.64583333333597,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 106.08150336180809,
+     "seeker_on_s": 89.45833333333044,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.6632019599783234
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 82928.7109375,
+   "samples": [
+    {
+     "range_m": 8292.87109375,
+     "flight_s": 9.938475364473817,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20732.177734375,
+     "flight_s": 22.01420853772586,
+     "seeker_on_s": 6.60416666666664,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 41464.35546875,
+     "flight_s": 51.6117338768804,
+     "seeker_on_s": 27.33333333333287,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 62196.533203125,
+     "flight_s": 86.83367036062192,
+     "seeker_on_s": 53.89583333333509,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 82928.7109375,
+     "flight_s": 119.90123372426869,
+     "seeker_on_s": 83.16666666666521,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.699511089012958
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 47484.375,
+   "samples": [
+    {
+     "range_m": 4748.4375,
+     "flight_s": 8.702004319715652,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 11871.09375,
+     "flight_s": 17.553759350831527,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23742.1875,
+     "flight_s": 38.22755333095334,
+     "seeker_on_s": 12.458333333333414,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 35613.28125,
+     "flight_s": 70.15047100825628,
+     "seeker_on_s": 29.47916666666608,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 47484.375,
+     "flight_s": 118.33501520796905,
+     "seeker_on_s": 51.47916666666815,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.900914424972143
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 10.43107028141624,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 23.632113688230607,
+     "seeker_on_s": 11.75000000000006,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 48.94701878840709,
+     "seeker_on_s": 34.9374999999996,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 75.6825025100764,
+     "seeker_on_s": 61.291666666669265,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 112.62027896853921,
+     "seeker_on_s": 92.854166666663,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.6640127890277654
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 91930.46875,
+   "samples": [
+    {
+     "range_m": 9193.046875,
+     "flight_s": 11.037919162018214,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 22982.6171875,
+     "flight_s": 24.18798109339083,
+     "seeker_on_s": 8.4583333333333,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 45965.234375,
+     "flight_s": 54.86520759703451,
+     "seeker_on_s": 32.541666666665996,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 68947.8515625,
+     "flight_s": 85.42696527041683,
+     "seeker_on_s": 61.875000000002665,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 91930.46875,
+     "flight_s": 119.97300645128738,
+     "seeker_on_s": 93.66666666666282,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.309257743007038
+  },
+  {
+   "point": [
+    11000.0,
+    300.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 64540.0390625,
+   "samples": [
+    {
+     "range_m": 6454.00390625,
+     "flight_s": 11.572931453069744,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 16135.009765625,
+     "flight_s": 24.192555377659243,
+     "seeker_on_s": 1.6041666666666652,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 32270.01953125,
+     "flight_s": 53.68504584180543,
+     "seeker_on_s": 24.291666666666377,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 48405.029296875,
+     "flight_s": 88.80662232732439,
+     "seeker_on_s": 52.04166666666821,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 64540.0390625,
+     "flight_s": 119.93162180494177,
+     "seeker_on_s": 84.18749999999831,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.1277302089729346
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    -4000.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 9.634206363416585,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 22.360491751519152,
+     "seeker_on_s": 10.604166666666694,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 53.12594683799156,
+     "seeker_on_s": 34.47916666666622,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 78.43313836944746,
+     "seeker_on_s": 59.87500000000244,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 106.3449965966348,
+     "seeker_on_s": 86.93749999999768,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.6730632520047948
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    -4000.0,
+    90.0
+   ],
+   "rmax_m": 40771.484375,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 8.638491996574652,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 10192.87109375,
+     "flight_s": 10.807253304406133,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 20385.7421875,
+     "flight_s": 20.333923442799914,
+     "seeker_on_s": 5.833333333333318,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30578.61328125,
+     "flight_s": 33.897446752452865,
+     "seeker_on_s": 14.062500000000126,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 40771.484375,
+     "flight_s": 62.0592114684658,
+     "seeker_on_s": 24.499999999999698,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.545524225977715
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    -4000.0,
+    180.0
+   ],
+   "rmax_m": 28094.921875,
+   "samples": [
+    {
+     "range_m": 4100.0,
+     "flight_s": 7.331853593542423,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 7023.73046875,
+     "flight_s": 9.855327141743624,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14047.4609375,
+     "flight_s": 18.21179550748823,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 21071.19140625,
+     "flight_s": 30.387739923895012,
+     "seeker_on_s": 8.062499999999956,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 28094.921875,
+     "flight_s": 61.33128498383588,
+     "seeker_on_s": 15.583333333333503,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.220782347023487
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    0.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 9.457816008554218,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 22.141199836789195,
+     "seeker_on_s": 10.854166666666702,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 47.07701696245772,
+     "seeker_on_s": 32.95833333333271,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 72.66469213305305,
+     "seeker_on_s": 57.68750000000219,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 99.05865379604127,
+     "seeker_on_s": 83.47916666666514,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.5949105639592744
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    0.0,
+    90.0
+   ],
+   "rmax_m": 93368.32682291667,
+   "samples": [
+    {
+     "range_m": 9336.832682291668,
+     "flight_s": 9.974568082264327,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 23342.081705729168,
+     "flight_s": 22.959766159924033,
+     "seeker_on_s": 8.104166666666623,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 46684.163411458336,
+     "flight_s": 53.901926683738786,
+     "seeker_on_s": 30.645833333332682,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 70026.2451171875,
+     "flight_s": 88.15708990037558,
+     "seeker_on_s": 58.583333333335624,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 93368.32682291667,
+     "flight_s": 119.84693595254961,
+     "seeker_on_s": 88.27083333333071,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.447380859986879
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    0.0,
+    180.0
+   ],
+   "rmax_m": 57943.359375,
+   "samples": [
+    {
+     "range_m": 5794.3359375,
+     "flight_s": 8.986938005157077,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 14485.83984375,
+     "flight_s": 18.988124809785667,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 28971.6796875,
+     "flight_s": 43.40055198995997,
+     "seeker_on_s": 17.25000000000011,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 43457.51953125,
+     "flight_s": 79.21438157732756,
+     "seeker_on_s": 38.10416666666663,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 57943.359375,
+     "flight_s": 119.65819580111663,
+     "seeker_on_s": 63.68750000000287,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 2.9093110549729317
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    4000.0,
+    0.0
+   ],
+   "rmax_m": 120000.0,
+   "samples": [
+    {
+     "range_m": 12000.0,
+     "flight_s": 9.788671623249071,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 30000.0,
+     "flight_s": 22.155130139100212,
+     "seeker_on_s": 11.041666666666707,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 60000.0,
+     "flight_s": 45.86476469481861,
+     "seeker_on_s": 32.72916666666602,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 90000.0,
+     "flight_s": 70.69179172371237,
+     "seeker_on_s": 57.20833333333547,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 120000.0,
+     "flight_s": 96.2972621105153,
+     "seeker_on_s": 82.4374999999987,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": true,
+   "wall_s": 0.6376597570488229
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    4000.0,
+    90.0
+   ],
+   "rmax_m": 101890.625,
+   "samples": [
+    {
+     "range_m": 10189.0625,
+     "flight_s": 10.914166935740656,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 25472.65625,
+     "flight_s": 24.754990942256622,
+     "seeker_on_s": 9.791666666666671,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 50945.3125,
+     "flight_s": 55.72328523544781,
+     "seeker_on_s": 35.020833333332945,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 76417.96875,
+     "flight_s": 85.85989828026652,
+     "seeker_on_s": 64.64583333333609,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 101890.625,
+     "flight_s": 119.7068672422453,
+     "seeker_on_s": 96.39583333332887,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.0383156799944118
+  },
+  {
+   "point": [
+    11000.0,
+    400.0,
+    4000.0,
+    180.0
+   ],
+   "rmax_m": 74047.4609375,
+   "samples": [
+    {
+     "range_m": 7404.74609375,
+     "flight_s": 10.32657602507146,
+     "seeker_on_s": 0.020833333333333332,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 18511.865234375,
+     "flight_s": 24.499512302557434,
+     "seeker_on_s": 5.854166666666651,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 37023.73046875,
+     "flight_s": 55.14508604669803,
+     "seeker_on_s": 27.9999999999995,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 55535.595703125,
+     "flight_s": 89.50483256537387,
+     "seeker_on_s": 57.08333333333545,
+     "hit": true,
+     "event": "fuse"
+    },
+    {
+     "range_m": 74047.4609375,
+     "flight_s": 119.75778856506606,
+     "seeker_on_s": 88.9166666666639,
+     "hit": true,
+     "event": "fuse"
+    }
+   ],
+   "censored": false,
+   "wall_s": 3.1726388940005563
+  }
+ ]
+}

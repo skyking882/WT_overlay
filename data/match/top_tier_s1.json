@@ -1,0 +1,254 @@
+{
+ "description": "S1 training variant of top_tier.json: spawn lines 60-90 km apart so more 1v1 episodes reach contact (D, training convenience, not a game value).",
+ "br_range": [
+  14.3,
+  14.7
+ ],
+ "team_size": 16,
+ "spawn": {
+  "altitude_m": [
+   2000,
+   3000
+  ],
+  "speed": {
+   "default_ias_kmh": 900,
+   "mach_range": [
+    0.8,
+    1.2
+   ]
+  },
+  "separation_km": [
+   60,
+   90
+  ],
+  "notes": "User: 2000 m, 900 km/h IAS, about 100 km apart. Forum reports: teams 90-100 km apart, spawn speed differs by aircraft (Mach 0.8-1.2), altitude about 3 km."
+ },
+ "excluded": {
+  "rafale_c_f3": "MICA EM not modelled (thrust vectoring unsupported in missle_sim)",
+  "rafale_eg_greece": "MICA EM not modelled (thrust vectoring unsupported in missle_sim)",
+  "rafale_m_f3r": "MICA EM not modelled (thrust vectoring unsupported in missle_sim)"
+ },
+ "archetypes": {
+  "middle": "climb, long-range suppression shot near Rmax, then defend outward (left) or go home; recommit when the RWR clears",
+  "left": "climb while flanking left; most defend at once, some fire one suppression shot turning right first; defend by turning left (outward); recommit right when the RWR clears",
+  "right": "mirror of left: flank right, shoot turning left, defend turning right (towards home)",
+  "crawler": "hug the ground, pop up to shoot when close",
+  "rusher": "fly straight at the enemy, shoot at mid range, defend late or not at all"
+ },
+ "groups": [
+  {
+   "name": "Typhoon",
+   "aircraft": [
+    "ef_2000_aesa",
+    "ef_2000_typhoon_aesa",
+    "ef_2000a_aesa",
+    "ef_2000_block_10",
+    "ef_2000_fgr4",
+    "ef_2000a"
+   ],
+   "prior": {
+    "middle": 0.55,
+    "left": 0.25,
+    "right": 0.05,
+    "crawler": 0.07,
+    "rusher": 0.08
+   }
+  },
+  {
+   "name": "J-16 / Su-30SM2",
+   "aircraft": [
+    "j_16",
+    "su_30sm2"
+   ],
+   "prior": {
+    "left": 0.7,
+    "middle": 0.15,
+    "right": 0.03,
+    "crawler": 0.07,
+    "rusher": 0.05
+   },
+   "notes": "Their middle players often fire one shot and turn left early (middle.early_left)."
+  },
+  {
+   "name": "F-15C Golden Eagle / J-15T",
+   "aircraft": [
+    "f_15c_golden_eagle",
+    "j_15t"
+   ],
+   "prior": {
+    "left": 0.85,
+    "middle": 0.05,
+    "right": 0.02,
+    "crawler": 0.05,
+    "rusher": 0.03
+   }
+  },
+  {
+   "name": "Su-30SM/MKM, F/A-18E/F, MiG-35",
+   "aircraft": [
+    "su_30sm",
+    "su_30mkm",
+    "fa_18e_block_2",
+    "fa_18f_block_2_raaf",
+    "mig_35"
+   ],
+   "prior": {
+    "left": 0.6,
+    "middle": 0.12,
+    "right": 0.15,
+    "crawler": 0.07,
+    "rusher": 0.06
+   }
+  },
+  {
+   "name": "F-16V/CM, J-10C, JAS 39E",
+   "aircraft": [
+    "f_16a_block_72v_china",
+    "f_16c_block_52_aesa",
+    "j_10c",
+    "saab_jas39e"
+   ],
+   "prior": {
+    "middle": 0.25,
+    "left": 0.4,
+    "right": 0.1,
+    "crawler": 0.15,
+    "rusher": 0.1
+   }
+  }
+ ],
+ "prior_jitter": "Dirichlet around each group's prior, concentration 20 (D)",
+ "aircraft_frequency": {
+  "notes": "Relative match frequency = battles played per aircraft from statshark.net (screenshots sent by the user, 2026-10-05; lifetime totals, so newer aircraft are under-counted). J-16 has no data yet; the user says it is very common: taken equal to Su-30SM2. MiG-35 was not in the list: 20000 (D). Rafale C F3 245432 and Rafale M F3-R 75234 are excluded until MICA EM is modelled.",
+  "source": "statshark.net, Air RB vehicle statistics, BR 14.3-14.7",
+  "weights": {
+   "su_30sm2": 761954,
+   "su_30sm": 398856,
+   "f_15c_golden_eagle": 368223,
+   "fa_18e_block_2": 303328,
+   "ef_2000_aesa": 287419,
+   "ef_2000_block_10": 246801,
+   "j_10c": 245297,
+   "j_15t": 241894,
+   "f_16c_block_52_aesa": 216630,
+   "saab_jas39e": 141989,
+   "su_30mkm": 129149,
+   "ef_2000a_aesa": 100782,
+   "ef_2000_typhoon_aesa": 91845,
+   "ef_2000_fgr4": 68523,
+   "f_16a_block_72v_china": 61228,
+   "ef_2000a": 45234,
+   "fa_18f_block_2_raaf": 22976,
+   "j_16": 761954,
+   "mig_35": 20000
+  }
+ },
+ "parameters": {
+  "climb_altitude_m": [
+   {
+    "weight": 0.8,
+    "range": [
+     7500,
+     9000
+    ]
+   },
+   {
+    "weight": 0.2,
+    "value": 11000,
+    "then": "dive"
+   }
+  ],
+  "crawler_altitude_m": {
+   "range": [
+    30,
+    200
+   ],
+   "grade": "D"
+  },
+  "flank_offset_deg": {
+   "range": [
+    30,
+    60
+   ],
+   "grade": "D"
+  },
+  "suppression_shot_probability": {
+   "left": 0.3,
+   "middle": 1.0,
+   "grade": "D"
+  },
+  "suppression_range_fraction_of_rmax": [
+   0.8,
+   1.0
+  ],
+  "after_suppression_shot": {
+   "turn_away": 0.5,
+   "crank_until_seeker_active": 0.5,
+   "crank_offset_deg": [
+    30,
+    50
+   ],
+   "grade": "D (user unsure)"
+  },
+  "middle_go_home_probability": {
+   "value": 0.2,
+   "grade": "D"
+  },
+  "middle_early_left": "J-16 / Su-30SM2 middle players turn left right after one shot",
+  "defend": {
+   "maneuvers": [
+    "beam",
+    "drag"
+   ],
+   "dive": true
+  },
+  "chaff": {
+   "continuous": 0.5,
+   "rhythmic": 0.5
+  },
+  "recommit_after_rwr_clear_s": [
+   3,
+   10
+  ],
+  "second_round_launch_km": [
+   20,
+   30
+  ]
+ },
+ "map": {
+  "size_km": 128,
+  "bounds_km": [
+   -64,
+   64
+  ],
+  "notes": "War Thunder forum: top-tier Air RB maps grew from 40x40 km to about 128x128 km; engine limit about 130 km (grade C). Teams spawn 90-110 km apart, so near opposite edges."
+ },
+ "camera": {
+  "source": "aces.vromfs.bin_u/config/camera.blkx, datamine 371120bed (values A, meanings D)",
+  "third_person_fov_deg": 90.0,
+  "zoom_fov_deg": 30.0,
+  "cockpit_fov_deg": 90.0,
+  "virtual_cockpit_fov_deg": 85.0,
+  "fov_axis": "horizontal assumed (D); if vertical, the 16:9 horizontal FOV would be about 121 deg",
+  "look_presets_deg": {
+   "left": -110.0,
+   "right": 110.0,
+   "back": 180.0
+  },
+  "camera_offset_m": {
+   "behind": 17.0,
+   "above": 4.0
+  },
+  "free_look": "used a lot (user, C): camera leaves the aim direction, the mouse no longer steers, keyboard only",
+  "marker_range_km": {
+   "value": null,
+   "grade": "D",
+   "notes": "range limit for target boxes/parameters on screen unknown"
+  },
+  "contrails": {
+   "min_altitude_m": 9500,
+   "visible_range": "unlimited while inside the camera view",
+   "grade": "C (user, 2026-10-05)"
+  }
+ }
+}

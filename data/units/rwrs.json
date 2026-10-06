@@ -1,0 +1,2007 @@
+{
+ "bl_carapace": {
+  "id": "bl_carapace",
+  "name": "CARAPACE",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "cn_kj8602a": {
+  "id": "cn_kj8602a",
+  "name": "KJ8602A",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "cn_krkz2200": {
+  "id": "cn_krkz2200",
+  "name": "K/RKZ",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "fr_mirage_3e_detecteur": {
+  "id": "fr_mirage_3e_detecteur",
+  "name": "Mirage Detecteur",
+  "range_m": 50000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    120.0,
+    90.0,
+    false
+   ],
+   [
+    -110.0,
+    0.0,
+    100.0,
+    90.0,
+    false
+   ],
+   [
+    110.0,
+    0.0,
+    100.0,
+    90.0,
+    false
+   ],
+   [
+    180.0,
+    0.0,
+    120.0,
+    90.0,
+    false
+   ]
+  ],
+  "detects_tracking": false,
+  "detects_launch": false,
+  "tracks_targets": false,
+  "targets_max": null,
+  "signal_hold_s": null,
+  "target_hold_s": null,
+  "new_target_hold_s": null,
+  "bands": [
+   8,
+   9
+  ],
+  "range_finder_m": null
+ },
+ "fr_serval_rwr": {
+  "id": "fr_serval_rwr",
+  "name": "SERVAL RWR",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "fr_sherloc": {
+  "id": "fr_sherloc",
+  "name": "Sherloc",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 8,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 2.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "fr_spectra_rwr": {
+  "id": "fr_spectra_rwr",
+  "name": "Thales SPECTRA DAR",
+  "range_m": 100000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    180.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    180.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "il_elisra_sps_200": {
+  "id": "il_elisra_sps_200",
+  "name": "ELISRA SPS-200",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "il_elisra_sps_3000": {
+  "id": "il_elisra_sps_3000",
+  "name": "ELISRA SPS-3000",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    180.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    180.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "il_sps_20v": {
+  "id": "il_sps_20v",
+  "name": "SPS-20(V)",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "jp_j_apr_4": {
+  "id": "jp_j_apr_4",
+  "name": "J/APR-4",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "jp_j_apr_6": {
+  "id": "jp_j_apr_6",
+  "name": "J/APR-6",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "jp_j_asq_2": {
+  "id": "jp_j_asq_2",
+  "name": "J/ASQ-2",
+  "range_m": 90000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   9250.0,
+   74000.0
+  ]
+ },
+ "su_spo-150": {
+  "id": "su_spo-150",
+  "name": "SPO-150",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_spo-150-14": {
+  "id": "su_spo-150-14",
+  "name": "SPO-150-14",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_spo-150-30": {
+  "id": "su_spo-150-30",
+  "name": "SPO-150-30",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_spo-150-30m": {
+  "id": "su_spo-150-30m",
+  "name": "SPO-150-30M",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_spo-150-30m1": {
+  "id": "su_spo-150-30m1",
+  "name": "SPO-150-30M.1",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_spo-150-30sm": {
+  "id": "su_spo-150-30sm",
+  "name": "SPO-150-30SM",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_spo-150m_02": {
+  "id": "su_spo-150m_02",
+  "name": "SPO-150M-02",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    60.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_spo-15lm": {
+  "id": "su_spo-15lm",
+  "name": "SPO-15LM",
+  "range_m": 65000.0,
+  "sectors": [
+   [
+    -10.0,
+    0.0,
+    20.0,
+    60.0,
+    false
+   ],
+   [
+    -30.0,
+    0.0,
+    20.0,
+    60.0,
+    false
+   ],
+   [
+    -50.0,
+    0.0,
+    30.0,
+    60.0,
+    false
+   ],
+   [
+    -90.0,
+    0.0,
+    50.0,
+    60.0,
+    false
+   ],
+   [
+    -150.0,
+    0.0,
+    65.0,
+    60.0,
+    false
+   ],
+   [
+    10.0,
+    0.0,
+    20.0,
+    60.0,
+    false
+   ],
+   [
+    30.0,
+    0.0,
+    20.0,
+    60.0,
+    false
+   ],
+   [
+    50.0,
+    0.0,
+    30.0,
+    60.0,
+    false
+   ],
+   [
+    90.0,
+    0.0,
+    50.0,
+    60.0,
+    false
+   ],
+   [
+    150.0,
+    0.0,
+    65.0,
+    60.0,
+    false
+   ],
+   [
+    0.0,
+    90.0,
+    180.0,
+    180.0,
+    false
+   ],
+   [
+    0.0,
+    -90.0,
+    180.0,
+    180.0,
+    false
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": false,
+  "targets_max": null,
+  "signal_hold_s": null,
+  "target_hold_s": 1.0,
+  "new_target_hold_s": null,
+  "bands": [
+   6,
+   7,
+   8
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "su_tarang": {
+  "id": "su_tarang",
+  "name": "TARANG",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "swd_app_73": {
+  "id": "swd_app_73",
+  "name": "APP-73",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    -45.0,
+    0.0,
+    110.0,
+    80.0,
+    false
+   ],
+   [
+    -135.0,
+    0.0,
+    110.0,
+    80.0,
+    false
+   ],
+   [
+    45.0,
+    0.0,
+    110.0,
+    80.0,
+    false
+   ],
+   [
+    135.0,
+    0.0,
+    110.0,
+    80.0,
+    false
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": false,
+  "targets_max": null,
+  "signal_hold_s": null,
+  "target_hold_s": null,
+  "new_target_hold_s": null,
+  "bands": [
+   8,
+   9
+  ],
+  "range_finder_m": null
+ },
+ "swd_ar830": {
+  "id": "swd_ar830",
+  "name": "AR830",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "swd_bow_21": {
+  "id": "swd_bow_21",
+  "name": "BOW-21",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 100,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 2.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "uk_ari_18228": {
+  "id": "uk_ari_18228",
+  "name": "ARI 18228",
+  "range_m": 50000.0,
+  "sectors": [
+   [
+    -45.0,
+    0.0,
+    100.0,
+    90.0,
+    true
+   ],
+   [
+    45.0,
+    0.0,
+    100.0,
+    90.0,
+    true
+   ],
+   [
+    -135.0,
+    0.0,
+    100.0,
+    90.0,
+    true
+   ],
+   [
+    135.0,
+    0.0,
+    100.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 1,
+  "signal_hold_s": null,
+  "target_hold_s": 1.0,
+  "new_target_hold_s": null,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "uk_ari_18228_19": {
+  "id": "uk_ari_18228_19",
+  "name": "ARI 18228/19",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 16,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "uk_ari_18241_1": {
+  "id": "uk_ari_18241_1",
+  "name": "ARI 18241/1",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 8,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 2.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "uk_ari_23284": {
+  "id": "uk_ari_23284",
+  "name": "ARI 23284",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 8,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 2.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "uk_ari_23333": {
+  "id": "uk_ari_23333",
+  "name": "ARI 23333",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 15,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 2.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "uk_praetorian_rwr": {
+  "id": "uk_praetorian_rwr",
+  "name": "Praetorian DASS",
+  "range_m": 100000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    180.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    180.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   9250.0,
+   74000.0
+  ]
+ },
+ "us_an_alr_400": {
+  "id": "us_an_alr_400",
+  "name": "ALR-400",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_45f_v": {
+  "id": "us_an_alr_45f_v",
+  "name": "AN/ALR-45F(V)",
+  "range_m": 50000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": false,
+  "targets_max": null,
+  "signal_hold_s": null,
+  "target_hold_s": 1.0,
+  "new_target_hold_s": null,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_45v": {
+  "id": "us_an_alr_45v",
+  "name": "AN/ALR-45(V)",
+  "range_m": 50000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": false,
+  "targets_max": null,
+  "signal_hold_s": null,
+  "target_hold_s": 1.0,
+  "new_target_hold_s": null,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_46": {
+  "id": "us_an_alr_46",
+  "name": "AN/ALR-46",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_46_v3": {
+  "id": "us_an_alr_46_v3",
+  "name": "AN/ALR-46(V)3",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_46_v3_f_5th": {
+  "id": "us_an_alr_46_v3_f_5th",
+  "name": "AN/ALR-46(V)3",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   100.0,
+   30000.0
+  ]
+ },
+ "us_an_alr_56a": {
+  "id": "us_an_alr_56a",
+  "name": "AN/ALR-56A",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_56c": {
+  "id": "us_an_alr_56c",
+  "name": "AN/ALR-56C",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_56m": {
+  "id": "us_an_alr_56m",
+  "name": "AN/ALR-56M",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_66": {
+  "id": "us_an_alr_66",
+  "name": "AN/ALR-66",
+  "range_m": 50000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": false,
+  "targets_max": null,
+  "signal_hold_s": null,
+  "target_hold_s": 1.0,
+  "new_target_hold_s": null,
+  "bands": [
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_67": {
+  "id": "us_an_alr_67",
+  "name": "AN/ALR-67",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    120.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    120.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_67_v_3": {
+  "id": "us_an_alr_67_v_3",
+  "name": "AN/ALR-67(V)3",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    120.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    120.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_68_v_3": {
+  "id": "us_an_alr_68_v_3",
+  "name": "AN/ALR-68(V)3",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_69": {
+  "id": "us_an_alr_69",
+  "name": "AN/ALR-69",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ },
+ "us_an_alr_69a_v": {
+  "id": "us_an_alr_69a_v",
+  "name": "AN/ALR-69A(V)",
+  "range_m": 70000.0,
+  "sectors": [
+   [
+    0.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ],
+   [
+    -180.0,
+    0.0,
+    180.0,
+    90.0,
+    true
+   ]
+  ],
+  "detects_tracking": true,
+  "detects_launch": false,
+  "tracks_targets": true,
+  "targets_max": 12,
+  "signal_hold_s": 5.0,
+  "target_hold_s": 5.0,
+  "new_target_hold_s": 3.0,
+  "bands": [
+   2,
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10
+  ],
+  "range_finder_m": [
+   5000.0,
+   50000.0
+  ]
+ }
+}

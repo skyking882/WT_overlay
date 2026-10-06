@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>WT 控制台 · RL 训练与回放</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1220'/%3E%3Cpath d='M16 6l7 19-7-4-7 4z' fill='%234c9aff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+<script>
+  // apply a stored theme before first paint
+  try { var t = JSON.parse(localStorage.getItem('rld.theme')); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="9" class="logo-bg"/>
+      <circle cx="16" cy="16" r="10.5" class="logo-ring"/>
+      <path d="M16 6.5l5.6 15.2-5.6-3.2-5.6 3.2z" class="logo-jet"/>
+    </svg>
+    <div class="brand-text"><b>WT 控制台</b><span>RL 训练 · 对战回放</span></div>
+  </div>
+
+  <nav class="tabs" role="tablist" aria-label="视图">
+    <button class="tab" role="tab" data-tab="train">训练</button>
+    <button class="tab" role="tab" data-tab="replay">回放</button>
+  </nav>
+
+  <div class="top-right">
+    <div class="picker" id="runPicker" data-for="train">
+      <button class="picker-btn" id="runPickerBtn" aria-haspopup="true" aria-expanded="false">
+        <span class="swatch" id="runPickerDot"></span>
+        <span class="picker-label" id="runPickerLabel">选择训练运行</span>
+        <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="picker-pop" id="runPickerPop" hidden></div>
+    </div>
+    <div class="chip chip-sync" id="syncChip" hidden></div>
+    <div class="pill" id="livePill" data-for="train" title="">
+      <span class="dot"></span><span id="liveText">连接中</span>
+    </div>
+    <button class="icon-btn" id="themeBtn" title="切换浅色 / 深色主题" aria-label="切换主题">
+      <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- ============================== 训练 ============================== -->
+  <section class="panel" id="panel-train" data-panel="train" hidden>
+    <div class="toolbar" id="trainToolbar">
+      <div class="legend-runs" id="runLegend"></div>
+      <div class="controls">
+        <label class="ctl"><span>横轴</span>
+          <div class="seg" id="ctlX">
+            <button data-v="decisions">决策数</button><button data-v="round">轮次</button>
+          </div>
+        </label>
+        <label class="ctl"><span>平滑</span>
+          <select id="ctlSmooth">
+            <option value="auto">自动</option><option value="1">关</option><option value="3">3 轮</option>
+            <option value="5">5 轮</option><option value="10">10 轮</option><option value="20">20 轮</option>
+          </select>
+        </label>
+        <label class="ctl"><span>速率窗口</span>
+          <input type="number" id="ctlWindow" min="1" max="2000" step="1" class="num" aria-label="速率窗口轮数"><em>轮</em>
+        </label>
+        <div class="ctl refresh">
+          <button class="btn ghost" id="btnPause" title="暂停 / 恢复自动刷新">
+            <svg viewBox="0 0 16 16" class="ico"><path d="M5 3.5v9M11 3.5v9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span id="refreshText">每 10 秒刷新</span>
+          </button>
+          <button class="btn ghost icon" id="btnRefresh" title="立即刷新" aria-label="立即刷新">
+            <svg viewBox="0 0 16 16" class="ico"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="trainEmpty" class="empty-state" hidden></div>
+
+    <div id="trainBody">
+      <div id="stageBody" hidden></div>
+      <div class="kpis" id="kpis"></div>
+
+      <div class="grid charts" id="charts"></div>
+
+      <div class="grid two">
+        <div class="card" id="cardAircraft">
+          <div class="card-h"><h3>分机型统计</h3><span class="sub" id="aircraftSub">最近一轮</span></div>
+          <div class="card-b flush"><div class="tbl-wrap" id="aircraftTable"></div></div>
+        </div>
+        <div class="card" id="cardBC">
+          <div class="card-h"><h3>BC 行为克隆报告</h3><span class="sub" id="bcSub"></span></div>
+          <div class="card-b" id="bcBody"></div>
+        </div>
+      </div>
+
+      <div class="grid two log-row">
+        <div class="card" id="cardLog">
+          <div class="card-h"><h3>train.log</h3><span class="sub" id="logSub"></span></div>
+          <div class="card-b flush"><div class="logbox" id="logBox" tabindex="0"></div></div>
+        </div>
+        <div class="card" id="cardMeta">
+          <div class="card-h"><h3>检查点与配置</h3><span class="sub" id="metaSub"></span></div>
+          <div class="card-b" id="metaBody"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== 回放 ============================== -->
+  <section class="panel" id="panel-replay" data-panel="replay" hidden>
+    <div class="toolbar" id="replayToolbar">
+      <div class="rp-select">
+        <select id="rpSelect" aria-label="选择回放文件"></select>
+        <button class="btn ghost icon" id="rpReload" title="重新扫描回放目录" aria-label="重新扫描">
+          <svg viewBox="0 0 16 16" class="ico"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="rp-chips" id="rpChips"></div>
+      <div class="controls">
+        <label class="ctl"><span>采样</span>
+          <select id="rpHz"><option value="0.5">0.5 Hz</option><option value="1">1 Hz</option><option value="2">2 Hz</option><option value="4">4 Hz (原始)</option></select>
+        </label>
+      </div>
+    </div>
+
+    <div id="rpEmpty" class="empty-state" hidden></div>
+
+    <div class="replay" id="replayBody">
+      <div class="rp-main">
+        <div class="card map-card" id="mapCard">
+          <div class="map-stage" id="mapStage">
+            <canvas id="mapCanvas"></canvas>
+            <div class="hud hud-tl" id="hudTime"></div>
+            <div class="hud hud-tr" id="hudView"></div>
+            <div class="hud hud-bl" id="hudLegend"></div>
+            <div class="map-tip" id="mapTip" hidden></div>
+            <div class="map-overlay" id="mapOverlay"></div>
+          </div>
+        </div>
+
+        <div class="card transport" id="transport">
+          <div class="tp-row">
+            <div class="tp-btns">
+              <button class="btn round primary" id="tpPlay" title="播放 / 暂停 (空格)" aria-label="播放 / 暂停"></button>
+              <button class="btn ghost icon" id="tpBack" title="后退 5 秒 (←)" aria-label="后退 5 秒">
+                <svg viewBox="0 0 16 16" class="ico"><path d="M8.5 4L4 8l4.5 4M13 4L8.5 8 13 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button class="btn ghost icon" id="tpFwd" title="前进 5 秒 (→)" aria-label="前进 5 秒">
+                <svg viewBox="0 0 16 16" class="ico"><path d="M7.5 4L12 8l-4.5 4M3 4l4.5 4L3 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button class="btn ghost small" id="tpPrevKill" title="上一次击杀 (J)">◀ 击杀</button>
+              <button class="btn ghost small" id="tpNextKill" title="下一次击杀 (K)">击杀 ▶</button>
+            </div>
+            <div class="tp-time"><b id="tpNow">00:00.0</b><span id="tpEnd">/ 00:00</span></div>
+            <div class="seg speed" id="tpSpeed" title="播放速度 (1–6 键, [ ])"></div>
+            <div class="tp-toggles">
+              <button class="chip-btn" id="tpTrails" title="轨迹 (T)">轨迹</button>
+              <button class="chip-btn" id="tpFollow" title="跟随所选飞机 (F)">跟随</button>
+              <button class="chip-btn" id="tpHelp" title="键盘快捷键 (?)">快捷键</button>
+            </div>
+          </div>
+          <div class="scrub" id="scrubWrap"><canvas id="scrubCanvas"></canvas><div class="scrub-tip" id="scrubTip" hidden></div></div>
+          <div class="scrub-legend">
+            <span><i class="lg lg-launch"></i>发射</span><span><i class="lg lg-kill"></i>击杀</span><span><i class="lg lg-rwr"></i>导弹告警</span>
+            <span class="grow"></span>
+            <span class="lg-team"><i class="lg lg-t0"></i>蓝队存活</span><span class="lg-team"><i class="lg lg-t1"></i>橙队存活</span>
+          </div>
+          <div class="kbd-help" id="kbdHelp" hidden></div>
+        </div>
+      </div>
+
+      <aside class="rp-side">
+        <div class="card side-card list-card" id="cardPlanes">
+          <div class="card-h"><h3>飞机</h3>
+            <div class="mini-ctl"><button class="chip-btn" id="plAliveOnly">仅存活</button></div>
+          </div>
+          <div class="plist" id="planeList"></div>
+        </div>
+        <div class="card side-card alt-card">
+          <div class="card-h"><h3>高度 — 时间</h3><span class="sub" id="altSub">km</span></div>
+          <div class="alt-wrap" id="altWrap"><canvas id="altCanvas"></canvas><div class="scrub-tip" id="altTip" hidden></div></div>
+        </div>
+        <div class="card side-card log-card">
+          <div class="card-h"><h3>事件记录</h3><span class="sub" id="evCount"></span></div>
+          <div class="ev-filters" id="evFilters"></div>
+          <div class="evlog" id="evLog"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" crossorigin="anonymous"></script>
+<script src="/static/app.js"></script>
+<script src="/static/training.js"></script>
+<script src="/static/replay.js"></script>
+<script>RLD.start();</script>
+</body>
+</html>

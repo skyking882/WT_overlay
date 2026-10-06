@@ -62,8 +62,8 @@ TARGET_SPEEDS_KMH = (800, 900, 1000, 1100, 1200, 1300)
 SCOPE_RANGES_KM = (10, 20, 40, 80, 160)
 SCOPE_AZIMUTHS_DEG = (30, 45, 60, 70)
 MISSILE_NAMES = {"cn_pl12": "PL-12", "cn_pl12a": "PL-12A", "su_r_77": "R-77", "su_r_77_1": "R-77-1",
-                 "cn_pl15": "PL-15", "cn_sd10a": "SD-10A", "il_derby": "Derby", "jp_aam4": "AAM-4",
-                 "r_darter": "R-Darter", "swd_rb99": "Rb 99", "su_rvv_ae": "RVV-AE",
+                 "cn_sd10a": "SD-10A", "il_derby": "Derby", "jp_aam4": "AAM-4",
+                 "r_darter": "R-Darter", "swd_rb99": "Rb 99", "su_rvv_ae": "RVV-AE", "su_rvv_sd": "RVV-SD",
                  "us_aim_120a": "AIM-120A", "us_aim_120b": "AIM-120B", "us_aim_120c_5": "AIM-120C-5",
                  "us_aim_120c_7": "AIM-120C-7", "us_aim_120d": "AIM-120D"}
 

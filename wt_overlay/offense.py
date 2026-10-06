@@ -115,6 +115,20 @@ class OffenseAdvisor:
             lo, hi = (mid, hi) if holds(mid) else (lo, mid)
         return lo, False
 
+    def reach_lines(self, own_altitude_m: float, own_tas_mps: float):
+        """(rmax_hot, rmax_cold) in metres, None where absent: the same lines as ``envelope`` at zero off-boresight
+        and co-altitude, without the two hit-probability lines (half the work). Hot lines stop at the network's 45 km."""
+        if not (math.isfinite(own_altitude_m) and math.isfinite(own_tas_mps)):
+            raise ValueError("ownship altitude and TAS are required")
+        kmh = own_tas_mps*3.6
+
+        def line(course):
+            def holds(range_m):
+                got = self._hit(own_altitude_m, kmh, range_m, course)
+                return got is not None and got[1] >= REACH_P
+            return self._edge(holds)[0]
+        return line(0.), line(180.)
+
     def envelope(self, own_altitude_m: float, own_tas_mps: float, azimuths_deg=ENVELOPE_AZIMUTHS_DEG,
                  alt_diffs_m=ENVELOPE_ALT_DIFFS_M) -> Envelope:
         if not (math.isfinite(own_altitude_m) and math.isfinite(own_tas_mps)):

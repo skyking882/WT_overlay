@@ -14,8 +14,9 @@ the crew limit and an AoA ceiling, with first-order AoA response. Forces use
 the same tabulated polars and thrust as the keyboard turn model. A segment's
 speed target closes the throttle and opens the airbrake when fast, or runs the
 plan throttle when slow, with a first-order engine response. Chaff is applied
-by the missile side (missile_sim chaffing_factory); no FCS G-limiter is modeled. Coordinates here are east, north, up; missile_sim uses x, up, z with
-north = -z.
+by the missile side (missile_sim chaffing_factory); no FCS G-limiter is modeled. The per-tick force and attitude integration is
+wt_overlay.flight.advance, shared with the command-driven Aircraft of the engagement simulator (tests/test_flight.py pins
+that FMEvader's output is unchanged). Coordinates here are east, north, up; missile_sim uses x, up, z with north = -z.
 """
 from __future__ import annotations
 
@@ -26,10 +27,10 @@ from types import SimpleNamespace
 
 from .climb import valid_number
 from .contracts import G
-from .turn import ManeuverModel, add, cross, dot, norm, rotate, scale, transport, unit
+from .flight import SUBSTEP_S, FlightState as _State, advance, alpha_for  # SUBSTEP_S: one missile control tick.
+from .turn import ManeuverModel, add, cross, dot, norm, rotate, scale, unit
 
 KINDS = ("beam", "drag")
-SUBSTEP_S = 1/48  # One missile control tick; AoA/roll time constants are >= 0.35 s.
 TILT_HANDOFF_DEG = 45.  # Below this direction error a tilted-plane turn hands back to direct tracking.
 
 
@@ -161,16 +162,6 @@ def from_enu(v):
     return (v[0], v[2], -v[1])
 
 
-@dataclass(frozen=True)
-class _State:
-    position: tuple[float, float, float]
-    velocity: tuple[float, float, float]
-    normal: tuple[float, float, float]
-    aoa_deg: float
-    engine_percent: float = 110.
-    airbrake: float = 0.
-
-
 class FMEvader:
     def __init__(self, base, pilot: EvasionPilot, model: ManeuverModel, make_state=SimpleNamespace,
                  perception: Perception | None = None):
@@ -251,11 +242,8 @@ class FMEvader:
                                velocity=from_enu(mix(a.velocity, b.velocity)))
 
     def _alpha_for(self, altitude, speed, load, reference):
-        ceiling = self.pilot.alpha_max_deg
-        q_lift_ceiling = self.model.forces_at_aoa(altitude, speed, ceiling, self.pilot.throttle_percent)[2]
-        if load*self.model.mass*G >= q_lift_ceiling:
-            return ceiling
-        return min(ceiling, self.model.target_aoa(altitude, speed, load, reference))
+        return alpha_for(self.model, altitude, speed, load, reference, self.pilot.alpha_max_deg,
+                         self.pilot.throttle_percent)
 
     def _launcher_at(self, time_s):
         """Where the evader believes the launcher is (straight or cranking, as perceived)."""
@@ -415,17 +403,6 @@ class FMEvader:
             perp = self._tilted(perp, direction, error, speed, s.position[2])
             if norm(perp) > 1e-9:
                 demand = add(demand, scale(unit(perp), speed*error/p.turn_time_constant_s))
-        load = min(norm(demand)/G, p.max_load)
-        # Roll the lift vector toward the demand at the limited rate.
-        want = unit(demand) if norm(demand) > 1e-9 else s.normal
-        phi = math.atan2(dot(direction, cross(s.normal, want)), dot(s.normal, want))
-        limit = math.radians(p.roll_rate_deg_s)*h
-        normal = rotate(s.normal, direction, max(-limit, min(limit, phi)))
-        # Load is only useful once the lift vector points roughly at the demand.
-        load *= max(0., dot(normal, want))
-        alpha_target = self._alpha_for(s.position[2], speed, load, s.aoa_deg)
-        alpha_mid = alpha_target+(s.aoa_deg-alpha_target)*math.exp(-h/(2*p.load_response_s))
-        alpha_end = alpha_target+(s.aoa_deg-alpha_target)*math.exp(-h/p.load_response_s)
         # Speed target: idle plus airbrake when fast, throttle_percent when slow (±5 m/s deadband).
         target_kmh = None if self._hot else p.segment_full(self._times[-1]-p.start_s)[3]
         throttle, brake = p.throttle_percent, 0.
@@ -433,18 +410,8 @@ class FMEvader:
             excess = speed-target_kmh/3.6
             throttle, brake = ((0., 1.) if excess > 5. else (p.throttle_percent, 0.) if excess < -5.
                                else (s.engine_percent, 0.))
-        engine = throttle+(s.engine_percent-throttle)*math.exp(-h/p.engine_response_s)
-        step = (self.model.airbrake_speed or 1.)*h
-        airbrake = min(brake, s.airbrake+step) if brake > s.airbrake else max(brake, s.airbrake-step)
-        thrust, drag, lift, alpha = self.model.forces_at_aoa(s.position[2], speed, alpha_mid,
-                                                             (s.engine_percent+engine)/2, (s.airbrake+airbrake)/2)
-        mass = self.model.mass
-        acceleration = add(add(scale(direction, (thrust*math.cos(alpha)-drag)/mass),
-                               scale(normal, (lift+thrust*math.sin(alpha))/mass)), (0., 0., -G))
-        velocity = add(s.velocity, scale(acceleration, h))
-        normal = transport(normal, direction, unit(velocity))
-        position = add(s.position, scale(add(s.velocity, velocity), h/2))
-        return _State(position, velocity, normal, alpha_end, engine, airbrake)
+        return advance(self.model, s, h, demand, p.max_load, p.alpha_max_deg, p.roll_rate_deg_s, p.load_response_s,
+                       p.engine_response_s, p.throttle_percent, throttle, brake)[0]
 
 
 def fm_evader_factory(pilot: EvasionPilot, model: ManeuverModel, make_state=SimpleNamespace,
