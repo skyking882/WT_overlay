@@ -202,6 +202,7 @@ class PPOTrainer:
         head_klc = torch.zeros(spec.N_HEADS)
         actor_stopped = False
         stopped_at = -1
+        stop_diag = None
         mb_count = 0
         actor_steps = 0
         self.actor.train()
@@ -238,6 +239,18 @@ class PPOTrainer:
                     if float(kl_old) > p.target_kl:
                         actor_stopped = True
                         stopped_at = mb_count
+                        # Diagnostics: which heads moved in the minibatch that stopped the actor (per-head k3 KL to
+                        # the behaviour policy, and how many valid steps changed a head's log-prob by more than 1).
+                        with torch.no_grad():
+                            old_h = buf.logp_heads[widx[:, B:]].reshape(-1, spec.N_HEADS).to(dev)
+                            lr_h = (out.logp.reshape(-1, spec.N_HEADS) - old_h).clamp(-20.0, 20.0)
+                            k3 = ((lr_h.exp() - 1.0) - lr_h) * lmf.unsqueeze(-1)
+                            big = ((lr_h.abs() > 1.0).to(torch.float32) * lmf.unsqueeze(-1)).sum(0)
+                            stop_diag = {"minibatch": mb_count, "kl": float(kl_old), "steps": int(n_lm),
+                                         "kl_heads": {h: round(float(v), 5) for h, v in
+                                                      zip(spec.HEAD_NAMES, (k3.sum(0) / n_lm).cpu()) if v > 1e-5},
+                                         "steps_logp_moved_gt1": {h: int(v) for h, v in
+                                                                  zip(spec.HEAD_NAMES, big.cpu()) if v > 0}}
                     else:
                         pg = -clipped_surrogate(ratio, a_b, p.clip)
                         pg_loss = (pg * lmf).sum() / n_lm
@@ -294,6 +307,7 @@ class PPOTrainer:
             "kl_target": acc["kl_old"] / na,         # joint-action KL to the behaviour policy (k3), mean over actor steps
             "kl_target_max": acc["kl_max"],          # largest per-minibatch KL seen, incl. the one that stopped the actor
             "kl_target_last": acc["kl_last"],
+            "kl_stop": stop_diag,                    # per-head view of the minibatch that stopped the actor, if any
             "kl_ref": acc["kl_ref"] / na if self.ref is not None else float("nan"),   # to the frozen BC policy
             "clip_frac": acc["clip"] / na,
             "ratio_max": acc["ratio_max"],

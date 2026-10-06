@@ -321,6 +321,31 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MatchEnv(dict(script_perturbation=dict(wobble=1.)),0)
 
+    def test_downed_aircraft_still_scores_with_its_missiles(self):
+        # 2v2, so the match goes on after aircraft 0 is down (its wingman 1 is alive); 2 and 3 are the enemies.
+        e=env(teams=[TEAMS[0]*2,TEAMS[1]*2])
+        p0,p1,p2,p3=e.engagement.planes
+        p0.flight.state=replace(p0.flight.state,position=(0.,0.,-100.))
+        obs,r,d,i=e.step(e.scripted_actions())
+        self.assertEqual(r[0],-2.);self.assertTrue(d[0]);self.assertEqual(i['tallies'][0],[0,1])
+        self.assertFalse(e.over)
+        self.assertFalse(e.pending_credit())
+        # A missile of the downed aircraft still flying is credit owed to it.
+        e.engagement.missiles.append(SimpleNamespace(done=False,shooter=p0))
+        self.assertTrue(e.pending_credit())
+        e.engagement.missiles.pop()
+        # ...and when it kills, the reward goes to info late_rewards (the aircraft no longer acts).
+        eng=e.engagement
+        step=eng.step
+        def killing_step():
+            eng.step=step
+            step()
+            eng._kill(p2,p0,'missile',None)
+        eng.step=killing_step
+        obs,r,d,i=e.step(e.scripted_actions())
+        self.assertEqual(r[2],-2.);self.assertNotIn(0,r);self.assertEqual(i['late_rewards'],{0:1.})
+        self.assertEqual(i['tallies'][0],[1,0]);self.assertEqual(i['tallies'][2],[0,1])
+
     def test_timeout_reward_makes_the_time_limit_terminal(self):
         e=env(time_limit_s=DT_STEP,timeout_reward=-.5)
         obs,rewards,dones,info=e.step(e.scripted_actions())

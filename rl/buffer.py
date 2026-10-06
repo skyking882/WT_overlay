@@ -38,6 +38,7 @@ class RoundBuffer:
         self.store = StepStore(self.n_steps)
         N = self.n_steps
         self.logp = torch.zeros(N)
+        self.logp_heads = torch.zeros(N, spec.N_HEADS)   # per-head part of logp (diagnostics only)
         self.reward = torch.zeros(N)
         self.done = torch.zeros(N, dtype=torch.bool)      # terminal (agent died / match ended)
         self.trunc = torch.zeros(N, dtype=torch.bool)     # truncated: bootstrap from the value net

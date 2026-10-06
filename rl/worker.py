@@ -16,8 +16,13 @@ StepResult: {"rew","done": {aid:..}, "timeout": bool, "obs": {aid: wire} of agen
   (or of the fresh episode if "new_episode"), "final": {aid: wire} final observations of agents
   that survived a timeout (bootstrap), "new_episode": bool, "events": {name: int}, "scenario",
   "kind"} where "kind" is env.episode_kind ("self_play" / "vs_script" for MatchEnv with self_play_prob, else
-  None) of the episode "obs" belongs to, like "scenario".
-The env is reset automatically when no policy-controlled agent is left.
+  None) of the episode "obs" belongs to, like "scenario". Optional keys: "late" {aid: reward} owed to agents that
+  finished in an earlier step (an env's info["late_rewards"]: a missile of a downed aircraft scored), "tallies"
+  {aid: [kills, deaths]} (info["tallies"]), "time_limit" (info["time_limit"]: the match ran out of time, also when
+  the env makes that a terminal step rather than a bootstrapped timeout).
+The env is reset automatically when no policy-controlled agent is left. If the env has pending_credit() (missiles
+of downed policy aircraft still flying) it is first played on without actions until they end, and what they score
+is added to the reward of the agents that finished in this step ("late" for agents that finished earlier).
 """
 from __future__ import annotations
 
@@ -92,16 +97,44 @@ class EnvHost:
                         final[aid] = o
                 else:
                     nxt[aid] = o
+            rew = {aid: float(r) for aid, r in rew.items()}
+            events = {k: int(v) for k, v in (info.get("events") or {}).items()}
+            late = {aid: float(v) for aid, v in (info.get("late_rewards") or {}).items()}
+            tallies = {aid: list(v) for aid, v in (info.get("tallies") or {}).items()}
+            time_limit = bool(info.get("time_limit", False))
+            pending = getattr(env, "pending_credit", None)
+            if not nxt and pending is not None and not getattr(env, "over", True):
+                # Every controlled aircraft is down but some of their missiles still fly: finish them before the
+                # reset, so a kill after death (a trade) reaches the shooter.
+                while not env.over and pending():
+                    _, _, _, i2 = env.step({})
+                    i2 = i2 or {}
+                    for aid, v in (i2.get("late_rewards") or {}).items():
+                        late[aid] = late.get(aid, 0.) + float(v)
+                    for aid, (k, d) in (i2.get("tallies") or {}).items():
+                        t = tallies.setdefault(aid, [0, 0])
+                        t[0] += k
+                        t[1] += d
+                    for k, v in (i2.get("events") or {}).items():
+                        events[k] = events.get(k, 0) + int(v)
+                for aid in [a for a in late if a in rew]:   # finished in this very step: credit its final reward
+                    rew[aid] += late.pop(aid)
             res = {
-                "rew": {aid: float(r) for aid, r in rew.items()},
+                "rew": rew,
                 "done": {aid: bool(d) for aid, d in done.items()},
                 "timeout": timeout,
                 "final": self._pack(j, final),
-                "events": {k: int(v) for k, v in (info.get("events") or {}).items()},
+                "events": events,
                 "new_episode": False,
                 "scenario": getattr(env, "scenario", None),
                 "kind": getattr(env, "episode_kind", None),
             }
+            if late:
+                res["late"] = late
+            if tallies:
+                res["tallies"] = tallies
+            if time_limit:
+                res["time_limit"] = True
             self.checked[j] += 1
             if nxt:
                 res["obs"] = self._pack(j, nxt)

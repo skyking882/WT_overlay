@@ -228,11 +228,16 @@ def round_record(cfg, trainer, buf, st, m, sampler):
     eps = st["episodes"]
     ep_by_air = {}
     kinds = {}
-    for a, ret, ln, kind in eps:
+    ret_by_kind = {}
+    for e in eps:
+        a, ret, ln, kind = e[:4]
         d = ep_by_air.setdefault(a, [0, 0.0])
         d[0] += 1
         d[1] += ret
         kinds[kind] = kinds.get(kind, 0) + 1
+        r = ret_by_kind.setdefault(e[4] if len(e) > 4 else spec.KIND_SCRIPT, [0, 0.0])
+        r[0] += 1
+        r[1] += ret
     for name, (n, tot) in ep_by_air.items():
         per_air.setdefault(name, {})["episodes"] = n
         per_air[name]["episode_return_mean"] = tot / n
@@ -247,6 +252,9 @@ def round_record(cfg, trainer, buf, st, m, sampler):
         "reward_per_decision": float(rew[v].sum()) / max(n_valid, 1),
         "episodes_finished": len(eps), "episode_kinds": kinds,
         "episode_return_mean": (sum(e[1] for e in eps) / len(eps)) if eps else None,
+        # Self-play returns are about -0.5 by construction (+1 / -2 between two copies), so mixed returns mislead.
+        "episode_return_by_kind": {k: tot / n for k, (n, tot) in ret_by_kind.items()},
+        "late_rewards": {"credited": st.get("late_credited", 0), "dropped": st.get("late_dropped", 0)},
         "events": st["events"], "lost_agents": st["lost"], "rollout_mask_fallbacks": st["mask_fallbacks"],
         "outcomes": outcome_counts(base),
         "outcomes_by_kind": by_kind,

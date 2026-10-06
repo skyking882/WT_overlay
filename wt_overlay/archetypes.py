@@ -720,6 +720,11 @@ class Pilot:
             self.peak_done, target = True, p.level_alt_m
         level = p.commit_alt_m if p.commit_alt_m is not None else (8000. if self.managed_execution else p.level_alt_m)
         reached = self.peak_done and abs(own.altitude_m-level) < 400.
+        if p.commit_alt_m is not None and self.peak_done and not reached and \
+                now-self.alt_history[0][0] >= PEAK_STALL_S-1. and abs(own.altitude_m-self.alt_history[0][1]) < PEAK_STALL_M:
+            # Perturbed level between the executor's altitude steps (e.g. 9 km while the climb holds 8 km): the climb
+            # has stopped, so it counts as done where it is.
+            reached = True
         drifted = side == 0. or abs(self._lateral(own)) >= p.flank_dist_m
         if reached and drifted:
             if self.climbed_at is None:

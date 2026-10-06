@@ -107,7 +107,8 @@ def play(actor, name, scenario, env_config, out_path, range_km=100., greedy=Fals
             acts[aid] = wire.unpack_action(tuple(out.actions[0].tolist()))
             first[aid] = False
         obs, rewards, dones, info = env.step(acts)
-        totals["reward"] += rewards.get(0, 0.)
+        # Slot 0's reward, including what its missiles score after it is down (info late_rewards).
+        totals["reward"] += rewards.get(0, 0.) + ((info or {}).get("late_rewards") or {}).get(0, 0.)
         totals["steps"] += 1
     writer.close()                      # the engagement already closed it at the end; close() is idempotent
     os.replace(out_path + ".part", out_path)

@@ -275,17 +275,31 @@ class MatchEnv:
         rewards={aid:0. for aid in active}
         events=dict(launch=0,kill=0,assist=0,death=0,dropped_entities=0,friendly_fire=0,retarget=0,
                     crash=0,out_of_bounds=0,missile_error=0)
+        # A policy aircraft that is already down still scores with the missiles it left in the air: those rewards
+        # go to info['late_rewards'] (the trainer adds them to its final step). tallies: kills / deaths per policy
+        # aircraft this step, so episode outcomes need not be read back from summed rewards.
+        late,tallies={},{}
         for e in new:
             kind=e['kind']
             if kind in events:
                 events[kind]+=1
-            if kind=='kill' and e['killer'] in rewards:
-                rewards[e['killer']]+=1.
-            elif kind=='assist' and e['plane'] in rewards:
-                rewards[e['plane']]+=.3
+            if kind=='kill' and e['killer'] in self.policy_ids:
+                k=e['killer']
+                if k in rewards:
+                    rewards[k]+=1.
+                else:
+                    late[k]=late.get(k,0.)+1.
+                tallies.setdefault(k,[0,0])[0]+=1
+            elif kind=='assist' and e['plane'] in self.policy_ids:
+                if e['plane'] in rewards:
+                    rewards[e['plane']]+=.3
+                else:
+                    late[e['plane']]=late.get(e['plane'],0.)+.3
             elif kind=='death':
                 if e['plane'] in rewards:
                     rewards[e['plane']]-=2.
+                if e['plane'] in self.policy_ids:
+                    tallies.setdefault(e['plane'],[0,0])[1]+=1
                 if e['cause'] in ('crash','out_of_bounds'):
                     events[e['cause']]+=1
             elif kind=='launch':
@@ -306,6 +320,10 @@ class MatchEnv:
         info=dict(timeout=timeout,events=events,reason=eng.reason,time_s=eng.time,dt=DT_STEP)
         if penalty is not None:
             info['time_limit']=eng.reason=='time_limit'
+        if late:
+            info['late_rewards']=late
+        if tallies:
+            info['tallies']=tallies
         if self.episode_kind is not None:
             # Decisions taken in self-play episodes this step (agent-summed like the other events).
             events['self_play_decisions']=len(active) if self.self_play else 0
@@ -314,6 +332,14 @@ class MatchEnv:
             obs={}
             self._observations={}
         return obs,rewards,dones,info
+
+    def pending_credit(self):
+        """True while a missile of a policy aircraft that is already down is still flying: its result is still owed
+        to that aircraft (info['late_rewards']), so a trainer should play the match on before resetting it."""
+        eng=self.engagement
+        if eng is None or self.over:
+            return False
+        return any(not m.done and m.shooter.ident in self.policy_ids and not m.shooter.alive for m in eng.missiles)
 
     def snapshot(self):
         if self.engagement is None:

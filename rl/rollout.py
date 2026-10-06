@@ -63,6 +63,7 @@ class Sampler:
         self.ep_death = [0] * self.S
         self.ep_air = [""] * self.S
         self.ep_kind = [spec.KIND_SCRIPT] * self.S
+        self.finished = {}                  # (env, agent) -> final step of an agent whose env episode still runs
         self.h_actor = torch.zeros(self.S, H, device=device)
         self.h_critic_end = torch.zeros(self.S, H)
         self.h_ref_end = torch.zeros(self.S, H)
@@ -148,6 +149,7 @@ class Sampler:
             flat = (t + P) * S + act_t
             buf.store.put(flat, dec, first=first, act=actions)
             buf.logp[flat] = out.logp.sum(-1).cpu()
+            buf.logp_heads[flat] = out.logp.cpu()
             buf.aircraft[flat] = torch.tensor([self._air(n) for n in dec.aircraft])
             by_env: Dict[int, dict] = {}
             acts_l = actions.tolist()
@@ -175,6 +177,23 @@ class Sampler:
         for j, r in res.items():
             for k, v in r["events"].items():
                 st["events"][k] = st["events"].get(k, 0) + v
+            tallies = r.get("tallies")
+            # Rewards owed to agents that finished earlier in this env's episode (a missile of a downed aircraft
+            # scored): added to their final step if that step is in this round's buffer.
+            for a, v in (r.get("late") or {}).items():
+                f = self.finished.get((j, a))
+                if f is None or f["buf"] is not buf:
+                    st["late_dropped"] = st.get("late_dropped", 0) + 1
+                    continue
+                buf.reward[f["flat"]] += v
+                air, ret, ln, kind, ek = st["episodes"][f["ep"]]
+                st["episodes"][f["ep"]] = (air, ret + v, ln, kind, ek)
+                kills = tallies.get(a, (0, 0))[0] if tallies is not None else int(v >= 0.9)
+                if kills:
+                    o = st["outcomes"][f["out"]]
+                    k2 = o[2] + kills
+                    st["outcomes"][f["out"]] = (o[0], "trade" if o[3] else "win", k2, o[3]) + tuple(o[4:])
+                st["late_credited"] = st.get("late_credited", 0) + 1
             for s in self.env_streams[j]:
                 a = self.slot_agent[s]
                 if a is None:
@@ -186,11 +205,17 @@ class Sampler:
                 buf.reward[flat] = rew
                 self.ep_ret[s] += rew
                 self.ep_len[s] += 1
-                # kill +1, death -2, assist +0.3: a death step is <= -0.6; a kill step is >= 0.9 or a kill+death -1(-0.7)
-                if rew <= -0.6:
-                    self.ep_death[s] += 1
-                if rew >= 0.9 or -1.1 <= rew <= -0.6:
-                    self.ep_kill[s] += 1
+                if tallies is not None:                 # the env counts kills and deaths itself
+                    k, dd = tallies.get(a, (0, 0))
+                    self.ep_kill[s] += k
+                    self.ep_death[s] += dd
+                else:
+                    # kill +1, death -2, assist +0.3: a death step is <= -0.6; a kill step is >= 0.9 or a kill+death
+                    # -1(-0.7)
+                    if rew <= -0.6:
+                        self.ep_death[s] += 1
+                    if rew >= 0.9 or -1.1 <= rew <= -0.6:
+                        self.ep_kill[s] += 1
                 d = r["done"].get(a, False)
                 if d:
                     if r["timeout"] and a in r["final"]:
@@ -200,8 +225,8 @@ class Sampler:
                         kind = "timeout"
                     else:
                         buf.done[flat] = True
-                        kind = "terminal"
-                    self._end_episode(s, kind, st)
+                        kind = "timeout" if r.get("time_limit") else "terminal"   # time limit as a terminal step
+                    self._end_episode(s, kind, st, (j, a, flat, buf))
                 elif (not r["new_episode"]) and a in r["obs"]:
                     self.pending[s] = r["obs"][a]
                 else:                           # agent vanished without done: truncate, bootstrap from own value
@@ -209,13 +234,19 @@ class Sampler:
                     st["lost"] += 1
                     self._end_episode(s, "lost", st)
             if r["new_episode"]:
+                for key in [key for key in self.finished if key[0] == j]:
+                    del self.finished[key]
                 self._bind(j, r["obs"], r.get("kind"))
 
-    def _end_episode(self, s, kind, st):
-        st["episodes"].append((self.ep_air[s], self.ep_ret[s], self.ep_len[s], kind))
+    def _end_episode(self, s, kind, st, where=None):
+        st["episodes"].append((self.ep_air[s], self.ep_ret[s], self.ep_len[s], kind, self.ep_kind[s]))
         k, d = self.ep_kill[s], self.ep_death[s]
         outcome = ("trade" if k else "loss") if d else ("win" if k else "none")
         st.setdefault("outcomes", []).append((self.ep_air[s], outcome, k, d, self.ep_kind[s]))
+        if where is not None:                   # (env, agent, final flat step, buffer): target of late rewards
+            j, a, flat, buf = where
+            self.finished[(j, a)] = {"buf": buf, "flat": flat, "ep": len(st["episodes"])-1,
+                                     "out": len(st["outcomes"])-1}
         self.slot_agent[s] = None
         self.pending[s] = None
 
