@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>空战沙盘 · WT</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><div class="brand"><span class="logo">⌁</span><div><h1>空战沙盘</h1><small>现有飞行 · 导弹 · 传感器模型</small></div></div><div class="segmented mode-switch" role="tablist"><button id="mode-setup" class="active">沙盘布置</button><button id="mode-replay">WT 回放</button></div><div class="header-info"><span class="dot"></span>本机推演 <span class="divider">|</span> <span id="status">连接中</span></div><button id="save" class="quiet">保存场景 / 记录</button></header>
+<div class="toolbar"><div class="time-block"><small>模拟时间</small><strong id="clock">00:00.00</strong></div><button id="start" class="primary">▶ 开始推演</button><button id="pause">Ⅱ 暂停</button><button id="step">推进 1 s</button><button id="reset" class="quiet">↺ 重置布置</button><div class="speed-control"><label for="speed">推进倍率</label><select id="speed"></select><span id="actual">实际 0.0×</span></div><div id="score"><span class="blue">蓝队 1</span><span class="orange">橙队 1</span></div></div>
+<div id="notice" role="status" aria-live="polite"></div>
+<main>
+<aside class="deployment">
+<div id="replay-side" hidden><div class="panel-heading"><h2>WT 回放</h2><span id="replay-tag" class="tag">未加载</span></div><label>我的飞机<select id="me"></select></label><label class="check side-check"><input type="checkbox" id="show-ai">显示 AI 单位</label><button id="fork" class="wide primary">从此刻接管</button><p id="replay-help" class="help">选择回放文件。暂停在某一时刻后可「从此刻接管」，所选飞机改由现有飞行模型和脚本 / 人工驾驶。</p><div id="replay-list" class="unit-list"></div></div>
+<div id="fork-info" class="boundary" hidden></div>
+<div id="setup-side">
+<div class="panel-heading"><h2>战场布置</h2><span id="setup-tag" class="tag">准备阶段</span></div>
+<div id="scene-controls"><label>预设场景<select id="preset"><option value="duel">1 对 1 · 60 km 接敌</option><option value="four">2 对 2 · 双机编队</option><option value="mixed">4 对 4 · 多机型混编</option></select></label>
+<div class="two-fields"><label>随机种子<input id="seed" type="number" step="1" value="1"></label><label>时间上限 / s<input id="limit" type="number" min="1" value="900"></label></div></div>
+<div class="team-heading blue"><h3>蓝队</h3><button id="add-blue" title="在地图点击放置蓝队飞机">＋ 部署</button></div><div id="blue-list" class="unit-list"></div>
+<div class="team-heading orange"><h3>橙队</h3><button id="add-orange" title="在地图点击放置橙队飞机">＋ 部署</button></div><div id="orange-list" class="unit-list"></div>
+<p id="deployment-help" class="help">点选飞机查看参数；准备阶段可拖动飞机。点击「部署」后，在地图选位置。</p>
+<div class="boundary"><strong>世界状态 · 分析视角</strong><p>地图显示双方真实位置。脚本飞行员仍只接收自己的雷达、告警和有限视野。</p></div>
+</div>
+<div id="outputs" class="outputs"></div>
+</aside>
+<section class="battlefield">
+<div class="map-toolbar"><div class="segmented"><button id="view3d" class="active">3D 战场</button><button id="view2d">俯视布置</button></div><button id="fit" class="quiet">全场</button><label class="check"><input type="checkbox" id="follow">跟随所选</label><label class="check"><input type="checkbox" id="trails" checked>轨迹</label><span id="scale-label">真实米制坐标</span></div>
+<div class="canvas-wrap"><canvas id="map" tabindex="0" aria-label="三维空战战场，点击飞机选择，拖动旋转，滚轮缩放"></canvas><div class="map-overlay"><div class="legend"><span class="blue">▲ 蓝队飞机</span><span class="orange">▲ 橙队飞机</span><span>● 导弹</span></div><div id="map-hint">拖动旋转 · Shift + 拖动平移 · 滚轮缩放</div></div><div id="control-banner" hidden></div><div id="terminal" hidden></div><div id="fork-panel" hidden><strong id="fork-title">从此刻接管</strong><p class="help">每架当时存活的玩家飞机选择控制方式；其余飞机继续钉在 WT 真实轨迹上，回放里真实发射过的已建模导弹由现有导弹模型重新飞。</p><div id="fork-rows"></div><label class="check side-check"><input type="checkbox" id="fork-ai">包含 AI 单位（只能按 WT 轨迹）</label><div class="two-fields"><button id="fork-go" class="primary">开始推演</button><button id="fork-cancel">取消</button></div></div></div>
+<div id="timeline" hidden><div class="tl-bar"><div id="tl-markers"></div><input id="tl-range" type="range" min="0" max="1" step="0.25" aria-label="回放时间轴"></div><span id="tl-label">—</span></div>
+<div class="map-footer"><span id="coordinates">东 E · 北 N · 高度 U / m</span><span id="health">导弹错误 0 · 飞行模型越界 0</span></div>
+<div class="bottom-strip"><span>人类下令 → 共同时钟 → 真实模型推进</span><span id="run-note">布置完成后开始；也可单步建立暂停的对局。</span></div>
+</section>
+<aside class="inspector">
+<div class="panel-heading"><h2>所选飞机</h2><span id="unit-id" class="tag">—</span></div><div id="empty-selection" class="help">点击地图上的飞机，或左侧列表选择。</div>
+<div id="unit-panel" hidden>
+<div class="unit-overview"><div id="unit-name" class="unit-name"></div><div id="unit-state" class="unit-state"></div></div>
+<div id="edit-panel"><label>机型<select id="aircraft"></select></label><label>主动雷达导弹<select id="missile"></select></label><div class="two-fields"><label>导弹 / 枚<input id="ammo" type="number" min="0"></label><label>箔条 / 束<input id="chaff" type="number" min="0"></label></div><div class="two-fields"><label>东坐标 / km<input id="east" type="number" step="0.1"></label><label>北坐标 / km<input id="north" type="number" step="0.1"></label></div><div class="two-fields"><label>打法<select id="archetype"></select></label><label>技能<select id="skill"></select></label></div></div>
+<div id="mode-panel" hidden><label>控制方式<select id="mode"><option value="auto">自主脚本 · 导航 / 武器自动</option><option value="manual">人工导航 · 武器手动</option><option value="pilot">亲自驾驶 · 键盘操纵 / 武器手动</option></select></label><p id="mode-help" class="help"></p></div>
+<p id="track-note" class="help" hidden></p><div id="nav-fields"><div class="two-fields"><label>高度 / m<input id="altitude" type="number" min="100" max="19500" step="100"></label><label>速度 / m/s<input id="velocity" type="number" min="50" step="10"></label></div><label>航向 / °（北 0 · 东 90）<input id="heading" type="number" min="0" max="360" step="5"></label></div>
+<button id="apply" class="wide primary">应用初始状态</button><button id="destination" class="wide" hidden>⌖ 在地图指定目的地</button><button id="pilot" class="wide" hidden>进入键盘驾驶（1×）</button><button id="remove" class="wide danger">移除飞机</button>
+<div id="weapon-panel" hidden><p class="help">人工模式：雷达自动 TWS 搜索；仅可向所选飞机的实际雷达航迹发射。</p><select id="tracks" aria-label="实际观测雷达航迹"></select><div class="two-fields"><button id="fire">发射 1 枚</button><button id="drop-chaff">投放箔条</button></div></div>
+</div>
+<div class="events-heading"><h2>交战事件</h2><span id="event-count">0 条</span></div><div id="events" class="events"><p class="help">开始推演后显示发现、发射、告警、支援中断与交战结果。</p></div>
+</aside>
+</main>
+<script src="/app.js"></script>
+</body></html>
