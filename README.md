@@ -79,6 +79,8 @@ python -m wt_overlay.sim --scenario data/sim/duel.json --seed 2 --out outputs/he
 
 导入的回放也可以在 [交互空战沙盘](#交互空战沙盘) 里原样播放或接管。
 
+示例回放（`main`、`RL`）：[data/cases/2026.10.05_23.02.45_j16_6kills.jsonl](data/cases/2026.10.05_23.02.45_j16_6kills.jsonl)，一局 343 s 的顶级空战，B 队一架歼-16 用 PL-12A 6 杀 1 死（第 6 杀在被击落 2 s 后命中）。所有玩家名已替换为队伍代号（A／B 加编号），本地路径和源文件哈希已去掉，不附原始 `.wrpl`。复制到 `outputs/engagements/wt_real/` 后即可在沙盘中打开。
+
 ## 8111 能量 HUD
 
 Windows 8111 透明能量 HUD 与静态 SEP 研究原型。显示层使用 PySide6；遥测、能量与 FM 计算只使用 Python 标准库。
