@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .archetypes import bearing_of
 from .engagement import Action, PlaneSpec, RadarCommand
-from .flight import Aircraft, FlightParams, FlightState, SUBSTEP_S
+from .flight import Aircraft, FlightParams, FlightState, MIN_STEP_SPEED_MPS, SUBSTEP_S
 from .fm import atmosphere
 from .match import scenario as make_match, modelled_missiles
 from .rl_env import equip_scripts
@@ -39,6 +39,7 @@ RATE_WINDOW_S = 1.        # heading rate for the roll estimate: central differen
 WRECK_S = 10.             # a dead unit's wreck stays on the map this long
 TRACK_AOA_DEG = 3.        # pinned aircraft: constant angle of attack (D) ...
 TRACK_ENGINE_PERCENT = 100.   # ... and engine setting (D); neither is in the replay
+PARKED_MPS = 30.          # a pinned aircraft slower than this is on the ground in the replay (landed / taxiing / parked)
 REPLAY_MAX_TEAM = 24      # fork worlds: per team (the editor's MAX_TEAM stays 16)
 GHOST_S, GHOST_STEP_S = 120., 1.
 SURROGATE_FM = "su_30sm2" # flight model carried (never flown) by pinned units without one of their own (AI units)
@@ -523,9 +524,23 @@ class TrackedAircraft(Aircraft):
         if not self.alive:
             return self.state
         pos, vel, roll = self.track.kinematics(self.rid, self.offset+(self.tick+1)*SUBSTEP_S+self.t0)
-        self.load = 1./max(.1, math.cos(math.radians(roll)))
-        new = FlightState(pos, vel, _normal(vel, roll), TRACK_AOA_DEG, self.state.engine_percent, 0.)
+        if math.hypot(*vel) < PARKED_MPS:   # on the ground in the replay: no attitude to derive from the velocity
+            self.load = 1.
+            new = FlightState(pos, vel, self.state.normal, 0., self.state.engine_percent, 0.)
+        else:
+            self.load = 1./max(.1, math.cos(math.radians(roll)))
+            new = FlightState(pos, vel, _normal(vel, roll), TRACK_AOA_DEG, self.state.engine_percent, 0.)
         return self._commit(new)
+
+    def _commit(self, new):
+        if self.released:
+            return super()._commit(new)
+        # Pinned: only the replay (or our missiles, via the engagement) ends it -- not our ground-contact rule
+        # (some maps lie below the replay's zero datum) nor our overspeed rule.
+        alive = self.alive
+        out = super()._commit(new)
+        self.alive, self.crashed, self.overspeed, self.overspeed_s = alive, False, False, 0.
+        return out
 
 
 class TrackedController:
@@ -589,7 +604,20 @@ class ReplayForkSimulation(SandboxSimulation):
     def step(self):
         if self.reason is None:
             self._replay_actions()
-        return super().step()
+            # a pinned aircraft on the ground in the replay is parked for the engagement (the airfield ``grounded``
+            # state: invisible to sensors, not a target); its pinned track keeps advancing below
+            t = self.offset+self.time+SUBSTEP_S
+            for p in self.live:
+                if p.flight.tracked:
+                    kin = self.track.kinematics(self.rids[p.ident], t)
+                    parked = kin is not None and math.hypot(*kin[1]) < PARKED_MPS
+                    if parked != p.grounded:
+                        p.grounded, p.ground_t = parked, (self.time if parked else None)
+        out = super().step()
+        for p in self.live:
+            if p.grounded and p.flight.tracked:   # the engagement does not step grounded aircraft
+                p.flight.step()
+        return out
 
     def _replay_actions(self):
         now = self.offset+self.time+SUBSTEP_S/2
@@ -671,6 +699,11 @@ class ReplayForkSimulation(SandboxSimulation):
 REFLY_MAX_AGE_S = 60.   # a missile launched longer than this before t_fork is not re-flown (kinematically spent)
 
 
+def _airborne(track, rid, t):
+    kin = track.kinematics(rid, t)
+    return kin is not None and math.hypot(*kin[1][:2]) >= MIN_STEP_SPEED_MPS
+
+
 def fork_t0(track, t_fork, library, max_age_s=REFLY_MAX_AGE_S):
     """The earlier of ``t_fork`` and the launch of the oldest modelled missile still live at ``t_fork`` (not yet past
     its closest approach, ``ReplayTrack.missile_live_until``) and launched at most ``max_age_s`` before ``t_fork``."""
@@ -701,13 +734,17 @@ def build_fork(track, t_fork, control, *, library, include_ai=False, me=None, se
         if mode != "track":
             if not caps[rid]["controllable"]:
                 raise ValueError(f"{track.label(rid)} 不能接管：{caps[rid]['reason']}")
-            if not track.present(rid, t_fork):
+            if not track.present(rid, t_fork) or not _airborne(track, rid, t_fork):
                 raise ValueError(f"{track.label(rid)} 在接管时刻不在空中")
     released = {rid: m for rid, m in control.items() if m != "track"}
     t0 = fork_t0(track, t_fork, library)
     notes = []
-    members = [rid for rid in sorted(track.info) if track.present(rid, t0) and track.kinematics(rid, t0) is not None
+    present = [rid for rid in sorted(track.info) if track.present(rid, t0) and track.kinematics(rid, t0) is not None
                and (include_ai or not track.info[rid]["ai"])]
+    # an aircraft still on the airfield (parked / taxiing) cannot be built by the flight model: left out like a late one
+    members = [rid for rid in present if _airborne(track, rid, t0)]
+    if len(members) < len(present):
+        notes.append(f"{len(present)-len(members)} 架在世界起点仍在机场（速度低于 {MIN_STEP_SPEED_MPS:.0f} m/s），不在推演里")
     for rid in released:
         if rid not in members:
             raise ValueError(f"{track.label(rid)} 在世界起点 t0={t0:.2f} s 不在空中")

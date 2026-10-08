@@ -259,8 +259,46 @@ class ForkTests(unittest.TestCase):
             del end["t_cpa"]
 
 
+    def test_pinned_aircraft_below_datum_and_landing_stay_alive(self):
+        # plane 1 flies at -60 m (a map below the replay's zero datum), then lands: slows to a stop and parks
+        rows = [dict(type="header", version=1, map_half_m=60000., frame_dt_s=.25, time_limit_s=60.,
+                     planes=[dict(id=0, team=0, aircraft="f_16c_block_52_aesa", name="A", archetype="A", skill=None,
+                                  missile=None, missiles=0, chaff="?", wt=dict(player="A")),
+                             dict(id=1, team=1, aircraft="su_30sm2", name="B", archetype="B", skill=None, missile=None,
+                                  missiles=0, chaff="?", wt=dict(player="B"))],
+                     plane_columns=PLANE_COLUMNS, missile_columns=MISSILE_COLUMNS, source=dict(kind="wt_replay"))]
+        y = 0.
+        for k in range(241):
+            t = k*.25
+            v1 = 200. if t < 20. else max(0., 200.-12.*(t-20.))   # stopped from t ~ 36.7 s
+            rows.append(dict(type="frame", t=t, missiles=[], planes=[
+                [0, 0., -20000.+250.*t, 6000., 0., 250., 0., 0., 0, "?", ""],
+                [1, 5000., y, -60., 0., v1, 0., 0., 0, "?", ""]]))
+            y += v1*.25
+        rows.append(dict(type="end", reason="replay_end", t=60.))
+        path = Path(self.tmp.name)/"landing.jsonl"
+        path.write_text("".join(json.dumps(r)+"\n" for r in rows), encoding="utf-8")
+        track = ReplayTrack(path)
+        eng = build_fork(track, 1., {}, library=self.library)
+        grounded_seen = False
+        while eng.offset+eng.time < 55.:
+            eng.step()
+            grounded_seen |= eng.planes[1].grounded
+        self.assertTrue(all(p.alive for p in eng.planes))
+        self.assertTrue(grounded_seen and eng.planes[1].grounded)
+        self.assertLess(math.dist(eng.planes[1].flight.state.position, track.kinematics(1, eng.offset+eng.time)[0]), 1.)
+
+
 @unittest.skipUnless(HAVE_MODELS and any(WT_REAL.glob("*.jsonl")), "no real WT replay or models")
 class RealReplayTests(unittest.TestCase):
+    def test_fork_at_the_start_leaves_parked_aircraft_out(self):
+        from wt_overlay.engagement import default_library
+        from wt_overlay.flight import MIN_STEP_SPEED_MPS
+        track = ReplayTrack(sorted(WT_REAL.glob("*.jsonl"))[0])
+        eng = build_fork(track, track.start_s+8., {}, library=default_library())
+        self.assertTrue(eng.planes)
+        self.assertTrue(all(math.hypot(*p.flight.state.velocity[:2]) >= MIN_STEP_SPEED_MPS for p in eng.planes))
+
     def test_real_file_loads_and_a_released_fork_runs_10_s(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = SandboxSession(output_root=tmp, replay_root=WT_REAL)
