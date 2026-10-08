@@ -241,3 +241,34 @@ Apache License
 `data/fm/su_27sm.blkx` is unmodified War Thunder datamine data from gszabi99/War-Thunder-Datamine revision `60345f1697efeb0fa54256b2f0aab3d83d7e708e`, path `aces.vromfs.bin_u/gamedata/flightmodels/fm/su_27sm.blkx`. Game data remains attributed to Gaijin; this project does not grant an independent license to that data. The sample is included for local research and is not evidence of game validation.
 
 `data/fm/aircraft/*.blkx` contains 113 unmodified FM files from gszabi99/War-Thunder-Datamine revision `371120bedae88b59fa0fa34c04566e83da64eed6` (game version `2.59.0.16`, 2026-09-20). `data/fm/catalog.json` derives 138 Air RB BR >= 12.0 aircraft identities, localized names and BRs from that revision’s unit definitions, `wpcost.blkx`, `shop.blkx`, and `units.csv`. The catalog records original paths and SHA-256 hashes. Game data and localized names remain attributed to Gaijin; this project does not grant an independent license to them. Data inclusion and schema adaptation do not establish in-game validation.
+
+`scripts/wt_replay_import.py` reads `match_export.json` files produced by LivingTheDagor's WrplReplayParser (https://github.com/LivingTheDagor/WrplReplayParser), revision `221be5cac8e772ab41eefb0e7dac35ce6fb5c39b`, built with the patch scripts in the missile_sim replay inspector. WrplReplayParser runs as a separately built external backend; none of its source is included in this repository. It contains code derived from Gaijin Entertainment's Dagor Engine, which is under the Dagor Engine BSD 3-Clause license above.
+
+BSD 3-Clause License
+
+Copyright (c) 2025, LivingTheDagor
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
