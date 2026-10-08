@@ -34,6 +34,17 @@ more than 120 km apart ends.
 Opt-in ``radar_sees_missiles`` (docs/radar_missile_detection_spec.md): the radars also see enemy missiles in flight
 (MISSILE_RCS_M2, D; a TWS track slot each), an NCTR radar names them, a missile track is never a launch target and,
 unless ``allow_missile_targets``, never locked in STT or selectable as a target by the action masks.
+
+Opt-in ``wreck_s`` (MatchEnv, policy aircraft only): a shot-down aircraft stays a wreck for that many seconds for the
+radars and eyes of the planes in ``wreck_viewers`` (keeps its last velocity, falls, stops on the ground; detected and
+seen by the usual rules, never a team-map mark). They may track it and fire at it; such a missile is wasted (it never
+takes a new target). Missiles already in flight, kills and everyone else's sensors are unchanged.
+
+Opt-in ``airfield`` (docs/airfield_rearm_spec.md, AIRFIELD): a plane whose executed intent is go-home lands at its team's
+spawn point when close, low and slow enough, is parked there (``grounded``: invisible to every sensor, not a target, no
+crash / out-of-bounds checks; missiles chasing it guide at the touchdown point and may retarget), is rearmed after the
+turnaround and takes off again once its intent is no longer go-home. All alive planes parked with no missile in the air
+for ``all_grounded_end_s`` ends the match ("all_grounded").
 """
 from __future__ import annotations
 
@@ -49,7 +60,7 @@ from typing import Any
 from . import pk, units as units_mod
 from .escape import from_enu, to_enu
 from .fm import atmosphere
-from .flight import SUBSTEP_S, Aircraft, FlightCommand, FlightParams, aircraft_model
+from .flight import SUBSTEP_S, Aircraft, FlightCommand, FlightParams, FuelTank, aircraft_model, fuel_data
 from .sensors import Emission, OwnState, RadarSensor, RwrSensor, TargetTruth, world_angles
 
 MAP_HALF_M = 64000.            # 128 km map (C: player reports of top-tier Air RB maps); configurable
@@ -79,6 +90,72 @@ KILL_EVENTS = ("fuse",)
 MISSILE_RCS_M2 = 1.
 MISSILE_TRUTH = 1000000        # as the RWR emitter ids of missile seekers
 NCTR_RANGE_M = math.inf        # D: an NCTR radar names a missile track at any range, as a tracked aircraft gets its type
+# airfield (opt-in, docs/airfield_rearm_spec.md): go home (intent maneuver 10) to the own spawn point, land, rearm after
+# the turnaround, take off again. Approach / landing / take-off values are D; the 20 s turnaround is the user's (C).
+# approach_m 21 km (was 15 km): a straight-in approach from 8 km high takes about 90 s from the approach radius to the
+# landing (user 2026-10-07: ~90 s without the transit). Measured: 76-86 s at full throttle (policy go-home), 90-103 s at
+# the scripts' cruise (docs/airfield_rearm_spec.md section 9).
+AIRFIELD = dict(approach_m=21000., approach_alt_m=300., approach_ias_kmh=450., land_radius_m=2500., land_max_alt_m=600.,
+                land_max_ias_kmh=550., turnaround_s=20., takeoff_alt_m=100., takeoff_ias_kmh=350., all_grounded_end_s=30.)
+TAKEOFF_MIN_IAS_KMH = 200.     # the flight model needs 50 m/s (180 km/h) at least
+
+
+def airfield_settings(config):
+    """The ``airfield`` option filled with the AIRFIELD defaults; None (off) stays None. ValueError for unknown keys or
+    values that cannot be flown."""
+    if config is None:
+        return None
+    if not isinstance(config, dict) or set(config)-set(AIRFIELD):
+        raise ValueError("airfield must be a dict with keys from "+", ".join(AIRFIELD))
+    out = dict(AIRFIELD)
+    for k, v in config.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 or \
+                (v == 0 and k not in ("turnaround_s", "all_grounded_end_s")):
+            raise ValueError(f"airfield {k} must be a positive number")
+        out[k] = float(v)
+    if out["takeoff_ias_kmh"] < TAKEOFF_MIN_IAS_KMH:
+        raise ValueError(f"airfield takeoff_ias_kmh must be at least {TAKEOFF_MIN_IAS_KMH:g}")
+    return out
+
+
+# fuel (opt-in, docs/fuel_spec.md): each aircraft takes off with a share ``fraction`` [lo, hi] (drawn per aircraft, own
+# generator; the player picks the load in the game, D) of its FM tank capacity (``tanks``: "max" = Mass.MaxFuelMass0, drop
+# tanks included; "internal" = the tanks not flagged external). Mass = FM empty mass + fuel + missiles (missile_sim launch
+# mass) instead of the spec's mass_factor; flight.FuelTank burns it; empty tanks = no thrust ("flameout" event). The
+# airfield turnaround refuels to the initial load. OwnObs.bingo: fuel share of the initial load below ``bingo``.
+FUEL = dict(fraction=(.45, 1.), bingo=.15, tanks="max")
+MISSILE_MASS_KG = 150.         # D: a missile whose missile_sim profile has no geometry.initial_mass_kg
+
+
+def fuel_settings(config):
+    """The ``fuel`` option filled with the FUEL defaults; None (off) stays None. ValueError for unknown keys or values."""
+    if config is None:
+        return None
+    if not isinstance(config, dict) or set(config)-set(FUEL):
+        raise ValueError("fuel must be a dict with keys from "+", ".join(FUEL))
+    out = dict(FUEL, **config)
+    share = out["fraction"]
+    if not isinstance(share, (list, tuple)) or len(share) != 2 or any(
+            isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in share) \
+            or not 0. < share[0] <= share[1] <= 1.:
+        raise ValueError("fuel fraction must be [lo, hi] with 0 < lo <= hi <= 1")
+    bingo = out["bingo"]
+    if isinstance(bingo, bool) or not isinstance(bingo, (int, float)) or not 0. <= bingo < 1.:
+        raise ValueError("fuel bingo must be a number in [0, 1)")
+    if out["tanks"] not in ("max", "internal"):
+        raise ValueError("fuel tanks must be 'max' or 'internal'")
+    out["fraction"], out["bingo"] = (float(share[0]), float(share[1])), float(bingo)
+    return out
+
+
+ASSIST_RULES = ("first_shot",)
+
+
+def assist_rule_setting(rule):
+    """None (an assist to every teammate with a missile at the victim in the last 20 s) or 'first_shot' (_kill)."""
+    if rule is not None and rule not in ASSIST_RULES:
+        raise ValueError("assist_rule must be None or one of "+", ".join(ASSIST_RULES))
+    return rule
 
 
 # -- missile_sim ---------------------------------------------------------------------------------------------
@@ -200,6 +277,12 @@ class OwnObs:
     radar_mode: str
     stt_state: str | None
     has_maw: bool
+    # fuel (opt-in; None / False without it): fuel on board, its share of the initial load, the total mass (empty + fuel
+    # + missiles) and whether the share is below the bingo setting. Raw observation only (not in the actor's own vector).
+    fuel_kg: float | None = None
+    fuel_fraction: float | None = None
+    mass_kg: float | None = None
+    bingo: bool = False
 
 
 @dataclass(frozen=True)
@@ -262,6 +345,7 @@ class Observation:
     # by the action masks and the scripts' choice of targets (never encoded); ``missile_targets``: allow_missile_targets.
     radar_missiles: tuple = ()
     missile_targets: bool = False
+    grounded: bool = False    # airfield (opt-in): parked at the own airfield (weapons and chaff masked)
 
 
 class Camera:
@@ -354,6 +438,8 @@ class PlaneSpec:
     camera: Camera | None = None      # None: OPEN_CAMERA (no view gating)
 
     rcs_m2: float = 5.
+    home_xy: tuple | None = None      # the team's spawn point (airfield); None: the own spawn position
+    enemy_xy: tuple | None = None     # the enemy spawn point (take-off heading); None: the spawn heading
 
 
 class Plane:
@@ -382,6 +468,14 @@ class Plane:
         self.kills = self.assists = self.launches = self.chaff_used = 0
         self.phase_time = {}
         self.missile_hist = []             # (shooter ident, t_launch, t_end or None) of missiles aimed at this plane
+        # airfield (opt-in): the executor sets want_home (executed maneuver 10); grounded planes do not fly
+        self.grounded = self.rearmed = self.want_home = False
+        self.ground_t = None
+        self.landings = self.rearms = self.takeoffs = 0
+        hx, hy = spec.home_xy if spec.home_xy is not None else spec.position[:2]
+        self.airfield_xy = (float(hx), float(hy))
+        ex, ey = (spec.enemy_xy[0]-hx, spec.enemy_xy[1]-hy) if spec.enemy_xy is not None else spec.velocity[:2]
+        self.takeoff_deg = math.degrees(math.atan2(ex, ey)) % 360.
 
     def state_at(self, time_s):
         """(position, velocity) in ENU; a wreck stays where its last tick left it."""
@@ -407,6 +501,8 @@ class MissileFlight:
         self.rows_trim = 0
         self.retargeted = False
         self.aware_at = None
+        self.lost = None                   # airfield: ENU point where the target landed (guided at like a wreck)
+        self.wreck_shot = False            # wreck_s: fired at a wreck (never retargets)
 
 
 class MissileTarget:
@@ -423,6 +519,9 @@ class MissileTarget:
     def state_at(self, t):
         if getattr(self.eng, 'seeker_search', None) is not None:
             self.rcs_m2 = self.m.target.rcs_m2
+        lost = getattr(self.m, "lost", None)   # airfield: the target landed
+        if lost is not None:
+            return self._state(from_enu(lost), (0., 0., 0.))
         position, velocity = self.m.target.state_at(self.m.t_launch+t)
         return self._state(from_enu(position), from_enu(velocity))
 
@@ -520,27 +619,36 @@ class ObservationBuilder:
     def build(self, plane: Plane) -> Observation:
         eng, t = self.eng, self.eng.time
         own = plane.own
+        ground = plane.grounded   # airfield: parked, radar off, eyes and warnings shut; friends, marks and shots stay
         picture = self._radar(plane, t)
-        visual = self._visual(plane, t)
-        maw, flames = self._cues(plane, t)
+        visual = [] if ground else self._visual(plane, t)
+        maw, flames = ([], []) if ground else self._cues(plane, t)
         marks = self._marks(plane, t)
         shots = self._shots(plane)
-        boxes, contrails, missile_marks = self._view_items(plane, visual, t)
+        boxes, contrails, missile_marks = ([], [], []) if ground else self._view_items(plane, visual, t)
         rwr = plane.rwr_picture.contacts if plane.rwr_picture is not None else ()
         extra = {}
         if eng.radar_sees_missiles:
             extra = dict(missile_targets=eng.allow_missile_targets, radar_missiles=() if picture is None else tuple(
                 i-MISSILE_TRUTH if i >= MISSILE_TRUTH else None for i in picture.truth_ids))
+        if ground:
+            extra["grounded"] = True
         return Observation(t, self._own(plane, t), picture.contacts if picture is not None else (), rwr, tuple(maw),
                            tuple(flames), tuple(visual), tuple(marks), tuple(shots), eng.map_half_m,
                            eng if eng.truth_debug else None, tuple(boxes), tuple(contrails), tuple(missile_marks), **extra)
 
     def _own(self, plane: Plane, t) -> OwnObs:
         own, f, radar = plane.own, plane.flight, plane.radar
+        tank = f.fuel
+        fuel = {} if tank is None else dict(fuel_kg=tank.kg, fuel_fraction=tank.fraction, mass_kg=tank.mass_kg,
+                                            bingo=tank.fraction < (self.eng.fuel or FUEL)["bingo"])
+        if plane.grounded:   # airfield: at rest on the ground (the frozen flight state is the touchdown)
+            return OwnObs(t, plane.team, plane.aircraft, own.position, own.velocity, own.heading_deg, 0., 0., 0., 0.,
+                          0., 1., 0., plane.missile_id, plane.missiles, plane.chaff, "off", None, plane.has_maw, **fuel)
         return OwnObs(t, plane.team, plane.aircraft, own.position, own.velocity, own.heading_deg, own.pitch_deg,
                       own.roll_deg, f.speed, f.altitude, f.state.aoa_deg, f.load, f.state.engine_percent,
                       plane.missile_id, plane.missiles, plane.chaff, radar.mode if radar is not None else "off",
-                      radar.stt_state if radar is not None else None, plane.has_maw)
+                      radar.stt_state if radar is not None else None, plane.has_maw, **fuel)
 
     def _radar(self, plane: Plane, t):
         """The radar picture (ungated); its aircraft tracks also put the enemies on the team's map. A missile contact
@@ -551,7 +659,8 @@ class ObservationBuilder:
         if picture is not None:
             team_marks = self.eng.marks[plane.team]
             for contact, truth in zip(picture.contacts, picture.truth_ids):
-                if contact.position is not None and truth < MISSILE_TRUTH:
+                if contact.position is not None and truth < MISSILE_TRUTH and \
+                        (self.eng.wreck_s is None or self.eng.planes[truth].alive):   # a wreck is never marked
                     team_marks[truth] = (contact.position[0], contact.position[1], contact.position[2], contact.updated_s)
         if picture is not None:
             if self.eng.radar_sees_missiles:
@@ -573,7 +682,7 @@ class ObservationBuilder:
         team_marks = eng.marks[plane.team]
         out = []
         for q in eng.live:
-            if q.team == plane.team:
+            if q.team == plane.team or q.grounded:
                 continue
             qp = q.own.position
             d = (qp[0]-px, qp[1]-py, qp[2]-pz)
@@ -583,6 +692,12 @@ class ObservationBuilder:
                     continue
                 out.append(Sighting("aircraft", eng.mark_ids[q.ident], bearing, elevation, None, t))
                 team_marks[q.ident] = (qp[0], qp[1], qp[2], t)
+        for q, qp, _ in eng.wrecks_seen_by(plane):   # wreck_s: seen like an aircraft, never put on the map
+            d = (qp[0]-px, qp[1]-py, qp[2]-pz)
+            if d[0]*d[0]+d[1]*d[1]+d[2]*d[2] <= VISUAL_RANGE_M*VISUAL_RANGE_M:
+                bearing, elevation = world_angles(d)
+                if plane.camera.sees(own, bearing, elevation):
+                    out.append(Sighting("aircraft", eng.mark_ids[q.ident], bearing, elevation, None, t))
         return out
 
     def _cues(self, plane: Plane, t):
@@ -592,7 +707,7 @@ class ObservationBuilder:
         px, py, pz = own.position
         maw, flames = [], []
         for m in self.eng.missiles:
-            if m.target is not plane or m.done or m.time_s > m.info.burn_s:
+            if m.target is not plane or m.done or m.time_s > m.info.burn_s or m.lost is not None:
                 continue
             mp = m.pos_enu
             d = (mp[0]-px, mp[1]-py, mp[2]-pz)
@@ -620,7 +735,7 @@ class ObservationBuilder:
         team_marks = eng.marks[plane.team]
         for ident in sorted(team_marks):
             x, y, z, seen = team_marks[ident]
-            if t-seen <= MAP_HOLD_S and eng.planes[ident].alive:
+            if t-seen <= MAP_HOLD_S and eng.planes[ident].alive and not eng.planes[ident].grounded:
                 marks.append(MapMark(eng.mark_ids[ident], x, y, None, seen))
         return marks
 
@@ -648,15 +763,17 @@ class ObservationBuilder:
         radar = {c.mark_id: c for c in (plane.picture.contacts if plane.picture else ())
                  if c.kind in ("track", "stt") and c.mark_id is not None}
         boxes, contrails, missiles = [], [], []
-        for q in eng.live:
-            if q is plane or q.team == plane.team:
+        objects = [(q, q.own.position, q.own.velocity) for q in eng.live]
+        objects.extend(eng.wrecks_seen_by(plane))   # wreck_s: a wreck is visible like an aircraft
+        for q, q_position, q_velocity in objects:
+            if q is plane or q.team == plane.team or q.grounded:
                 continue
-            d = tuple(b-a for a, b in zip(own.position, q.own.position))
+            d = tuple(b-a for a, b in zip(own.position, q_position))
             bearing, elevation = world_angles(d)
             if not plane.camera.sees(own, bearing, elevation):
                 continue
             ref = eng.mark_ids[q.ident]
-            if q.own.position[2] >= 9500.:
+            if q_position[2] >= 9500.:
                 contrails.append(Sighting("contrail", ref, bearing, elevation, None, t))
             if ref in seen or ref in radar:
                 # A radar box uses the radar estimate; a visual box has HUD range/closure (D).
@@ -666,7 +783,7 @@ class ObservationBuilder:
                                            c.closing_speed_mps or 0., q.aircraft, t))
                 else:
                     distance = math.sqrt(sum(v*v for v in d))
-                    closure = -sum((b-a)*r for a,b,r in zip(own.velocity,q.own.velocity,d))/max(distance,1.)
+                    closure = -sum((b-a)*r for a,b,r in zip(own.velocity,q_velocity,d))/max(distance,1.)
                     boxes.append(TargetBox(ref,bearing,elevation,distance,closure,q.aircraft,t))
         for m in eng.missiles:
             if m.done or m.shooter is plane:
@@ -685,10 +802,24 @@ class Engagement:
     def __init__(self, specs, seed=0, *, map_half_m=MAP_HALF_M, time_limit_s=TIME_LIMIT_S, library=None, replay=None,
                  truth_debug=False, decision_ticks=DECISION_TICKS, multipath_gain=None,
                  missile_marker_range_m=10000., retarget_dead=True, structural_speed=False, seeker_search=None,
-                 radar_sees_missiles=False, allow_missile_targets=False):
+                 radar_sees_missiles=False, allow_missile_targets=False, airfield=None, fuel=None, assist_rule=None,
+                 wreck_s=None):
         if not specs:
             raise ValueError("an engagement needs aircraft")
+        if wreck_s is not None and (isinstance(wreck_s, bool) or not isinstance(wreck_s, (int, float))
+                                    or not math.isfinite(wreck_s) or wreck_s <= 0):
+            raise ValueError("wreck_s must be None or a positive number of seconds")
+        # opt-in: a shot-down plane stays a wreck this long for the sensors of wreck_viewers (MatchEnv: policy planes)
+        self.wreck_s = None if wreck_s is None else float(wreck_s)
+        self.wrecks = {}                   # ident -> (death time, ENU position, velocity) when wreck_s is set
+        self.wreck_viewers = frozenset()
         self.seed, self.map_half_m, self.time_limit_s = seed, float(map_half_m), float(time_limit_s)
+        self.airfield = airfield_settings(airfield)   # opt-in: land, rearm, take off (AIRFIELD)
+        self._grounded_since = None
+        self.fuel = fuel_settings(fuel)               # opt-in: fuel load, burn, flameout (FUEL, docs/fuel_spec.md)
+        self.assist_rule = assist_rule_setting(assist_rule)   # opt-in "first_shot" (_kill); None: the 20 s window rule
+        self.assisted = set()                         # (shooter, victim) pairs credited with an assist
+        self.retargeted_uids = set()                  # missiles that took a new target after theirs died or landed
         self.library = library or default_library()
         if seeker_search is not None:
             from aim120_model.radar_seeker import validate_seeker_search
@@ -733,8 +864,12 @@ class Engagement:
     # -- construction ----------------------------------------------------------------------------------------
 
     def _add_plane(self, ident, spec, data):
-        model = aircraft_model(spec.aircraft, mass_factor=spec.mass_factor)
+        tank = self._fuel_tank(ident, spec) if self.fuel is not None else None   # opt-in fuel: mass from the load
+        model = aircraft_model(spec.aircraft, mass_factor=spec.mass_factor) if tank is None else \
+            aircraft_model(spec.aircraft, mass_kg=tank.mass_kg)
         flight = Aircraft(model, spec.position, spec.velocity, params=FlightParams(), structural_speed=self.structural_speed)
+        if tank is not None:
+            flight.fuel = tank
         equipment = data.equipment.get(spec.aircraft)
         radar_data = data.radars.get(equipment.radar) if equipment and equipment.radar else None
         rwr_data = data.rwrs.get(equipment.rwr) if equipment and equipment.rwr else None
@@ -751,6 +886,22 @@ class Engagement:
         self.chaff_specs[ident] = self.library.ChaffSpec(rcs_ratio=spec.rcs_ratio)
         self.planes.append(plane)
 
+    def _fuel_tank(self, ident, spec):
+        """fuel (opt-in): the load is ``fraction`` of the FM tank capacity, drawn from the plane's own generator; the
+        payload is the missiles carried."""
+        data = fuel_data(spec.aircraft)
+        capacity = data.max_kg if self.fuel["tanks"] == "max" else data.internal_kg
+        share = random.Random(f"{self.seed}:fuel:{ident}").uniform(*self.fuel["fraction"])
+        return FuelTank(data, capacity*share, spec.missiles*self.missile_mass(spec.missile))
+
+    def missile_mass(self, missile_id):
+        """Launch mass of one missile (missile_sim geometry.initial_mass_kg, A as far as the profile goes), else
+        MISSILE_MASS_KG."""
+        if missile_id is None:
+            return 0.
+        mass = (self.library.profile(missile_id).get("geometry") or {}).get("initial_mass_kg")
+        return float(mass) if isinstance(mass, (int, float)) and not isinstance(mass, bool) and mass > 0 else MISSILE_MASS_KG
+
     def _header(self):
         planes = []
         for p in self.planes:
@@ -759,12 +910,23 @@ class Engagement:
                                skill=p.spec.skill, missile=p.missile_id, missiles=p.missiles, chaff=p.chaff,
                                rcs_ratio=p.rcs_ratio, radar=p.radar.radar.id if p.radar else None,
                                rwr=p.rwr.rwr.id if p.rwr else None, mass_kg=round(p.flight.model.mass),
-                               script=describe() if describe is not None else None))
-        return dict(type="header", version=1, seed=self.seed, map_half_m=self.map_half_m, tick_s=SUBSTEP_S,
-                    frame_dt_s=FRAME_TICKS*SUBSTEP_S, time_limit_s=self.time_limit_s, planes=planes,
-                    plane_columns=["id", "x", "y", "z", "vx", "vy", "vz", "heading_deg", "missiles", "chaff", "phase"],
-                    missile_columns=["uid", "owner", "target", "x", "y", "z", "vx", "vy", "vz", "heading_deg", "age_s", "seeker",
-                                     "datalink", *(["tracked_by"] if self.radar_sees_missiles else [])])
+                               # population v2 specs keep the pilot's draws (script_params) for when MatchEnv has
+                               # taken the controller off the spec; v1 specs have none, so this stays None there.
+                               script=describe() if describe is not None else getattr(p.spec, "script_params", None)))
+        header = dict(type="header", version=1, seed=self.seed, map_half_m=self.map_half_m, tick_s=SUBSTEP_S,
+                      frame_dt_s=FRAME_TICKS*SUBSTEP_S, time_limit_s=self.time_limit_s, planes=planes,
+                      plane_columns=["id", "x", "y", "z", "vx", "vy", "vz", "heading_deg", "missiles", "chaff", "phase",
+                                     *(["fuel_kg"] if self.fuel is not None else [])],
+                      missile_columns=["uid", "owner", "target", "x", "y", "z", "vx", "vy", "vz", "heading_deg", "age_s",
+                                       "seeker", "datalink", *(["tracked_by"] if self.radar_sees_missiles else [])])
+        if self.airfield is not None:   # per plane id: airfield x, y and take-off heading
+            header["airfield"] = dict(self.airfield, bases=[[round(p.airfield_xy[0], 1), round(p.airfield_xy[1], 1),
+                                                             round(p.takeoff_deg, 1)] for p in self.planes])
+        if self.fuel is not None:   # per plane id: initial fuel and tank capacity, kg (mass_kg above includes the fuel)
+            header["fuel"] = dict(self.fuel, fraction=list(self.fuel["fraction"]), loads=[
+                [round(p.flight.fuel.initial_kg, 1), round(fuel_data(p.aircraft).max_kg if self.fuel["tanks"] == "max"
+                                                           else fuel_data(p.aircraft).internal_kg, 1)] for p in self.planes])
+        return header
 
     # -- helpers ---------------------------------------------------------------------------------------------
 
@@ -796,7 +958,8 @@ class Engagement:
         self._decide()
         t1 = clock()
         for p in self.live:
-            p.flight.step()
+            if not p.grounded:
+                p.flight.step()
         self.tick += 1   # From here on the world is at the end of the tick: events and sensors carry that time.
         t2 = clock()
         self._advance_missiles()
@@ -849,6 +1012,8 @@ class Engagement:
                 advance(self,p)
 
     def apply(self, plane: Plane, action: Action):
+        if plane.grounded:   # airfield: on the ground only the go-home rule (want_home) acts
+            return
         if action.flight is not None:
             plane.flight.command = action.flight
         if action.radar is not None and plane.radar is not None:
@@ -881,7 +1046,7 @@ class Engagement:
         """Fire a missile at the target of radar track id ``track`` (``STT_TRACK`` = the STT target) of the picture the
         plane's controller just saw. Needs ammunition, 1 s since the last launch and a TWS track or STT on the target."""
         picture = plane.picture
-        if picture is None or plane.missiles <= 0 or plane.missile_id is None or not plane.alive:
+        if picture is None or plane.missiles <= 0 or plane.missile_id is None or not plane.alive or plane.grounded:
             return None
         if self.time-plane.last_launch < LAUNCH_GAP_S-1e-9:
             return None
@@ -897,14 +1062,19 @@ class Engagement:
         if abs(contact.azimuth_deg) > launch_limit(plane.aircraft, plane.missile_id):
             return None
         target = self.planes[truth]
-        if not target.alive or target.team == plane.team:
+        if not target.alive and self.wreck_s is not None and plane.ident in self.wreck_viewers and \
+                target.team != plane.team and self.wreck_state(truth) is not None:
+            return self.fire(plane, target, wreck=True)   # wreck_s: a missile wasted on a wreck
+        if not target.alive or target.team == plane.team or target.grounded:
             return None
         return self.fire(plane, target)
 
-    def fire(self, plane: Plane, target: Plane) -> MissileFlight:
-        """Create the missile (no track or ammunition checks; ``launch`` makes them)."""
+    def fire(self, plane: Plane, target: Plane, wreck=False) -> MissileFlight:
+        """Create the missile (no track or ammunition checks; ``launch`` makes them). ``wreck``: fired at a wreck
+        (wreck_s); it never takes a new target."""
         info = self.library.info(plane.missile_id)
         m = MissileFlight(self._uid, plane, target, info, self.time)
+        m.wreck_shot = bool(wreck)
         self._uid += 1
         state = plane.flight.state
         v = state.velocity
@@ -920,6 +1090,10 @@ class Engagement:
             **({"seeker_search": self.seeker_search} if self.seeker_search is not None else {}), **LAUNCH_OPTIONS)
         m.pos_enu, m.vel_enu = state.position, v
         plane.missiles -= 1
+        if plane.flight.fuel is not None:   # opt-in fuel: the missile's mass leaves with it
+            tank = plane.flight.fuel
+            tank.payload_kg = max(0., tank.payload_kg-self.missile_mass(plane.missile_id))
+            tank.sync(plane.flight.model)
         plane.launches += 1
         plane.last_launch = self.time
         self.launches += 1
@@ -938,7 +1112,7 @@ class Engagement:
 
     def drop_chaff(self, plane: Plane, n: int):
         n = min(int(n), plane.chaff)
-        if n <= 0:
+        if n <= 0 or plane.grounded:
             return 0
         t = self.time
         state = plane.flight.state
@@ -962,7 +1136,7 @@ class Engagement:
         for m in self.missiles:
             if m.done:
                 continue
-            if self.retarget_dead and not m.target.alive:
+            if self.retarget_dead and (not m.target.alive or m.lost is not None) and not m.wreck_shot:
                 self._retarget(m)
             try:
                 m.runtime.step()
@@ -977,7 +1151,7 @@ class Engagement:
             state = rt.state
             m.time_s = rt.time_s
             m.pos_enu, m.vel_enu = (state[0], -state[2], state[1]), (state[3], -state[5], state[4])
-            tp = m.target.flight.state.position
+            tp = m.target.flight.state.position if m.lost is None else m.lost
             d = (m.pos_enu[0]-tp[0], m.pos_enu[1]-tp[1], m.pos_enu[2]-tp[2])
             d2 = d[0]*d[0]+d[1]*d[1]+d[2]*d[2]
             if d2 < m.min_dist2:
@@ -1010,10 +1184,14 @@ class Engagement:
             m.hist[2] = t
             self.event("missile_end", uid=m.uid, shooter=m.shooter.ident, target=m.target.ident, result=m.event,
                        miss_m=round(math.sqrt(m.min_dist2), 1), flight_s=round(m.time_s, 2))
-            if m.event in KILL_EVENTS and m.target.alive:
+            if m.event in KILL_EVENTS and m.target.alive and m.lost is None:
                 self._kill(m.target, m.shooter, "missile", m)
             m.runtime = m.proxy = None  # free the sample history
+        if self.fuel is not None:
+            self._flameouts()
         for p in self.live:
+            if p.grounded:
+                continue
             if p.flight.crashed:
                 self._kill(p, None, "crash", None)
             elif p.flight.overspeed:
@@ -1024,13 +1202,15 @@ class Engagement:
                     self._kill(p, None, "out_of_bounds", None)
             else:
                 p.oob_s = 0.
-        dead = [m for m in self.missiles if m.done or (not self.retarget_dead and not m.target.alive)]
+        if self.airfield is not None:
+            self._airfield()
+        dead = [m for m in self.missiles if m.done or (not self.retarget_dead and (not m.target.alive or m.lost is not None))]
         if dead:
             for m in dead:
                 if not m.done:
-                    m.done, m.event = True, "target_dead"
+                    m.done, m.event = True, "target_dead" if m.lost is None else "target_lost"
                     self.event("missile_end", uid=m.uid, shooter=m.shooter.ident, target=m.target.ident,
-                               result="target_dead", miss_m=round(math.sqrt(m.min_dist2), 1), flight_s=round(m.time_s, 2))
+                               result=m.event, miss_m=round(math.sqrt(m.min_dist2), 1), flight_s=round(m.time_s, 2))
                     m.hist[2] = t
                     m.runtime = m.proxy = None
             self.missiles = [m for m in self.missiles if not m.done]
@@ -1042,6 +1222,8 @@ class Engagement:
         half = float(seeker.get("angle_max_deg") or 60.)
         candidates = []
         for p in self.live:
+            if p.grounded:
+                continue
             d = tuple(b-a for a,b in zip(m.pos_enu,p.flight.state.position))
             distance = math.sqrt(sum(x*x for x in d))
             if distance > 1. and sum(a*b for a,b in zip(d,nose))/distance >= math.cos(math.radians(half)):
@@ -1053,7 +1235,8 @@ class Engagement:
             m.target.missile_hist.append([m.shooter.ident, self.time, None])
             m.hist = m.target.missile_hist[-1]
             m.retargeted = True
-            m.min_dist2, m.aware_at = math.inf, None
+            self.retargeted_uids.add(m.uid)   # rl_env retarget_kill_reward: its kill is credited apart
+            m.min_dist2, m.aware_at, m.lost = math.inf, None, None
             self.retarget_count += 1
             self.event("retarget", uid=m.uid, old=old.ident, target=m.target.ident,
                        friendly=m.target.team == m.shooter.team)
@@ -1065,6 +1248,9 @@ class Engagement:
         victim.alive = False
         victim.death = dict(cause=cause, time_s=round(t, 3), killer=None if killer is None else killer.ident)
         self.live = [p for p in self.live if p.alive]
+        if self.wreck_s is not None:
+            state = victim.flight.state
+            self.wrecks[victim.ident] = (t, tuple(state.position), tuple(state.velocity))
         record = dict(victim=victim.ident, cause=cause, killer=None if killer is None else killer.ident,
                       time_s=round(t, 3), uid=None if missile is None else missile.uid)
         self.deaths.append(record)
@@ -1076,13 +1262,20 @@ class Engagement:
             killer.kills += 1
             self.kills.append(record)
             self.event("kill", **record)
-            # Assist: a teammate of the killer had a missile in flight at the victim in the last 20 s.
+            # Assist: a teammate of the killer had a missile in flight at the victim in the last 20 s. assist_rule
+            # "first_shot" (opt-in): only a missile aimed at the victim before the killing missile was (its launch, or
+            # its retarget; without a missile object the kill time), and once per (shooter, victim) in the match.
+            first = self.assist_rule == "first_shot"
+            shot = (t if missile is None else missile.hist[1]) if first else None
             credited = set()
             for shooter, t_launch, t_end in victim.missile_hist:
                 other = self.planes[shooter]
                 if other.team == killer.team and other is not killer and shooter not in credited \
-                        and (t_end is None or t_end >= t-20.):
+                        and (t_end is None or t_end >= t-20.) \
+                        and (not first or (t_launch < shot and (shooter, victim.ident) not in self.assisted)):
                     credited.add(shooter)
+                    if first:
+                        self.assisted.add((shooter, victim.ident))
                     other.assists += 1
                     self.event("assist", plane=shooter, victim=victim.ident)
         f = victim.flight
@@ -1094,6 +1287,133 @@ class Engagement:
                        aware_at=missile.aware_at, impact_at=t,
                        reaction_s=None if missile.aware_at is None else t-missile.aware_at)
 
+    # -- wrecks (opt-in) -------------------------------------------------------------------------------------
+
+    def wreck_state(self, ident, t=None):
+        """wreck_s: (ENU position, velocity) of the wreck of shot-down ``ident`` at ``t`` (default now), None when it
+        is not a wreck or has gone (more than wreck_s after the death). It keeps its last velocity under gravity and
+        stops on the ground (D)."""
+        w = self.wrecks.get(ident)
+        if w is None:
+            return None
+        t0, (x, y, z), (vx, vy, vz) = w
+        tau = (self.time if t is None else t)-t0
+        if tau < -1e-9 or tau > self.wreck_s+1e-9:
+            return None
+        tau = max(0., tau)
+        if z <= 0.:
+            return (x, y, 0.), (0., 0., 0.)
+        g = 9.80665
+        ground = (vz+math.sqrt(vz*vz+2.*g*z))/g
+        if tau >= ground:
+            return (x+vx*ground, y+vy*ground, 0.), (0., 0., 0.)
+        return (x+vx*tau, y+vy*tau, z+vz*tau-.5*g*tau*tau), (vx, vy, vz-g*tau)
+
+    def _wreck_truths(self):
+        """Per team, the TargetTruth of each wreck still there (radar targets of the wreck viewers)."""
+        out = ([], [])
+        for ident in sorted(self.wrecks):
+            state = self.wreck_state(ident)
+            if state is not None:
+                q = self.planes[ident]
+                out[q.team].append(TargetTruth(ident, state[0], state[1], q.rcs_m2))
+        return out
+
+    def wrecks_seen_by(self, plane):
+        """(plane, position, velocity) of the enemy wrecks ``plane`` may see (it is a wreck viewer); [] otherwise."""
+        if self.wreck_s is None or not self.wrecks or plane.ident not in self.wreck_viewers:
+            return []
+        out = []
+        for ident in sorted(self.wrecks):
+            q = self.planes[ident]
+            if q.team != plane.team:
+                state = self.wreck_state(ident)
+                if state is not None:
+                    out.append((q, state[0], state[1]))
+        return out
+
+    # -- fuel (opt-in) ---------------------------------------------------------------------------------------
+
+    def _flameouts(self):
+        """A 'flameout' event when a flying plane's tanks run dry (flight.FuelTank); it glides on with no thrust."""
+        for p in self.live:
+            tank = p.flight.fuel
+            if tank is not None and tank.out and not tank.logged and not p.grounded:
+                tank.logged = True
+                f = p.flight
+                self.event("flameout", plane=p.ident, altitude_m=round(f.altitude, 1), speed_mps=round(f.speed, 1),
+                           ias_kmh=round(f.indicated()*3.6))
+
+    # -- airfield (opt-in) -----------------------------------------------------------------------------------
+
+    def _airfield(self):
+        """Land a plane whose executed intent is go-home (``want_home``) near its airfield, low and slow enough; refill
+        missiles and chaff ``turnaround_s`` after the landing; then take off as soon as the intent is no longer go-home."""
+        a, t = self.airfield, self.time
+        for p in self.live:
+            if p.grounded:
+                if not p.rearmed and t-p.ground_t >= a["turnaround_s"]-1e-9:
+                    p.missiles, p.chaff, p.rearmed = p.spec.missiles, p.spec.chaff, True
+                    p.rearms += 1
+                    tank = p.flight.fuel
+                    if tank is not None:   # opt-in fuel: refuelled to the initial load, payload back to full
+                        tank.refuel(p.flight.model, p.missiles*self.missile_mass(p.missile_id))
+                    self.event("rearm", plane=p.ident, missiles=p.missiles, chaff=p.chaff,
+                               **({} if tank is None else dict(fuel_kg=round(tank.kg, 1))))
+                if p.rearmed and not p.want_home:
+                    self._takeoff(p)
+            elif p.want_home:
+                f = p.flight
+                x, y, z = f.state.position
+                if z <= a["land_max_alt_m"] and math.hypot(x-p.airfield_xy[0], y-p.airfield_xy[1]) <= a["land_radius_m"] \
+                        and f.indicated()*3.6 <= a["land_max_ias_kmh"]:
+                    self._land(p)
+
+    def _land(self, p):
+        """Park ``p`` on its airfield: radar off, gone from every radar, map and seeker (missiles chasing it guide at the
+        touchdown point like at a wreck and may retarget); its own missiles fly on without datalink."""
+        t, f = self.time, p.flight
+        x, y, z = f.state.position
+        p.grounded, p.rearmed, p.ground_t, p.oob_s = True, False, t, 0.
+        p.landings += 1
+        if p.radar is not None:
+            p.radar.set_mode("off")
+        p.tracked, p.picture, p.rwr_picture = set(), None, None
+        for q in self.live:
+            if q.team != p.team and q.radar is not None:
+                q.radar.forget(p.ident)
+                if p.ident in q.tracked:
+                    q.tracked = q.tracked-{p.ident}
+                    self.event("track_lost", plane=q.ident, target=p.ident, supporting=any(
+                        m.shooter is q and m.target is p and not m.done for m in self.missiles))
+        self.marks[1-p.team].pop(p.ident, None)
+        for m in self.missiles:
+            if m.target is p and not m.done:
+                m.lost = f.state.position
+                m.hist[2] = t
+                m.hist = [m.shooter.ident, m.t_launch, t]   # detached: no longer counted as a missile at p
+        p.own = OwnState((p.airfield_xy[0], p.airfield_xy[1], 0.), (0., 0., 0.), p.takeoff_deg)
+        self.event("landing", plane=p.ident, missiles=p.missiles, chaff=p.chaff, altitude_m=round(z),
+                   ias_kmh=round(f.indicated()*3.6), distance_m=round(math.hypot(x-p.airfield_xy[0], y-p.airfield_xy[1])))
+
+    def _takeoff(self, p):
+        """A fresh flight model over the airfield at takeoff_alt_m / takeoff_ias_kmh, heading for the enemy spawn."""
+        a, old = self.airfield, p.flight
+        alt = a["takeoff_alt_m"]
+        tas = a["takeoff_ias_kmh"]/3.6/math.sqrt(atmosphere(alt)[0]/1.225)
+        h = math.radians(p.takeoff_deg)
+        p.flight = Aircraft(old.model, (p.airfield_xy[0], p.airfield_xy[1], alt), (tas*math.sin(h), tas*math.cos(h), 0.),
+                            params=old.params, t0=self.time, structural_speed=self.structural_speed)
+        p.flight.faults = old.faults
+        if old.fuel is not None:   # opt-in fuel: the tank (refuelled at the rearm) stays with the plane
+            p.flight.fuel = old.fuel
+        p.flight.command = FlightCommand(heading_deg=p.takeoff_deg, altitude_m=alt)
+        p.grounded, p.rearmed, p.ground_t = False, False, None
+        p.takeoffs += 1
+        if p.radar is not None:
+            p.radar.set_mode("tws", 0, 0., 0., t=self.time)
+        self.event("takeoff", plane=p.ident, missiles=p.missiles, chaff=p.chaff)
+
     # -- sensors ---------------------------------------------------------------------------------------------
 
     def _sense(self):
@@ -1103,6 +1423,8 @@ class Engagement:
         t0 = clock()
         truths = ([], [])
         for p in live:
+            if p.grounded:   # airfield: p.own was set at the landing; no sensor sees a parked plane
+                continue
             f = p.flight
             heading, pitch, roll = f.attitude()
             p.own = own = OwnState(f.state.position, f.state.velocity, heading, pitch, roll)
@@ -1112,12 +1434,16 @@ class Engagement:
                 if not m.done:
                     truths[m.shooter.team].append(TargetTruth(MISSILE_TRUTH+m.uid, m.pos_enu, m.vel_enu, MISSILE_RCS_M2))
         radar_timing = self.radar_timing
+        wrecks = self._wreck_truths() if self.wrecks and self.wreck_viewers else None
         for p in live:
             radar = p.radar
             if radar is None or radar.mode == "off":
                 continue
             a = clock()
-            radar.update(t, SUBSTEP_S, p.own, truths[1-p.team], report=False)
+            targets = truths[1-p.team]
+            if wrecks is not None and wrecks[1-p.team] and p.ident in self.wreck_viewers:
+                targets = targets+wrecks[1-p.team]   # wreck_s: a wreck is a radar target for the viewers
+            radar.update(t, SUBSTEP_S, p.own, targets, report=False)
             tracked = radar.tracked_ids()
             if tracked != p.tracked:
                 for gone in sorted(p.tracked-tracked):
@@ -1138,7 +1464,7 @@ class Engagement:
         emissions = {}
         receivers = ([], [])
         for p in live:
-            if p.rwr is not None:
+            if p.rwr is not None and not p.grounded:
                 receivers[p.team].append((p.ident, p.own.position))
         for p in live:
             radar = p.radar
@@ -1150,7 +1476,7 @@ class Engagement:
             for rid in radar.illuminated(t, p.own, receivers[1-p.team], SUBSTEP_S):
                 emissions.setdefault(rid, []).append(Emission(p.ident, p.own.position, kind, radar.band, True, radar.radar.id))
         for m in self.missiles:
-            if m.seeker_on and not m.done and m.target.alive:
+            if m.seeker_on and not m.done and m.target.alive and m.lost is None:
                 emissions.setdefault(m.target.ident, []).append(
                     Emission(1000000+m.uid, m.pos_enu, "missile", 8, True, None))
         rwr_timing = self.rwr_timing
@@ -1184,7 +1510,7 @@ class Engagement:
         self.timing["radar"] += t1-t0
         self.timing["rwr"] += t2-t1
         for p in live:
-            phase = p.phase
+            phase = "ground" if p.grounded else p.phase
             p.phase_time[phase] = p.phase_time.get(phase, 0.)+SUBSTEP_S
 
     # -- replay and end --------------------------------------------------------------------------------------
@@ -1193,10 +1519,14 @@ class Engagement:
         r1 = lambda x: round(x, 1)  # noqa: E731
         planes = []
         for p in self.live:
-            s = p.flight.state
-            pos, v = s.position, s.velocity
+            if p.grounded:
+                pos, v, phase = p.own.position, p.own.velocity, "ground"
+            else:
+                s = p.flight.state
+                pos, v, phase = s.position, s.velocity, p.phase
             planes.append([p.ident, r1(pos[0]), r1(pos[1]), r1(pos[2]), r1(v[0]), r1(v[1]), r1(v[2]),
-                           r1(p.own.heading_deg) % 360., p.missiles, p.chaff, p.phase])
+                           r1(p.own.heading_deg) % 360., p.missiles, p.chaff, phase,
+                           *([r1(p.flight.fuel.kg)] if self.fuel is not None else [])])   # fuel (opt-in): fuel_kg
         missiles = [[m.uid, m.shooter.ident, m.target.ident, r1(m.pos_enu[0]), r1(m.pos_enu[1]), r1(m.pos_enu[2]),
                      r1(m.vel_enu[0]), r1(m.vel_enu[1]), r1(m.vel_enu[2]),
                      r1(math.degrees(math.atan2(m.vel_enu[0], m.vel_enu[1])) % 360.) % 360., round(m.time_s, 2), int(m.seeker_on),
@@ -1230,6 +1560,15 @@ class Engagement:
                               for b in self.live if b.team == 1)
                 if nearest >= FAR_M:
                     self.reason = "stalemate"
+        if self.reason is None and self.airfield is not None:
+            # airfield: everyone alive parked and no missile in the air for all_grounded_end_s ends the match early
+            if self.missiles or not all(p.grounded for p in self.live):
+                self._grounded_since = None
+            else:
+                if self._grounded_since is None:
+                    self._grounded_since = self.time
+                if self.time-self._grounded_since >= self.airfield["all_grounded_end_s"]-1e-9:
+                    self.reason = "all_grounded"
         if self.reason is not None:
             self.event("end", reason=self.reason)
             if self.replay is not None:
@@ -1239,10 +1578,14 @@ class Engagement:
                 self.replay.close()
 
     def summary(self):
+        planes = [dict(id=p.ident, alive=p.alive, kills=p.kills, assists=p.assists, launches=p.launches,
+                       chaff_used=p.chaff_used, missiles_left=p.missiles, death=p.death, fm_faults=p.flight.faults)
+                  for p in self.planes]
+        if self.airfield is not None:
+            for row, p in zip(planes, self.planes):
+                row.update(grounded=p.grounded, landings=p.landings, rearms=p.rearms, takeoffs=p.takeoffs)
         return dict(teams_alive=list(self.alive_counts()), kills=self.kills, deaths=self.deaths, launches=self.launches,
-                    planes=[dict(id=p.ident, alive=p.alive, kills=p.kills, assists=p.assists, launches=p.launches,
-                                 chaff_used=p.chaff_used, missiles_left=p.missiles, death=p.death,
-                                 fm_faults=p.flight.faults) for p in self.planes])
+                    planes=planes)
 
     def result(self) -> Result:
         phase_time = {}

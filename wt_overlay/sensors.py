@@ -422,9 +422,27 @@ class RadarSensor:
             return {self._stt.truth}
         return set()
 
+    def forget(self, truth):
+        """Drop every track and blip of ``truth`` and the STT lock on it (a target that left the air: it landed)."""
+        self._tracks = [k for k in self._tracks if k.truth != truth]
+        self._blips.pop(truth, None)
+        if self.mode == "stt" and self._stt_truth == truth:
+            self._end_stt(self._t or 0.)
+
     def track_truth(self, track_id):
         """Truth id behind the confirmed TWS track ``track_id`` now, None if there is none (engagement manager only)."""
         return next((k.truth for k in self._tracks if k.id is not None and k.id == track_id), None)
+
+    def elevation_coverage(self):
+        """(low, high) elevation in degrees, in the scan frame (above the horizon while the scan is stabilised), that
+        the selected scan covers: the lowest bar centre minus the beam half width to the top bar centre plus it. In STT
+        it is the scan the radar returns to after the lock (the radar keeps it). None before any scan was selected.
+        Read only (the policy's B-scope view, wt_overlay/policy_view.py); detection does not use it."""
+        if self._scan is None:
+            return None
+        _, bars, _, _, bh, _, e_top = self._scan
+        he = self._beam[1]
+        return e_top-(bars-1)*bh-he, e_top+he
 
     # -- geometry -----------------------------------------------------------------------------------------
 

@@ -6,17 +6,78 @@ rl_training_spec 13/13.1 and can replace FakeMatchEnv in the existing trainer.
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import math
 import random
 
-from .engagement import Camera, default_library, MAP_HALF_M
+from .engagement import Camera, airfield_settings, assist_rule_setting, default_library, fuel_settings, MAP_HALF_M
 from .intent import Intent, IntentExecutor, legalize, selected_mask, SAMPLE_ORDER
 from . import match
-from .rl_observation import (select_entities, masks_for, own_vector, entity_vector,
+from .rl_observation import (select_entities, select_view_entities, masks_for, own_vector, entity_vector,
                              prev_vector, truth_vectors)
+from .policy_view import PolicyView, policy_marks, update_spotting, view_settings, without_wrecks
 from .reach import ReachTable
 
 DT_STEP = 20/48
+
+# Opt-in teachers (config teacher {name: settings}, docs/kickstart_spec.md): per-decision labels for some heads of the
+# policy agents, info["teacher"] {aid: {head: option, "name": teacher}}; the trainer's ppo.kickstart imitates them.
+# climb: the opening climb (vertical head) until target_m - CLIMB_DEADBAND_M, before until_s of match time, at or
+# above min_speed_mps, without a perceived missile threat, when the vertical head is free (not held).
+TEACHERS = dict(climb=dict(target_m=8000., until_s=150., steep_below_m=2000., min_speed_mps=250.))
+CLIMB_DEADBAND_M = 300.
+
+
+def teacher_settings(value):
+    """config teacher -> {name: settings with the TEACHERS defaults filled in}; None when absent. ValueError for an
+    unknown teacher, an unknown key or a bad value."""
+    if value is None:
+        return None
+    if not isinstance(value,dict):
+        raise ValueError('teacher must be a dict {name: settings}, names from '+', '.join(TEACHERS))
+    out={}
+    for name,s in value.items():
+        if name not in TEACHERS:
+            raise ValueError('unknown teacher %r (known: %s)'%(name,', '.join(TEACHERS)))
+        s={} if s is None else s
+        if not isinstance(s,dict) or set(s)-set(TEACHERS[name]):
+            raise ValueError('teacher %s takes keys from %s'%(name,', '.join(TEACHERS[name])))
+        merged=dict(TEACHERS[name])
+        for k,v in s.items():
+            if isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0:
+                raise ValueError('teacher %s.%s must be a number >= 0'%(name,k))
+            merged[k]=float(v)
+        if name=='climb' and not (merged['target_m']>CLIMB_DEADBAND_M and merged['until_s']>0):
+            raise ValueError('teacher climb needs target_m > %g and until_s > 0'%CLIMB_DEADBAND_M)
+        out[name]=merged
+    return out
+
+
+def missile_threat(raw, entities, maw=True):
+    """True when the agent perceives a missile: an RWR missile warning, a MAW warning (only when its executor gives the
+    actor MAW, maw_entities), a missile plume or missile marker, or such an entity (also a remembered one, or a radar
+    track the radar names a missile) in its entity list."""
+    if any(c.missile_warning for c in raw.rwr) or (maw and raw.maw) or raw.flames or raw.missile_marks:
+        return True
+    return any(e.kind in ('maw','flame','missile_marker') or e.warning=='missile' or
+               (e.kind=='radar' and e.aircraft=='missile') for e in entities)
+
+
+def climb_label(s, raw, entities, masks, executor):
+    """The climb teacher's label {"vertical": option} for one decision, or None (section TEACHERS)."""
+    own=raw.own
+    if raw.grounded or raw.time_s>=s['until_s'] or own.altitude_m>=s['target_m']-CLIMB_DEADBAND_M \
+            or own.speed_mps<s['min_speed_mps']:
+        return None
+    rows=masks['vertical'][0]   # view_mode 0 (aim), maneuver_ref an entity / none: all options legal unless held
+    if not (all(rows[0]) and all(rows[1])) or missile_threat(raw,entities,getattr(executor,'maw_entities',True)):
+        return None
+    if getattr(executor,'vertical_mode','altitude')=='angle':
+        return {'vertical':1 if s['target_m']-own.altitude_m>s['steep_below_m'] else 2}
+    return {'vertical':1 if abs(s['target_m']-11000.)<abs(s['target_m']-8000.) else 2}   # the 11 km / 8 km option
+
+
+TEACH = dict(climb=climb_label)
 
 
 @dataclass
@@ -72,8 +133,9 @@ def equip_scripts(eng, *, fov_range=(90.,120.), execution=None, reach_dir=None):
         pilot.performance_model=p.flight.model
         p.camera=Camera(rng.uniform(*fov_range))
         p.camera.advance(p.own,0.)
+        # population v2: the pilot's own reaction-delay median on the autonomous path (v1: execution unchanged)
         executor=IntentExecutor(f'{eng.seed}:executor:{p.ident}',path='autonomous',
-                                home_xy=pilot.home_xy,**(execution or {}))
+                                home_xy=pilot.home_xy,airfield=eng.airfield,**pilot.execution_settings(execution))
         reach=ReachTable.load(p.missile_id,reach_dir) if p.missile_id else None
         p.controller=ScriptController(pilot,executor,reach)
     return eng
@@ -112,6 +174,21 @@ class MatchEnv:
         deck=self.config.get('policy_deck_m',100.)
         if isinstance(deck,bool) or not isinstance(deck,(int,float)) or not 0<deck<=8000:
             raise ValueError('policy_deck_m must be a number in (0, 8000]')
+        # policy_count [lo, hi] (opt-in, team play): in an episode against scripts the policy flies k of policy_ids,
+        # k uniform in lo..hi and the slots drawn at random; the rest of its team is flown by their scripts (the
+        # human's teammates in real use). Self-play and history episodes still control every slot.
+        pc=self.config.get('policy_count')
+        if pc is not None and (not isinstance(pc,(list,tuple)) or len(pc)!=2 or any(type(k) is not int for k in pc)
+                               or not 1<=pc[0]<=pc[1]):
+            raise ValueError('policy_count must be [lo, hi] with 1 <= lo <= hi')
+        # team_size_mix [[size, weight], ...] (opt-in): every random-match episode draws its team size by weight (e.g.
+        # some 1v1s inside 4v4 training, so 1v1 skill is not forgotten); policy_ids outside the drawn team 0 (slots
+        # 0..size-1) sit that episode out and policy_count is clipped to the ones left.
+        mix=self.config.get('team_size_mix')
+        if mix is not None and (not isinstance(mix,(list,tuple)) or not mix or 'teams' in self.config or any(
+                not isinstance(m,(list,tuple)) or len(m)!=2 or type(m[0]) is not int or not 1<=m[0]<=16
+                or isinstance(m[1],bool) or not isinstance(m[1],(int,float)) or m[1]<=0 for m in mix)):
+            raise ValueError('team_size_mix must be [[team size 1..16, weight > 0], ...] without teams')
         frame=self.config.get('observation_frame','world')
         if frame not in ('world','egocentric'):
             raise ValueError("observation_frame must be 'world' or 'egocentric'")
@@ -128,6 +205,27 @@ class MatchEnv:
         for name in ('radar_sees_missiles','allow_missile_targets'):
             if not isinstance(self.config.get(name,False),bool):
                 raise ValueError(name+' must be True or False')
+        # Opt-in (docs/airfield_rearm_spec.md): airfield {} (engagement.AIRFIELD keys) lands, rearms and relaunches
+        # aircraft that go home; friendly_fire_reward goes to the shooter of a friendly kill.
+        airfield_settings(self.config.get('airfield'))
+        ff=self.config.get('friendly_fire_reward')
+        if ff is not None and (isinstance(ff,bool) or not isinstance(ff,(int,float))):
+            raise ValueError('friendly_fire_reward must be a number')
+        # Opt-in reward anti-spam (docs/fuel_spec.md section 1): assist_rule "first_shot" (Engagement._kill), launch_reward
+        # per launch of a policy aircraft, retarget_kill_reward for a kill by a missile that took a new target after its
+        # own died or landed (instead of +1). Opt-in fuel {} (engagement.FUEL keys): fuel load, burn, flameout, refuel.
+        assist_rule_setting(self.config.get('assist_rule'))
+        for name in ('launch_reward','retarget_kill_reward'):
+            v=self.config.get(name)
+            if v is not None and (isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v)):
+                raise ValueError(name+' must be a number')
+        fuel_settings(self.config.get('fuel'))
+        # Opt-in teacher labels (docs/kickstart_spec.md): absent = no info key and no teacher_labels attribute.
+        self.teacher=teacher_settings(self.config.get('teacher'))
+        # Opt-in policy views (wt_overlay/policy_view.py; all absent = None, the observation as before): radar_display
+        # 'bscope', launch_zone_info False, map_spotting_m / map_hold_s, wreck_s. They change only what the policy
+        # aircraft are given; scripts, the critic's truth, masks and execution stay as they are.
+        self.view=view_settings(self.config)
         self.library=default_library(self.config.get('missile_sim'))
 
     def reset(self):
@@ -155,7 +253,9 @@ class MatchEnv:
             generated=match.scenario(c['teams'],episode_seed,range_km=c.get('range_km'),layout=c.get('spawn_layout'),
                                      perturb=c.get('script_perturbation'),**kwargs)
         else:
-            generated=match.random_match(episode_seed,team_size=c.get('team_size',1),layout=c.get('spawn_layout'),
+            mix=c.get('team_size_mix')
+            n=c.get('team_size',1) if mix is None else self.rng.choices([m[0] for m in mix],[m[1] for m in mix])[0]
+            generated=match.random_match(episode_seed,team_size=n,layout=c.get('spawn_layout'),
                                          perturb=c.get('script_perturbation'),**kwargs)
         fov=c.get('fov_range',(90.,120.))
         if len(fov)!=2 or not 0<fov[0]<=fov[1]<180.:
@@ -171,10 +271,20 @@ class MatchEnv:
             ids=list(range(c.get('n_agents',1)))
         elif ids=='all':
             ids=list(range(len(generated.specs)))
+        configured=len(ids)
+        mix=c.get('team_size_mix')
+        if mix is not None:
+            ids=[i for i in ids if not (type(i) is int and i>=n)]
         if not ids or len(set(ids))!=len(ids) or any(type(i) is not int or not 0<=i<len(generated.specs) for i in ids):
             raise ValueError('policy_ids must be distinct valid aircraft slots')
+        pc=c.get('policy_count')
+        if pc is not None and pc[1]>configured:
+            raise ValueError('policy_count upper bound exceeds the number of policy_ids')
         if self.self_play or self.history:
             ids=list(range(len(generated.specs)))   # validated above, so a bad config fails on every episode kind
+        elif pc is not None:
+            k=self.rng.randint(*pc) if mix is None else self.rng.randint(min(pc[0],len(ids)),min(pc[1],len(ids)))
+            ids=sorted(self.rng.sample(list(ids),k))
         self.policy_ids=tuple(ids)
         self.frozen_ids=tuple(i for i,s in enumerate(generated.specs) if s.team==frozen_side) if self.history else ()
         self.pilots={i:s.controller for i,s in enumerate(generated.specs)}
@@ -190,7 +300,10 @@ class MatchEnv:
                                             structural_speed=bool(c.get('structural_speed',False)),
                                             missile_marker_range_m=c.get('missile_marker_range_m',10000.),
                                             radar_sees_missiles=c.get('radar_sees_missiles',False),
-                                            allow_missile_targets=c.get('allow_missile_targets',False))
+                                            allow_missile_targets=c.get('allow_missile_targets',False),
+                                            airfield=c.get('airfield'),
+                                            fuel=c.get('fuel'),assist_rule=c.get('assist_rule'),
+                                            wreck_s=c.get('wreck_s'))
         eng=self.engagement
         self.executors={}
         self.reach={}
@@ -208,13 +321,20 @@ class MatchEnv:
             # (policy_deck_m, e.g. 10 m); scripted pilots keep theirs.
             floor_kw={} if p.ident not in ids else dict(ground_floor=c.get('policy_ground_floor',True),
                                                          deck_m=c.get('policy_deck_m',100.))
+            # population v2 scripts: their own reaction-delay median on the autonomous path (policy slots fly 'follow')
             ex=IntentExecutor(f'{episode_seed}:execute:{p.ident}',path='follow' if p.ident in ids else 'autonomous',**floor_kw,
-                              home_xy=pilot.home_xy,**c.get('execution',{}))
+                              home_xy=pilot.home_xy,airfield=eng.airfield,**pilot.execution_settings(c.get('execution')))
             self.executors[p.ident]=ex
             self.reach[p.ident]=ReachTable.load(p.missile_id,c.get('reach_dir')) if p.missile_id else None
             pilot.reach=self.reach[p.ident]
             self.memory[p.ident]={}
             p.camera.advance(p.own,0.)
+        if self.view is not None:
+            # one view per policy aircraft (own generator per episode and slot), policy mark tables per team
+            self.views={aid:PolicyView(self.view,episode_seed,aid) for aid in self.policy_ids}
+            self.policy_mark_tables=({},{})
+            if self.view['wreck_s'] is not None:
+                eng.wreck_viewers=frozenset(self.policy_ids)   # only the policy aircraft's sensors see wrecks
         self.over=False
         self.scenario=f'match:{episode_seed}:{len(generated.specs)}'
         if 'self_play_prob' in c or 'history_prob' in c:
@@ -232,11 +352,34 @@ class MatchEnv:
         self._raw={}
         self._scripts_cache=None
         self.dropped_entities=0
+        if self.teacher is not None:
+            self.teacher_labels={}   # {aid: {head: option, "name": teacher}} of this observation (info["teacher"])
+        view=self.view
+        if view is not None:
+            # policy view: _shown the policy's entities (encoded), _entities their full-information twins (actions,
+            # masks, executor), _script_raw / _script_entities what the scripts read for the policy aircraft's labels
+            self._shown,self._script_raw,self._script_entities={},{},{}
+            if view['map_spotting_m'] is not None:
+                update_spotting(eng,self.policy_mark_tables,view['map_spotting_m'])
         for p in eng.live:
             raw=eng.observe(p)
             ex=self.executors[p.ident]
             ex.notice(raw)
-            entities,dropped=select_entities(raw,ex,self.memory[p.ident],self.reach[p.ident])
+            if view is None or p.ident not in self.views:
+                entities,dropped=select_entities(raw,ex,self.memory[p.ident],self.reach[p.ident])
+                shown=entities
+            else:
+                reach=self.reach[p.ident]
+                script_raw=without_wrecks(raw,p,eng) if view['wreck_s'] is not None else raw
+                self._script_raw[p.ident]=script_raw
+                self._script_entities[p.ident],_=select_entities(script_raw,ex,self.memory[p.ident],reach)
+                if view['marks']:
+                    table=self.policy_mark_tables[p.team] if view['map_spotting_m'] is not None else eng.marks[p.team]
+                    raw=replace(raw,marks=policy_marks(eng,p,view,table))
+                pv=self.views[p.ident]
+                shown,entities,dropped=select_view_entities(
+                    raw,ex,pv,lambda obs,ents,pv=pv,p=p,reach=reach:pv.show(obs,ents,p,eng,reach),reach)
+                self._shown[p.ident]=shown
             self._raw[p.ident],self._entities[p.ident]=raw,entities
             if p.ident not in self.policy_ids:
                 continue
@@ -247,10 +390,18 @@ class MatchEnv:
             ego=(pilot.home_xy,pilot.enemy_xy) if self.egocentric else None
             heading=raw.own.heading_deg if self.egocentric else None
             actor=AgentObs(own_vector(raw,p,ex,self.reach[p.ident],pilot.judge,ego),
-                           [entity_vector(e,heading) for e in entities],
+                           [entity_vector(e,heading) for e in shown],
                            prev_vector(ex,entities,eng.time),masks,[],p.aircraft,DT_STEP)
             actor.truth=truth_vectors(eng,p,self.egocentric)
             self._observations[p.ident]=actor
+            if self.teacher is not None and p.ident not in self.frozen_ids:
+                # The first teacher (TEACHERS order) whose condition holds labels the decision; reads only.
+                for name,fn in TEACH.items():
+                    if name in self.teacher:
+                        label=fn(self.teacher[name],raw,entities,masks,ex)
+                        if label is not None:
+                            self.teacher_labels[p.ident]=dict(label,name=name)
+                            break
         return self._observations
 
     def scripted_actions(self):
@@ -264,7 +415,12 @@ class MatchEnv:
                 obs=self._observations.get(aid)
                 masks=obs.masks if obs is not None else masks_for(raw,entities,ex,self.last_launch[aid])
                 pilot=self.pilots[aid]
-                proposal=pilot.propose(raw,entities)
+                if self.view is not None and aid in self._script_raw:
+                    # policy view: the script reads the plain observation; its proposal (stable keys) is then
+                    # indexed in the policy's entity order (a key the policy does not have becomes "none")
+                    proposal=pilot.propose(self._script_raw[aid],self._script_entities[aid])
+                else:
+                    proposal=pilot.propose(raw,entities)
                 labels[aid]=legalize(proposal,entities,masks)
             self._scripts_cache=labels
         return {aid:dict(a) for aid,a in self._scripts_cache.items() if aid in self._observations}
@@ -305,9 +461,18 @@ class MatchEnv:
                     crash=0,out_of_bounds=0,overspeed=0,missile_error=0)
         if eng.radar_sees_missiles:
             events['radar_missile_tracks']=0   # missile tracks the radars started this step (all aircraft)
+        if eng.airfield is not None:
+            events.update(landing=0,takeoff=0,rearm=0)   # all aircraft
+        if eng.fuel is not None:
+            events['flameout']=0   # all aircraft
+        ff=self.config.get('friendly_fire_reward')
+        # launch_reward (opt-in, default 0): added per launch of a policy aircraft. retarget_kill_reward (opt-in, default
+        # +1): the kill credit when the killing missile retargeted (Engagement.retargeted_uids); a kill in the tallies.
+        lr=self.config.get('launch_reward')
+        rk=self.config.get('retarget_kill_reward')
         # A policy aircraft that is already down still scores with the missiles it left in the air: those rewards
         # go to info['late_rewards'] (the trainer adds them to its final step). tallies: kills / deaths per policy
-        # aircraft this step, so episode outcomes need not be read back from summed rewards.
+        # aircraft this step, so episode outcomes need not be read back from summed rewards (a friendly kill is neither).
         late,tallies={},{}
         for e in new:
             kind=e['kind']
@@ -315,10 +480,11 @@ class MatchEnv:
                 events[kind]+=1
             if kind=='kill' and e['killer'] in self.policy_ids:
                 k=e['killer']
+                value=float(rk) if rk is not None and e['uid'] in eng.retargeted_uids else 1.
                 if k in rewards:
-                    rewards[k]+=1.
+                    rewards[k]+=value
                 else:
-                    late[k]=late.get(k,0.)+1.
+                    late[k]=late.get(k,0.)+value
                 tallies.setdefault(k,[0,0])[0]+=1
             elif kind=='assist' and e['plane'] in self.policy_ids:
                 if e['plane'] in rewards:
@@ -334,16 +500,31 @@ class MatchEnv:
                     events[e['cause']]+=1
             elif kind=='launch':
                 self.last_launch[e['shooter']]=eng.planes[e['shooter']].last_launch
+                if lr is not None and e['shooter'] in self.policy_ids:
+                    s=e['shooter']
+                    if s in rewards:
+                        rewards[s]+=float(lr)
+                    else:
+                        late[s]=late.get(s,0.)+float(lr)
             elif kind=='radar_missile_track':
                 events['radar_missile_tracks']+=1
+            elif kind=='friendly_fire' and ff and e['killer'] in self.policy_ids:
+                k=e['killer']
+                if k in rewards:
+                    rewards[k]+=float(ff)
+                else:
+                    late[k]=late.get(k,0.)+float(ff)
         self.over=eng.reason is not None
-        timeout=eng.reason=='time_limit'
+        # airfield: everyone parked ends the match early ('all_grounded'), counted as running out of time
+        ended=eng.reason in ('time_limit','all_grounded')
+        timeout=ended
         penalty=self.config.get('timeout_reward')
         if timeout and penalty is not None:
             # Opt-in: running out of time is a result of its own. Every policy aircraft still alive gets the
             # reward and the time limit becomes a terminal state (info timeout False: no value bootstrap).
+            # One parked on its airfield (airfield) gets nothing.
             for aid in rewards:
-                if eng.planes[aid].alive:
+                if eng.planes[aid].alive and not eng.planes[aid].grounded:
                     rewards[aid]+=float(penalty)
             timeout=False
         dones={aid:self.over or not eng.planes[aid].alive for aid in active}
@@ -351,7 +532,7 @@ class MatchEnv:
         events['dropped_entities']=self.dropped_entities
         info=dict(timeout=timeout,events=events,reason=eng.reason,time_s=eng.time,dt=DT_STEP)
         if penalty is not None:
-            info['time_limit']=eng.reason=='time_limit'
+            info['time_limit']=ended
         if late:
             info['late_rewards']=late
         if tallies:
@@ -367,6 +548,9 @@ class MatchEnv:
         if self.over and not timeout:
             obs={}
             self._observations={}
+        if self.teacher is not None:
+            # labels of the observations returned (the decisions taken on them next); never for the frozen side
+            info['teacher']={aid:dict(label) for aid,label in self.teacher_labels.items() if aid in obs}
         return obs,rewards,dones,info
 
     def pending_credit(self):

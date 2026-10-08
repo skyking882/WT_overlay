@@ -147,6 +147,150 @@ def aircraft_model(aircraft_id: str, mass_kg: float | None = None, mass_factor: 
     return model_with_mass(model, mass_kg if mass_kg is not None else empty*mass_factor)
 
 
+# -- fuel (opt-in, docs/fuel_spec.md) -------------------------------------------------------------------------
+# FM file values (A): Mass.EmptyMass, Mass.MaxFuelMass0 (every tank, drop tanks included), the Mass.Parts tanks not flagged
+# external, and per engine type Main.FuelConsumptionOnIdle / OnHalfThr / OnFullThr / OnWEP. Their unit is read as specific
+# fuel consumption, kg of fuel per kgf of thrust per hour (D: inferred from the magnitudes, see the spec); the burn is that
+# times the current thrust, interpolated over throttle 0 / 50 / 100 % and toward WEP over the afterburner ramp.
+FUEL_MASS_STEP_KG = 10.   # the flight model's mass follows fuel and payload in steps of this much (D, numerical)
+
+
+@dataclass(frozen=True)
+class FuelData:
+    empty_kg: float
+    max_kg: float            # Mass.MaxFuelMass0
+    internal_kg: float       # sum of the Mass.Parts tank*_capacity with tank*_external false (max_kg when none)
+    sfc: tuple               # per forward-flight engine (fm.StaticModel order): (idle, half, full, wep) kg/(kgf h)
+
+
+def read_fuel(raw: dict) -> FuelData:
+    """FuelData from a parsed FM file (the blkx JSON). Engines are listed as fm.StaticModel lists them (lift engines
+    that are off in forward flight left out)."""
+    mass = raw.get("Mass") or {}
+    number = lambda x: float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) else None  # noqa: E731
+    empty, top = number(mass.get("EmptyMass")), number(mass.get("MaxFuelMass0"))
+    if not empty or empty <= 0 or top is None or top <= 0:
+        raise ValueError("FM file has no EmptyMass / MaxFuelMass0")
+    parts = mass.get("Parts") or {}
+    tanks = [k[:-len("_capacity")] for k in parts if k.startswith("tank") and k.endswith("_capacity")]
+    internal = sum(number(parts[t+"_capacity"]) or 0. for t in tanks if not parts.get(t+"_external"))
+    sfc = []
+    for name, instance in raw.items():
+        if not (name.startswith("Engine") and name[6:].isdigit()):
+            continue
+        kind = raw.get(f"EngineType{instance.get('Type')}") or {}
+        controls = dict(kind.get("Controls", {}), **instance.get("Controls", {}))
+        limit = controls.get("vtolToThrottleLim0")
+        if controls.get("hasVtolControl") and limit and limit[1] == 0:
+            continue
+        main = dict(kind.get("Main", {}), **instance.get("Main", {}))
+        values = [number(main.get("FuelConsumptionOn"+k)) for k in ("Idle", "HalfThr", "FullThr", "WEP")]
+        if any(v is None or v < 0 for v in values):
+            raise ValueError(f"{name}: no FuelConsumption values")
+        sfc.append(tuple(values))
+    if not sfc:
+        raise ValueError("FM file has no engine fuel consumption")
+    return FuelData(empty, top, internal if internal > 0 else top, tuple(sfc))
+
+
+_FUEL_DATA = {}
+
+
+def fuel_data(aircraft_id: str) -> FuelData:
+    data = _FUEL_DATA.get(aircraft_id)
+    if data is None:
+        from .fm.catalog import find_aircraft
+        data = _FUEL_DATA[aircraft_id] = read_fuel(json.loads(find_aircraft(aircraft_id).path.read_text()))
+    return data
+
+
+def specific_consumption(sfc, engine, throttle_percent):
+    """kg of fuel per kgf of thrust per hour at a throttle (0-110 %): idle at 0, half at 50, full at 100, then toward
+    WEP over the engine's afterburner ramp (to its WEP mode throttle, as JetEngine.blend ramps the thrust)."""
+    idle, half, full, wep = sfc
+    t = throttle_percent
+    if t <= 50.:
+        return idle+(half-idle)*max(0., t)/50.
+    if t <= 100.:
+        return half+(full-half)*(t-50.)/50.
+    if not engine.has_wep or engine.wep_throttle <= 1.:
+        return full
+    return full+(wep-full)*min(1., (t-100.)/(100.*engine.wep_throttle-100.))
+
+
+class Flameout(ManeuverModel):
+    """The flight model with dry tanks: the engines give no thrust (lift and drag as before)."""
+
+    def forces_at_aoa(self, altitude, speed, alpha, throttle_percent=None, airbrake_fraction=0.):
+        _, drag, lift, a = ManeuverModel.forces_at_aoa(self, altitude, speed, alpha, 0., airbrake_fraction)
+        return 0., drag, lift, a
+
+
+class FuelTank:
+    """Fuel on board an ``Aircraft`` (opt-in; ``Aircraft.fuel``). Every tick burns specific consumption x the thrust at
+    the engine's throttle; the model's mass (empty + payload + fuel) follows in FUEL_MASS_STEP_KG steps. Empty tanks
+    flame the engines out (``out``; the model becomes a ``Flameout``) until ``refuel``."""
+
+    def __init__(self, data: FuelData, fuel_kg: float, payload_kg: float = 0.):
+        if not math.isfinite(fuel_kg) or fuel_kg < 0 or not math.isfinite(payload_kg) or payload_kg < 0:
+            raise ValueError("fuel and payload must be non-negative")
+        self.data, self.empty_kg = data, data.empty_kg
+        self.initial_kg = self.kg = float(fuel_kg)
+        self.payload_kg = float(payload_kg)
+        self.out = self.kg <= 0.
+        self.logged = False              # Engagement: the flameout event was written
+
+    @property
+    def mass_kg(self):
+        return self.empty_kg+self.payload_kg+self.kg
+
+    @property
+    def fraction(self):
+        """Fuel left over the initial load."""
+        return self.kg/self.initial_kg if self.initial_kg > 0 else 0.
+
+    def flow_kg_s(self, model, state):
+        """Fuel flow (kg/s) of ``state`` (engine throttle, altitude and TAS); 0 outside the engine tables."""
+        if self.out:
+            return 0.
+        try:
+            thrusts = model._thrusts(state.position[2], norm(state.velocity))
+        except ValueError:
+            return 0.
+        t = min(110., max(0., state.engine_percent))
+        sfc = self.data.sfc if len(self.data.sfc) == len(thrusts) else (self.data.sfc[0],)*len(thrusts)
+        kgf_h = sum(specific_consumption(c, engine, t)*engine.blend(military, maximum, t)
+                    for (engine, military, maximum), c in zip(thrusts, sfc))/G
+        return kgf_h/3600.
+
+    def burn(self, model, state, dt=SUBSTEP_S):
+        if self.out:
+            return
+        self.kg -= self.flow_kg_s(model, state)*dt
+        if self.kg <= 0.:
+            self.kg, self.out = 0., True
+            if type(model) is ManeuverModel:
+                model.__class__ = Flameout
+        self.sync(model)
+
+    def sync(self, model, force=False):
+        """Set the model's mass to empty + payload + fuel when it is FUEL_MASS_STEP_KG off (or ``force``). The AoA cache
+        is keyed without the mass, so it starts afresh."""
+        mass = self.mass_kg
+        if force or abs(mass-model.mass) >= FUEL_MASS_STEP_KG:
+            model.mass = mass
+            model._aoa_cache = {}
+
+    def refuel(self, model, payload_kg=None):
+        """Back to the initial load (and ``payload_kg``), engines relit."""
+        self.kg, self.out, self.logged = self.initial_kg, self.initial_kg <= 0., False
+        if payload_kg is not None:
+            self.payload_kg = float(payload_kg)
+        if type(model) is Flameout and not self.out:
+            model.__class__ = ManeuverModel
+        self.sync(model, force=True)
+
+
 # -- airframe load limits ------------------------------------------------------------------------------------
 
 _KEYBOARD = KeyboardTurnSettings()
@@ -283,6 +427,7 @@ class FlightParams:
 
 class Aircraft:
     """One aircraft stepping 1/48 s at a time under ``command``. ``state_at`` answers missile queries."""
+    fuel = None   # opt-in FuelTank (set by the caller): burns every tick, empty tanks = no thrust
 
     def __init__(self, model: ManeuverModel, position, velocity, *, normal=None, params: FlightParams = FlightParams(),
                  t0=0., engine_percent=None, history=96, keep_history=False, limit_structure=False,
@@ -597,4 +742,6 @@ class Aircraft:
                     self.alive, self.overspeed = False, True      # wings torn off
             else:
                 self.overspeed_s = 0.
+        if self.fuel is not None:   # opt-in fuel: burn at the new engine state, mass follows
+            self.fuel.burn(self.model, new)
         return new

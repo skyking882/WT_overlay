@@ -1,6 +1,7 @@
 """Environment contract, observation causality and exact replay of mutable state."""
 from __future__ import annotations
 
+import collections
 import contextlib
 import copy
 from dataclasses import replace
@@ -893,3 +894,456 @@ class MissileRadarTests(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+
+class PolicyCountTests(unittest.TestCase):
+    TEAMS2=[[dict(aircraft='f_15c_golden_eagle',archetype='middle',skill='top'),
+             dict(aircraft='f_15c_golden_eagle',archetype='left',skill='top')],
+            [dict(aircraft='su_30sm2',archetype='middle',skill='top'),dict(aircraft='su_30sm2',archetype='left',skill='top')]]
+
+    def make(self,seed=3,**kw):
+        return MatchEnv(dict(dict(teams=self.TEAMS2,range_km=40.,policy_ids=[0,1],policy_count=[1,2],time_limit_s=60.),**kw),seed)
+
+    def test_script_episodes_draw_the_controlled_slots(self):
+        e=self.make();seen=set()
+        for _ in range(12):
+            obs=e.reset();seen.add(e.policy_ids)
+            self.assertEqual(sorted(obs),list(e.policy_ids))
+            for aid,ex in e.executors.items():
+                self.assertEqual(ex.path,'follow' if aid in e.policy_ids else 'autonomous')
+        self.assertEqual(seen,{(0,),(1,),(0,1)})
+        # deterministic per env seed
+        a,b=self.make(9),self.make(9)
+        self.assertEqual([a.reset() and a.policy_ids for _ in range(6)],[b.reset() and b.policy_ids for _ in range(6)])
+
+    def test_self_play_still_controls_every_slot(self):
+        e=self.make(self_play_prob=1.)
+        for _ in range(3):
+            e.reset();self.assertEqual(e.policy_ids,(0,1,2,3))
+
+    def test_bad_values_fail(self):
+        for bad in ([0,2],[2,1],[1],(1.,2),'all',[True,2]):
+            with self.assertRaises(ValueError):
+                self.make(policy_count=bad)
+        with self.assertRaises(ValueError):
+            self.make(policy_count=[1,3]).reset()
+
+
+class AirfieldTests(unittest.TestCase):
+    """docs/airfield_rearm_spec.md: go home, land, rearm, take off (opt-in airfield) and the friendly-fire reward."""
+
+    def act(self,e,aid,maneuver=10):
+        """A legal intent flying ``maneuver`` with no reference, target, weapon or chaff."""
+        n=len(e._entities[aid])
+        return dict(maneuver_ref=n,target=n,view_object=n,maneuver=maneuver,vertical=0,speed=0,chaff=0,
+                    radar_mode=0,antenna=2,weapon=0,view_mode=0,look_az=0,look_el=1,kb_roll=1,kb_pitch=1)
+
+    def fly(self,e,maneuvers,steps):
+        """Step ``steps`` times with {aid: maneuver} (default 0) for the living policy aircraft; summed events."""
+        total={}
+        for _ in range(steps):
+            if e.over:
+                break
+            _,_,_,info=e.step({a:self.act(e,a,maneuvers.get(a,0)) for a in e._observations})
+            for k,v in info['events'].items():
+                total[k]=total.get(k,0)+v
+        return total
+
+    def kinds(self,e,kind,**match):
+        return [x for x in e.engagement.log if x['kind']==kind and all(x.get(k)==v for k,v in match.items())]
+
+    def tracked(self,e):
+        """Fly both at each other until each has a radar track on the other."""
+        ge,sm2=e.engagement.planes
+        for _ in range(60):
+            self.fly(e,{},1)
+            if 0 in sm2.tracked and 1 in ge.tracked:
+                return
+        self.fail('no track')
+
+    def test_option_absent_changes_nothing(self):
+        e=env()
+        eng=e.engagement
+        self.assertIsNone(eng.airfield)
+        self.assertTrue(all(ex.airfield is None for ex in e.executors.values()))
+        _,_,_,info=e.step(e.scripted_actions())
+        self.assertFalse(set(info['events'])&{'landing','takeoff','rearm'})
+        self.assertNotIn('airfield',eng._header())
+        self.assertNotIn('landings',eng.summary()['planes'][0])
+        self.assertFalse(e._raw[0].grounded)
+        for bad in (dict(airfield=[]),dict(airfield=dict(runway_m=1.)),dict(airfield=dict(turnaround_s=-1.)),
+                    dict(airfield=dict(land_radius_m=0.)),dict(airfield=dict(takeoff_ias_kmh=150.)),
+                    dict(airfield=dict(approach_m=True)),dict(friendly_fire_reward=True),dict(friendly_fire_reward='x')):
+            with self.assertRaises(ValueError):
+                MatchEnv(bad,0)
+
+    def test_go_home_approaches_and_lands_both_types(self):
+        # Both fly out from their airfields (the spawn points) for 60 s, then go home: they turn, descend, slow and land.
+        e=env(range_km=60.,airfield={},time_limit_s=900.)
+        eng=e.engagement
+        self.assertEqual([p.airfield_xy for p in eng.planes],[(0.,-30000.),(0.,30000.)])
+        self.assertEqual([round(p.takeoff_deg) for p in eng.planes],[0,180])
+        self.assertEqual(eng._header()['airfield']['bases'],[[0.,-30000.,0.],[0.,30000.,180.]])
+        self.fly(e,{},144)
+        out=[math.hypot(*(a-b for a,b in zip(p.own.position[:2],p.airfield_xy))) for p in eng.planes]
+        self.assertTrue(all(d>15000. for d in out),out)
+        t0=eng.time
+        for _ in range(24*60):
+            if all(p.grounded for p in eng.planes):
+                break
+            self.fly(e,{0:10,1:10},1)
+        a=eng.airfield
+        for p in eng.planes:
+            self.assertTrue(p.grounded and p.alive,p.aircraft)
+            land=self.kinds(e,'landing',plane=p.ident)[0]
+            self.assertLessEqual(land['altitude_m'],a['land_max_alt_m']);self.assertLessEqual(land['ias_kmh'],a['land_max_ias_kmh'])
+            self.assertLessEqual(land['distance_m'],a['land_radius_m'])
+            self.assertLess(land['t']-t0,360.,p.aircraft)               # a few minutes from 15-20 km out
+            o=e._raw[p.ident]
+            self.assertTrue(o.grounded)
+            self.assertEqual((o.own.altitude_m,o.own.speed_mps,o.own.position[:2]),(0.,0.,p.airfield_xy))
+            self.assertEqual((p.flight.time<eng.time,p.radar.mode),(True,'off'))   # no flight model steps on the ground
+        self.assertEqual(eng.summary()['planes'][0]['landings'],1)
+        from wt_overlay.engagement import ReplayWriter
+        eng.replay=ReplayWriter(None)
+        eng._frame()
+        self.assertEqual([(r[3],r[4],r[10]) for r in json.loads(eng.replay.lines[-1])['planes']],[(0.,0.,'ground')]*2)
+
+    def test_a_landed_aircraft_vanishes_from_radars_and_missiles_lose_it(self):
+        e=env(range_km=40.,airfield=dict(turnaround_s=1000.))
+        eng=e.engagement
+        ge,sm2=eng.planes
+        self.tracked(e)
+        m=eng.fire(sm2,ge)
+        own=eng.fire(ge,sm2)
+        self.assertEqual(LauncherSupport(own)(0.,None),'')
+        self.fly(e,{},2)
+        self.assertIsNone(m.lost)
+        track=next(c.track_id for c,t in zip(sm2.picture.contacts,sm2.picture.truth_ids) if t==0)
+        eng._land(ge)
+        _,_,_,info=e.step({0:self.act(e,0,10),1:self.act(e,1,0)})
+        self.assertEqual(info['events']['landing'],0)               # forced above, not by the rule
+        self.assertNotIn(0,sm2.tracked);self.assertNotIn(0,sm2.radar.tracked_ids())
+        self.assertTrue(self.kinds(e,'track_lost',plane=1,target=0))
+        self.assertEqual(m.lost,ge.flight.state.position)          # it guides at the touchdown point
+        raw=e._raw[1]
+        mark=eng.mark_ids[0]
+        self.assertFalse([c for c in raw.radar if c.mark_id==mark])
+        self.assertFalse([x for x in raw.marks if x.mark_id==mark]);self.assertNotIn(0,eng.marks[1])
+        self.assertFalse(raw.visual or raw.boxes)
+        sm2.last_launch=-1e9
+        self.assertIsNone(eng.launch(sm2,track))
+        # the parked aircraft hears and sees nothing; its missile flies on without datalink (as with the radar off)
+        self.assertFalse(e._raw[0].rwr or e._raw[0].maw or e._raw[0].radar)
+        self.assertEqual(LauncherSupport(own)(0.,None),'track_lost')
+        for _ in range(360):
+            if m.done:
+                break
+            self.fly(e,{0:10},1)
+        self.assertTrue(m.done)
+        self.assertTrue(ge.alive and ge.grounded)
+        self.assertFalse(self.kinds(e,'kill',victim=0))
+
+    def test_a_parked_teammate_stays_on_the_map(self):
+        e=env(teams=[TEAMS[0]*2,TEAMS[1]*2],airfield={})
+        eng=e.engagement
+        p1=eng.planes[1]
+        eng._land(p1)
+        self.fly(e,{1:10},1)
+        mark=eng.mark_ids[1]
+        friend=[x for x in e._raw[0].marks if x.mark_id==mark]
+        self.assertEqual([(x.friend,x.x,x.y,x.z) for x in friend],[(True,*p1.airfield_xy,0.)])
+        self.assertTrue(any(x.kind=='friend' and x.mark_id==mark for x in e._entities[0]))
+        for enemy in (2,3):
+            self.assertFalse([x for x in e._raw[enemy].marks if x.mark_id==mark])
+
+    def test_turnaround_rearms_then_another_maneuver_takes_off(self):
+        e=env(range_km=60.,airfield={},time_limit_s=600.)
+        eng=e.engagement
+        ge=eng.planes[0]
+        self.fly(e,{0:10},1)
+        ge.missiles,ge.chaff=0,3
+        eng._land(ge)
+        landed=eng.time
+        self.fly(e,{0:10},1)
+        o=e._observations[0]
+        self.assertTrue(all(row==[True,False] for row in o.masks['weapon']))
+        self.assertEqual(o.masks['chaff'],[True,False,False])
+        self.assertEqual(o.own[OWN_FIELDS.index('altitude')],0.);self.assertEqual(o.own[OWN_FIELDS.index('speed')],0.)
+        events=self.fly(e,{0:10},60)                               # 25 s with go-home chosen: rearmed, still parked
+        rearm=self.kinds(e,'rearm',plane=0)
+        self.assertEqual(len(rearm),1);self.assertEqual(events['rearm'],1)
+        self.assertAlmostEqual(rearm[0]['t']-landed,20.,delta=1e-3)
+        self.assertEqual((ge.missiles,ge.chaff),(ge.spec.missiles,ge.spec.chaff))
+        self.assertTrue(ge.grounded);self.assertFalse(self.kinds(e,'takeoff'))
+        self.assertEqual(e._raw[0].own.missiles,ge.spec.missiles)
+        events=self.fly(e,{0:0},1)
+        self.assertEqual(events['takeoff'],1);self.assertFalse(ge.grounded)
+        x,y,z=ge.flight.state.position
+        self.assertLess(math.hypot(x,y+30000.),300.);self.assertAlmostEqual(z,100.,delta=60.)
+        self.assertAlmostEqual(ge.flight.attitude()[0],0.,delta=10.)              # toward the enemy spawn
+        self.fly(e,{0:0},72)                                                       # 30 s: climbing back to 8 km
+        self.assertTrue(ge.alive);self.assertGreater(ge.flight.altitude,1000.)
+        self.assertGreater(ge.flight.speed,100.);self.assertEqual(ge.radar.mode,'tws')
+
+    def test_time_limit_rewards_only_airborne_policy_aircraft(self):
+        for penalty in (-.5,None):
+            e=env(airfield={},time_limit_s=6*DT_STEP,**({} if penalty is None else dict(timeout_reward=penalty)))
+            eng=e.engagement
+            eng._land(eng.planes[0])
+            for _ in range(6):
+                obs,r,d,info=e.step({0:self.act(e,0,10),1:self.act(e,1,0)})
+            self.assertEqual(eng.reason,'time_limit')
+            if penalty is None:
+                self.assertEqual(r,{0:0.,1:0.});self.assertTrue(info['timeout']);self.assertEqual(set(obs),{0,1})
+            else:
+                self.assertEqual(r,{0:0.,1:-.5});self.assertFalse(info['timeout']);self.assertTrue(info['time_limit'])
+
+    def test_everyone_parked_ends_the_match_after_all_grounded_end_s(self):
+        e=env(range_km=40.,airfield=dict(turnaround_s=1000.),time_limit_s=600.,timeout_reward=-.5)
+        eng=e.engagement
+        ge,sm2=eng.planes
+        self.tracked(e)
+        m=eng.fire(sm2,ge)
+        self.fly(e,{},1)
+        eng._land(ge);eng._land(sm2)
+        while not e.over and eng.time<300.:
+            _,r,_,info=e.step({a:self.act(e,a,10) for a in e._observations})
+        self.assertEqual(eng.reason,'all_grounded')
+        gone=self.kinds(e,'missile_end',uid=m.uid)[0]['t']
+        self.assertAlmostEqual(self.kinds(e,'end')[0]['t'],gone+30.,delta=2e-3)   # 30 s after the last missile
+        self.assertEqual(r,{0:0.,1:0.});self.assertTrue(info['time_limit']);self.assertFalse(info['timeout'])
+        self.assertTrue(ge.alive and sm2.alive);self.assertEqual(eng.alive_counts(),(1,1))
+        # without timeout_reward it is a time limit the trainer bootstraps over
+        e=env(airfield=dict(all_grounded_end_s=0.))
+        e.engagement._land(e.engagement.planes[0]);e.engagement._land(e.engagement.planes[1])
+        obs,r,d,info=e.step({a:self.act(e,a,10) for a in e._observations})
+        self.assertEqual((e.engagement.reason,info['timeout'],set(obs)),('all_grounded',True,{0,1}))
+
+    def test_a_parked_aircraft_is_alive_for_annihilation(self):
+        e=env(airfield={})
+        eng=e.engagement
+        eng._land(eng.planes[0])
+        eng._kill(eng.planes[1],None,'crash',None)
+        e.observe()
+        e.step({0:self.act(e,0,10)})
+        self.assertEqual((eng.reason,eng.alive_counts()),('annihilation',(1,0)))
+
+    def test_friendly_fire_reward_goes_to_the_shooter_also_late(self):
+        for ff in (None,-.5):
+            e=env(teams=[TEAMS[0]*2,TEAMS[1]*2],**({} if ff is None else dict(friendly_fire_reward=ff)))
+            eng=e.engagement
+            p0,p1,p2,p3=eng.planes
+            step=eng.step
+            def friendly_kill(victim,killer):
+                def run():
+                    eng.step=step
+                    step()
+                    eng._kill(victim,killer,'missile',None)
+                return run
+            eng.step=friendly_kill(p1,p0)
+            _,r,_,info=e.step(e.scripted_actions())
+            self.assertEqual((r[0],r[1]),(ff or 0.,-2.))
+            self.assertEqual(info['tallies'],{1:[0,1]})                              # not a kill
+            self.assertEqual(info['events']['friendly_fire'],1)
+            # the shooter is already down: the penalty goes to late_rewards like a late kill
+            eng._kill(p2,None,'crash',None)
+            e.step(e.scripted_actions())
+            eng.step=friendly_kill(p3,p2)
+            _,r,_,info=e.step(e.scripted_actions())
+            self.assertNotIn(2,r)
+            self.assertEqual(info.get('late_rewards'),None if ff is None else {2:-.5})
+
+    def test_snapshot_restores_ground_state_and_turnaround(self):
+        e=env(range_km=60.,airfield={},time_limit_s=600.,execution=dict(ZERO,reject_p=.05,error_deg=5.))
+        eng=e.engagement
+        eng._land(eng.planes[0])
+        self.fly(e,{0:10},10)
+        snap=e.snapshot()
+        def play():
+            out=[]
+            for k in range(50):
+                out.append(stable(e.step({a:self.act(e,a,10 if a==0 and k<40 else 0) for a in e._observations})))
+            p=e.engagement.planes[0]
+            return out,(p.grounded,p.landings,p.rearms,p.takeoffs,p.flight.state)
+        first=play()
+        self.assertEqual(first[1][:4],(False,1,1,1))
+        e.restore(snap)
+        self.assertTrue(e.engagement.planes[0].grounded)
+        self.assertEqual(e.engagement.planes[0].ground_t,snap['engagement'].planes[0].ground_t)
+        self.assertEqual(first,play())
+
+    def test_scripts_without_missiles_land_rearm_and_come_back(self):
+        teams=[[dict(aircraft='f_15c_golden_eagle',archetype='middle',skill='top',altitude_m=8000.,mach=1.,missiles=1),
+                dict(aircraft='su_30sm2',archetype='middle',skill='top',altitude_m=8000.,mach=1.,missiles=1)],
+               [dict(aircraft='su_30sm2',archetype='middle',skill='top',altitude_m=8000.,mach=1.,missiles=1),
+                dict(aircraft='j_16',archetype='middle',skill='top',altitude_m=8000.,mach=1.,missiles=1)]]
+        e=MatchEnv(dict(teams=teams,range_km=70.,policy_ids=[0],time_limit_s=900.,airfield={}),3)
+        e.reset()
+        eng=e.engagement
+        def back(ident):
+            """home, landing, rearm, home -> advance, takeoff and a launch after it, in this order."""
+            seq=[x['kind'] if x['kind']!='phase' else 'phase:'+x['to'] for x in eng.log
+                 if x.get('plane',x.get('shooter'))==ident and x['kind'] in ('phase','landing','rearm','takeoff','launch')]
+            if 'landing' not in seq:
+                return False
+            i=seq.index('landing')
+            return 'phase:home' in seq[:i] and seq[i:i+4]==['landing','rearm','phase:advance','takeoff'] and \
+                'launch' in seq[i+4:]
+        k=0
+        while not e.over and not (k%24==0 and any(back(i) for i in (1,2,3))):
+            lab=e.scripted_actions()
+            e.step({a:lab[a] for a in e._observations})
+            k+=1
+        self.assertTrue(any(back(i) for i in (1,2,3)),[x for x in eng.log if x['kind'] in ('landing','takeoff')])
+
+
+class TeamSizeMixTests(unittest.TestCase):
+    def make(self,seed=4,**kw):
+        cfg=dict(model_path='data/match/top_tier_s1_far.json',team_size=4,team_size_mix=[[1,1.],[4,3.]],
+                 policy_ids=[0,1,2,3],policy_count=[1,4],self_play_prob=.25,time_limit_s=30.)
+        cfg.update(kw)
+        return MatchEnv(cfg,seed)
+
+    def test_sizes_and_slots_follow_the_draw(self):
+        e=self.make();sizes=collections.Counter()
+        for _ in range(16):
+            obs=e.reset();n=len(e.engagement.planes)//2;sizes[n]+=1
+            self.assertEqual(sorted(obs),list(e.policy_ids))
+            if e.self_play:
+                self.assertEqual(e.policy_ids,tuple(range(2*n)))
+            else:
+                self.assertTrue(e.policy_ids and all(i<n for i in e.policy_ids))
+        self.assertEqual(set(sizes),{1,4})
+        a,b=self.make(9),self.make(9)
+        self.assertEqual([(a.reset() and a.policy_ids,len(a.engagement.planes)) for _ in range(5)],
+                         [(b.reset() and b.policy_ids,len(b.engagement.planes)) for _ in range(5)])
+
+    def test_bad_values_fail(self):
+        for bad in ([],[[0,1.]],[[17,1.]],[[1,0.]],[[1,True]],[[1.,1.]],[1,4],'1v1'):
+            with self.assertRaises(ValueError):
+                self.make(team_size_mix=bad)
+        with self.assertRaises(ValueError):
+            MatchEnv(dict(teams=TEAMS,range_km=40.,controlled='all',team_size_mix=[[1,1.]]),1)
+
+
+class TeacherTests(unittest.TestCase):
+    """config teacher (docs/kickstart_spec.md): per-decision labels in info["teacher"], absent = bit-identical."""
+    LOW=[[dict(aircraft='f_15c_golden_eagle',archetype='middle',skill='top',altitude_m=3000.,mach=.9)]*2,
+         [dict(aircraft='su_30sm2',archetype='middle',skill='top',altitude_m=3000.,mach=.9)]*2]
+
+    def make(self,seed=5,**kw):
+        cfg=dict(teams=self.LOW,range_km=60.,controlled='all',execution=dict(ZERO,vertical_mode='angle'),
+                 time_limit_s=60.)
+        cfg.update(kw)
+        return MatchEnv(cfg,seed)
+
+    @staticmethod
+    def raw(alt=3000.,speed=290.,t=10.,**kw):
+        own=SimpleNamespace(altitude_m=alt,speed_mps=speed)
+        base=dict(time_s=t,own=own,grounded=False,rwr=(),maw=(),flames=(),missile_marks=())
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    @staticmethod
+    def masks(held_on=None):
+        row=[True]*5 if held_on is None else [i==held_on for i in range(5)]
+        return dict(vertical=[[row,row],[[True]+[False]*4]*2,[[True]+[False]*4]*2])
+
+    def label(self,raw=None,entities=(),masks=None,mode='angle',maw=True,**settings):
+        from wt_overlay.rl_env import climb_label,teacher_settings
+        s=teacher_settings(dict(climb=settings))['climb']
+        return climb_label(s,raw or self.raw(),list(entities),masks or self.masks(),
+                           SimpleNamespace(vertical_mode=mode,maw_entities=maw))
+
+    def test_climb_label_condition_and_option(self):
+        self.assertEqual(self.label(),{'vertical':1})                                   # > 2 km below 8 km: steep
+        self.assertEqual(self.label(self.raw(alt=6100.)),{'vertical':2})                 # within 2 km: shallow
+        self.assertEqual(self.label(self.raw(alt=7650.)),{'vertical':2})
+        self.assertIsNone(self.label(self.raw(alt=7700.)))                               # target - 300 m reached
+        self.assertIsNone(self.label(self.raw(t=150.)))                                  # until_s
+        self.assertEqual(self.label(self.raw(t=149.)),{'vertical':1})
+        self.assertIsNone(self.label(self.raw(speed=249.)))                              # climbs stop below 250 m/s
+        self.assertIsNone(self.label(self.raw(grounded=True)))
+        self.assertIsNone(self.label(masks=self.masks(held_on=0)))                       # held: no fresh choice
+        self.assertIsNone(self.label(masks=self.masks(held_on=1)))
+        self.assertEqual(self.label(mode='altitude'),{'vertical':2})                     # the 8 km option
+        self.assertEqual(self.label(self.raw(alt=6100.),mode='altitude'),{'vertical':2})
+        self.assertEqual(self.label(mode='altitude',target_m=10500.),{'vertical':1})     # nearer the 11 km option
+        self.assertEqual(self.label(self.raw(alt=4900.),steep_below_m=3000.),{'vertical':1})
+        self.assertEqual(self.label(self.raw(alt=5100.),steep_below_m=3000.),{'vertical':2})
+        self.assertIsNone(self.label(self.raw(t=60.),until_s=60.))
+
+    def test_a_perceived_missile_stops_the_label(self):
+        warn=SimpleNamespace(missile_warning=True)
+        sight=SimpleNamespace(ref=1)
+        for raw in (self.raw(rwr=(warn,)),self.raw(maw=(sight,)),self.raw(flames=(sight,)),
+                    self.raw(missile_marks=(sight,))):
+            self.assertIsNone(self.label(raw))
+        self.assertEqual(self.label(self.raw(rwr=(SimpleNamespace(missile_warning=False),))),{'vertical':1})
+        self.assertEqual(self.label(self.raw(maw=(sight,)),maw=False),{'vertical':1})   # no MAW for the actor
+        for e in (Entity(('maw',1),'maw'),Entity(('missile_marker',1),'missile_marker'),Entity(('flame',1),'flame'),
+                  Entity(('rwr',1),'rwr',warning='missile'),Entity(('radar',3),'radar',aircraft='missile')):
+            self.assertIsNone(self.label(entities=[e]),e)
+        for e in (Entity(('rwr',1),'rwr',warning='lock'),Entity(('radar',3),'radar',aircraft='su_30sm2'),
+                  Entity(('map',2),'friend',friend=True)):
+            self.assertEqual(self.label(entities=[e]),{'vertical':1},e)
+
+    def test_bad_configs_fail(self):
+        for bad in ([],'climb',dict(push={}),dict(climb=dict(target=8000.)),dict(climb=dict(target_m='8 km')),
+                    dict(climb=dict(target_m=True)),dict(climb=dict(until_s=-1.)),dict(climb=dict(target_m=200.)),
+                    dict(climb=dict(until_s=0.)),dict(climb=5)):
+            with self.assertRaises(ValueError,msg=repr(bad)):
+                self.make(teacher=bad)
+        self.make(teacher={})
+        self.make(teacher=dict(climb=None))
+
+    def test_labels_in_the_env_and_the_hold(self):
+        e=self.make(teacher=dict(climb={}))
+        obs=e.reset()
+        self.assertEqual(e.teacher_labels,{a:{'vertical':1,'name':'climb'} for a in (0,1,2,3)})   # free at t = 0
+        acts=e.scripted_actions()
+        for a in acts.values():
+            self.assertEqual(a['view_mode'],0)
+            a['vertical']=1
+        obs,r,d,info=e.step(acts)               # the first publication starts a 2 s hold: no fresh vertical choice
+        self.assertEqual(info['teacher'],{})
+        held=0
+        while not info['teacher']:
+            self.assertTrue(all(sum(o.masks['vertical'][0][0])==1 for o in obs.values()))
+            acts=e.scripted_actions()
+            for a in acts.values():
+                a['vertical']=1
+            obs,r,d,info=e.step(acts)
+            held+=1
+        self.assertIn(held,range(3,6))           # 2 s at 20/48 s per decision
+        self.assertTrue(set(info['teacher'])<=set(obs))
+        for aid,lab in info['teacher'].items():
+            self.assertEqual(lab,{'vertical':1,'name':'climb'})
+            self.assertTrue(all(obs[aid].masks['vertical'][0][0]))
+        self.assertEqual(info['teacher'],e.teacher_labels)
+        # the side flown by a frozen past policy (history episodes) gets no labels
+        h=self.make(teacher=dict(climb={}),history_prob=1.)
+        obs=h.reset()
+        self.assertTrue(h.frozen_ids)
+        self.assertEqual(set(h.teacher_labels),set(obs)-set(h.frozen_ids))
+
+    def test_absent_teacher_is_bit_identical(self):
+        on,off=self.make(9,teacher=dict(climb={})),self.make(9)
+        a,b=on.reset(),off.reset()
+        self.assertFalse(hasattr(off,'teacher_labels'))
+        self.assertEqual({k:wire.pack_obs(o,True) for k,o in a.items()},{k:wire.pack_obs(o,True) for k,o in b.items()})
+        labelled=0
+        for _ in range(60):
+            if on.over:
+                break
+            acts=on.scripted_actions()
+            self.assertEqual(acts,off.scripted_actions())
+            ra,rb=on.step(acts),off.step(acts)
+            ia,ib=ra[3],rb[3]
+            labelled+=len(ia.pop('teacher'))
+            self.assertNotIn('teacher',ib)
+            self.assertEqual(stable(ra[:3]+(ia,)),stable(rb))
+        self.assertGreater(labelled,0)
+        self.assertEqual(on.engagement.log,off.engagement.log)
+        self.assertEqual(on.rng.random(),off.rng.random())

@@ -33,7 +33,12 @@
   "left": "climb while flanking left; most defend at once, some fire one suppression shot turning right first; defend by turning left (outward); recommit right when the RWR clears",
   "right": "mirror of left: flank right, shoot turning left, defend turning right (towards home)",
   "crawler": "hug the ground, pop up to shoot when close",
-  "rusher": "fly straight at the enemy, shoot at mid range, defend late or not at all"
+  "rusher": "fly straight at the enemy, shoot at mid range, defend late or not at all",
+  "spammer": "population v2 only: climb, fire two or three missiles near Rmax, drag cold at once; recommit and spam again",
+  "speedster": "population v2 only: climb high and fast; never turns in while a lock or missile is on the RWR, runs cold at full power and comes back when it is gone",
+  "deck_notcher": "population v2 only: down to the deck right after spawn, beam threats down there, shoot from low altitude",
+  "pair": "population v2 only (team of two or more): wingman 3-8 km abeam of a teammate, turns in when the lead does",
+  "bait": "population v2 only (team of two or more): drags a pursuer toward the nearest teammate and turns back when the teammate fires"
  },
  "groups": [
   {
@@ -52,7 +57,8 @@
     "right": 0.05,
     "crawler": 0.07,
     "rusher": 0.08
-   }
+   },
+   "prior_v2_extra": {"spammer": 0.08, "speedster": 0.04, "deck_notcher": 0.03, "pair": 0.05, "bait": 0.03, "pusher": 0.04}
   },
   {
    "name": "J-16 / Su-30SM2",
@@ -67,6 +73,7 @@
     "crawler": 0.07,
     "rusher": 0.05
    },
+   "prior_v2_extra": {"spammer": 0.05, "speedster": 0.03, "deck_notcher": 0.04, "pair": 0.06, "bait": 0.03, "pusher": 0.06},
    "notes": "Their middle players often fire one shot and turn left early (middle.early_left)."
   },
   {
@@ -81,7 +88,8 @@
     "right": 0.02,
     "crawler": 0.05,
     "rusher": 0.03
-   }
+   },
+   "prior_v2_extra": {"spammer": 0.03, "speedster": 0.06, "deck_notcher": 0.03, "pair": 0.06, "bait": 0.03, "pusher": 0.04}
   },
   {
    "name": "Su-30SM/MKM, F/A-18E/F, MiG-35",
@@ -98,7 +106,8 @@
     "right": 0.15,
     "crawler": 0.07,
     "rusher": 0.06
-   }
+   },
+   "prior_v2_extra": {"spammer": 0.05, "speedster": 0.04, "deck_notcher": 0.04, "pair": 0.06, "bait": 0.03, "pusher": 0.05}
   },
   {
    "name": "F-16V/CM, J-10C, JAS 39E",
@@ -114,10 +123,85 @@
     "right": 0.1,
     "crawler": 0.15,
     "rusher": 0.1
-   }
+   },
+   "prior_v2_extra": {"spammer": 0.04, "speedster": 0.04, "deck_notcher": 0.06, "pair": 0.06, "bait": 0.04, "pusher": 0.04}
   }
  ],
  "prior_jitter": "Dirichlet around each group's prior, concentration 20 (D)",
+ "population": {
+  "notes": "Population v2 of the scripted pilots (docs/population_spec.md): opt-in with match population=\"v2\" or MatchEnv script_perturbation={\"population\": \"v2\"}; without it the v1 scripts fly unchanged. \"v2\" holds every distribution (grade D unless docs/rl_design.md section 2 gives a C fact); its values equal archetypes.POPULATION_V2, and a value given here overrides that default. Each group's prior_v2_extra is the share of its pilots drawn as a new archetype (spammer, speedster, deck_notcher, pair, bait, pusher; pair and bait only in teams of two or more); the other pilots keep the C-grade prior.",
+  "v2": {
+   "extra_prior": {"spammer": 0.05, "speedster": 0.04, "deck_notcher": 0.04, "pair": 0.06, "bait": 0.03, "pusher": 0.05},
+   "extra_concentration": 20.0,
+   "commit": {
+    "triggers": {
+     "default": {"contact": 0.5, "team_launch": 0.4, "rwr_clear": 0.3},
+     "middle": {"contact": 0.6, "team_launch": 0.3, "rwr_clear": 0.25},
+     "spammer": {"contact": 0.8, "team_launch": 0.2, "rwr_clear": 0.1},
+     "pair": {"contact": 0.3, "team_launch": 0.6, "rwr_clear": 0.1}
+    },
+    "never": {"default": 0.04, "middle": 0.06, "spammer": 0.02, "speedster": 0.0, "pair": 0.0, "bait": 0.0, "pusher": 0.0},
+    "never_mode": {"home": 0.5, "cold": 0.5},
+    "contact_km": [30.0, 70.0],
+    "timer_s": {"median": 104.0, "sigma": 0.55, "clip": [20.0, 420.0]},
+    "clear_s": [5.0, 30.0],
+    "speedster_clear_s": [5.0, 20.0],
+    "hesitation_s": [0.0, 10.0],
+    "min_alt_fraction": 0.7,
+    "team_seen_km": 25.0,
+    "flank_offset_deg": [20.0, 60.0],
+    "flank_cycle_s": [16.0, 30.0]
+   },
+   "evasion": {
+    "styles": {
+     "default": {"beam": 0.3, "drag": 0.2, "dive20": 0.15, "dive40": 0.1, "split_s": 0.1, "ignore": 0.05},
+     "crawler": {"beam": 0.7, "drag": 0.25, "ignore": 0.05},
+     "deck_notcher": {"beam": 0.75, "drag": 0.2, "ignore": 0.05},
+     "speedster": {"drag": 1.0},
+     "rusher": {"beam": 0.3, "drag": 0.2, "dive20": 0.1, "ignore": 0.4},
+     "bait": {"bait": 0.7, "beam": 0.15, "drag": 0.15}
+    },
+    "concentration": 6.0,
+    "chaff": {"default": {"continuous": 0.35, "paced": 0.35, "none": 0.1, "late": 0.2}},
+    "chaff_start_km": [8.0, 20.0],
+    "chaff_paced_s": [1.0, 3.0],
+    "chaff_late_km": [3.0, 7.0],
+    "min_evade_s": [3.0, 20.0],
+    "recommit": {
+     "default": {"after_clear": 0.7, "early": 0.2, "never": 0.1},
+     "speedster": {"after_clear": 1.0},
+     "bait": {"after_clear": 0.9, "never": 0.1}
+    },
+    "clear_wait_sigma": 0.6,
+    "clear_wait_clip_s": [0.5, 40.0],
+    "early_s": [4.0, 15.0],
+    "p_outer": [0.6, 0.95],
+    "p_switch": [0.0, 0.2],
+    "switch_s": [3.0, 10.0],
+    "split_s_alt_m": [200.0, 1500.0]
+   },
+   "doctrine": {
+    "shots": {"default": {"1": 0.5, "2": 0.35, "3": 0.15}, "spammer": {"2": 0.5, "3": 0.5}, "pusher": {"2": 0.6, "3": 0.4}},
+    "salvo_gap_s": {"default": [2.0, 8.0], "spammer": [2.0, 5.0], "pusher": [3.0, 6.0]},
+    "launch_fraction": {"default": [0.5, 1.1], "spammer": [0.9, 1.1], "speedster": [0.7, 1.0], "pusher": [0.8, 1.0]},
+    "support": {
+     "default": {"crank": 0.4, "straight": 0.35, "drag": 0.25},
+     "spammer": {"drag": 1.0},
+     "speedster": {"straight": 0.5, "drag": 0.5},
+     "pusher": {"straight": 1.0}
+    },
+    "support_max_s": [8.0, 25.0],
+    "p_stt": [0.0, 0.4],
+    "p_second_round_wide": 0.25,
+    "second_round_wide_km": [12.0, 40.0]
+   },
+   "deck": {"deck_offset_deg": [0.0, 40.0]},
+   "speedster": {"level_alt_m": [9500.0, 11500.0]},
+   "team": {"pair_offset_km": [3.0, 8.0], "pair_back_km": [0.0, 2.0], "bait_friend_km": 40.0, "bait_max_s": [60.0, 120.0]},
+   "push": {"wait_s": [8.0, 16.0], "margin_deg": 10.0, "beam_deg": 20.0, "pursue_max_s": 60.0, "wide_km": 16.0, "far_deg": 45.0},
+   "skill": {"delay_median_s": {"normal": [1.5, 2.5], "top": [0.8, 1.5]}, "rusher_delay_factor": [1.3, 1.8]}
+  }
+ },
  "aircraft_frequency": {
   "notes": "Relative match frequency = battles played per aircraft from statshark.net (screenshots sent by the user, 2026-10-05; lifetime totals, so newer aircraft are under-counted). J-16 has no data yet; the user says it is very common: taken equal to Su-30SM2. MiG-35 was not in the list: 20000 (D). Rafale C F3 245432 and Rafale M F3-R 75234 are excluded until MICA EM is modelled.",
   "source": "statshark.net, Air RB vehicle statistics, BR 14.3-14.7",

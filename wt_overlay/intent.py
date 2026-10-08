@@ -11,6 +11,7 @@ import random
 
 from .engagement import Action, RadarCommand, STT_TRACK, equipment_data
 from .flight import FlightCommand, KeyboardCommand
+from .fm import atmosphere
 
 HEAD_NAMES = ('maneuver_ref','target','view_object','maneuver','vertical','speed','chaff',
               'radar_mode','antenna','weapon','view_mode','look_az','look_el','kb_roll','kb_pitch')
@@ -22,6 +23,19 @@ SAMPLE_ORDER = ('view_mode','maneuver_ref','target','view_object','maneuver','ve
 ANTENNA_DEG = (20.,10.,0.,-10.,-20.)
 # User-specified launchAngleMax entries; aliases are carried weapon ids (not seeker FOV).
 ALL_ASPECT = frozenset(('su_r_77_1','su_rvv_sd','cn_pl12a','us_aim_120d','fr_mica_em'))
+# vertical_mode 'angle' (opt-in, IntentExecutor): the vertical head is a flight-path angle kept until another option
+# executes. 0 level: capture the altitude when the option is (re)selected; 1 steep climb, 2 shallow climb, 3 shallow
+# descent, 4 dive (degrees, D). The default 'altitude' keeps 0 hold target / 11 km / 8 km / deck / 3 km lower.
+VERTICAL_MODES = ('altitude','angle')
+VERTICAL_ANGLES_DEG = (None,25.,10.,-10.,-30.)
+ANGLE_CLIMB_MIN_SPEED_MPS = 250.   # climb options stop climbing below this speed (the scripts' rule, archetypes)
+# from_flight_action in 'angle' mode: a script's altitude target -> option (D). Within the deadband level; farther
+# than STEEP_M climb steeply / dive, else the shallow angle. A dive toward a floor levels above it by the deadband,
+# LEAD_S of sink rate and a pull-out at PULL_G net (3 g). (A narrower deadband near the deck made crawlers bounce
+# between descent and level into the 100 m floor: each switch is a new event with its own delay, so the level-off
+# lands delay x sink rate lower.)
+SCRIPT_ALT_DEADBAND_M, SCRIPT_ALT_STEEP_M, SCRIPT_FLOOR_LEAD_S, SCRIPT_FLOOR_PULL_G = 300., 2500., 2., 2.
+VIEW_MODELS = ('full','object_only')   # view_model: 'object_only' masks look-direction and the keyboard heads
 
 
 def wrap(deg):
@@ -114,18 +128,36 @@ class IntentExecutor:
     its delay. One-shot weapon/chaff requests are events even when repeated.
     Pending events execute in publication order; older delayed events cannot
     undo a newer event that already executed. All state is snapshot-copyable.
-    Leaving free look (view_mode != 0 -> 0) is never rejected: the pilot always
-    takes back normal control. Another rejected proposal that is still being
+    The hold on maneuver_ref / maneuver / vertical survives free look: entering
+    or leaving it neither clears nor restarts a running hold, and the exit must
+    keep the held values (aim_heads, the last mouse-aim publication). Leaving
+    free look is never rejected: the pilot always takes back normal control (the
+    rejection draw is made and ignored). A rejected proposal that is still being
     published is noticed again renotice_s after it was passed over (D) and
-    offered afresh. RNG draws per offer, in order: rejection (also drawn, and
-    ignored, when leaving), then delay and error if it is taken up.
+    offered afresh. RNG draws per offer, in order: rejection, then delay and
+    error if it is taken up.
+
+    Options (all opt-in, the defaults keep the old behaviour; MatchEnv passes them in ``execution``):
+    vertical_mode 'angle' (VERTICAL_ANGLES_DEG), view_model 'object_only' (look-object keeps flying the last mouse-aim
+    intent; look-direction and the keyboard are masked), entity_memory_s (rl_observation.select_entities keeps any enemy
+    entity seen within that many seconds, extrapolated), maw_entities False (no MAW entities, own MAW flag or MAW hold
+    release: every aircraft gives the actor the same inputs).
     """
     def __init__(self, seed, *, path='follow', delay=None, hold_s=2., error_deg=5.,
-                 reject_p=.05, renotice_s=2., authority=1., home_xy=(0.,0.), ground_floor=True, deck_m=100.):
+                 reject_p=.05, renotice_s=2., authority=1., home_xy=(0.,0.), ground_floor=True, deck_m=100.,
+                 airfield=None, vertical_mode='altitude', view_model='full', entity_memory_s=None, maw_entities=True):
         if path not in ('follow','autonomous'):
             raise ValueError('unknown execution path')
         if hold_s<0 or error_deg<0 or not 0<=reject_p<=1 or not renotice_s>=0 or not 0<authority<=1:
             raise ValueError('invalid execution parameters')
+        if vertical_mode not in VERTICAL_MODES or view_model not in VIEW_MODELS or not isinstance(maw_entities,bool) \
+                or (entity_memory_s is not None and (isinstance(entity_memory_s,bool) or
+                                                     not isinstance(entity_memory_s,(int,float)) or not entity_memory_s>0)):
+            raise ValueError("vertical_mode must be 'altitude' or 'angle', view_model 'full' or 'object_only', "
+                             'entity_memory_s None or a positive number of seconds, maw_entities True or False')
+        self.vertical_mode, self.view_model = vertical_mode, view_model
+        self.entity_memory_s = None if entity_memory_s is None else float(entity_memory_s)
+        self.maw_entities = maw_entities
         self.rng = random.Random(seed)
         # ground_floor False: manoeuvre commands carry no ground floor (no pull-out help); deck_m: the lowest altitude
         # the deck / dive options aim for.
@@ -144,6 +176,9 @@ class IntentExecutor:
         self.renotice_s = renotice_s
         self.unheeded_at = None   # when the latest publication was last rejected (None: it was taken up)
         self.home_xy = home_xy
+        # airfield (opt-in, engagement.airfield_settings): go-home (maneuver 10) flies straight to home_xy, inside
+        # approach_m down to approach_alt_m at approach_ias_kmh; plane.want_home tells the engagement to land.
+        self.airfield, self.approach, self.takeoffs = airfield, False, 0
         self.published = self.executed = Intent()
         self.hold_until = self.published_at = 0.
         self.head_since = {h:0. for h in HEAD_NAMES}
@@ -154,6 +189,10 @@ class IntentExecutor:
         self.last_noise = 0.
         self.initial = True
         self.aim_heading = self.aim_altitude = None
+        # vertical_mode 'angle': the flight-path angle flown (None: capture aim_altitude) and the option it came from
+        self.aim_climb = self.aim_vertical = None
+        # maneuver_ref / maneuver / vertical of the last mouse-aim publication: what a hold keeps through free look
+        self.aim_heads = (None,0,0)
         self.free_since = None
         self.release_count = self.rejected = 0
         self.last_chaff = -1e9
@@ -161,7 +200,8 @@ class IntentExecutor:
     def notice(self, obs):
         alerts = {('r',c.contact_id,'m' if c.missile_warning else 'l') for c in obs.rwr
                   if c.illuminated and (c.missile_warning or c.tracking)}
-        alerts.update(('maw',s.ref) for s in obs.maw)
+        if self.maw_entities:
+            alerts.update(('maw',s.ref) for s in obs.maw)
         alerts.update(('marker',s.ref) for s in obs.missile_marks)
         if alerts-self.alerts:
             self.hold_until = obs.time_s
@@ -169,23 +209,36 @@ class IntentExecutor:
         self.alerts = alerts
 
     def held(self, now):
-        return self.published.view_mode == 0 and now < self.hold_until-1e-9
+        # Whatever the view: free look neither clears nor bypasses the hold.
+        return now < self.hold_until-1e-9
+
+    def mouse(self, intent):
+        """True when ``intent`` is flown by the mouse-aim command: the aim view, and look-object under view_model
+        'object_only' (the camera follows the object, the aircraft keeps the last mouse-aim intent)."""
+        return intent.view_mode==0 or (intent.view_mode==1 and self.view_model=='object_only')
 
     def publish(self, intent, obs):
         self.notice(obs)
         old, now = self.published, obs.time_s
-        leaving = old.view_mode != 0 and intent.view_mode == 0
-        if self.held(now) and intent.view_mode==0 and not leaving:
-            if any(getattr(intent,h)!=getattr(old,h) for h in ('maneuver_ref','maneuver','vertical')):
-                raise ValueError('held high-level intent cannot change without a visible new warning')
+        leaving = not self.mouse(old) and self.mouse(intent)   # back from keyboard flight
+        held, aiming = self.held(now), self.mouse(intent)
+        heads = (intent.maneuver_ref,intent.maneuver,intent.vertical)
+        if held and aiming and heads!=self.aim_heads:
+            raise ValueError('held high-level intent cannot change without a visible new warning')
+        if aiming and intent.view_mode!=0 and heads!=self.aim_heads:
+            raise ValueError('look-object (view_model object_only) keeps the last mouse-aim intent')
         changed = self.initial or intent != old or intent.weapon or intent.chaff==1
         if not changed:
             if self.unheeded_at is not None and now >= self.unheeded_at+self.renotice_s-1e-9:
                 self._offer(intent,now,False)
             return
-        high = any(getattr(intent,h)!=getattr(old,h) for h in ('maneuver_ref','maneuver','vertical'))
-        if intent.view_mode==0 and (high or leaving or self.initial):
+        high = aiming and heads!=self.aim_heads
+        # A change of the high-level heads, the first publication and taking back mouse flight start a hold; a hold
+        # that is running is kept as it is.
+        if aiming and (high or self.initial or (leaving and not held)):
             self.hold_until = now+self.hold_s
+        if aiming:
+            self.aim_heads = heads
         for h in HEAD_NAMES:
             if self.initial or getattr(intent,h)!=getattr(old,h):
                 self.head_since[h] = now
@@ -195,7 +248,9 @@ class IntentExecutor:
         self._offer(intent,now,leaving)
 
     def _offer(self, intent, now, leaving):
-        # A re-notice keeps the publication's sequence number: it is the same event, taken up late.
+        # A re-notice keeps the publication's sequence number: it is the same event, taken up late. Leaving free look
+        # is never rejected (the draw is made and ignored, so later draws stay in order): the pilot always takes back
+        # normal control; the hold fix above already keeps the exit from changing the held heads.
         if self.rng.random() < self.reject_p and not leaving:
             self.rejected += 1
             self.unheeded_at = now
@@ -213,21 +268,42 @@ class IntentExecutor:
         self.pending = [ev for ev in self.pending if ev[0]>now+1e-9]
         for _,seq,intent,noise,leaving in ready:
             if seq <= self.applied_sequence:
+                # Overtaken by a newer publication that already executed: its persistent heads are stale, but a
+                # one-shot press (fire, single chaff) still happens, at the target it was pressed for. (Before this,
+                # a fire request followed by a quicker 'no fire' publication was silently dropped: scripts got 23
+                # launches from 33 requests.)
+                if intent.weapon or intent.chaff==1:
+                    shot = replace(self.executed, weapon=intent.weapon, chaff=1 if intent.chaff==1 else self.executed.chaff,
+                                   target=intent.target if intent.weapon else self.executed.target)
+                    eng.apply(plane,self._action(plane,obs,entities,shot,fire_once=True))
                 continue
             self.applied_sequence = seq
             self.last_noise = noise
+            # Back from the keyboard also when that publication was passed over and taken up on a later notice.
+            leaving = leaving or (not self.mouse(self.executed) and self.mouse(intent))
             self.executed = intent
             if intent.view_mode==0:
                 self.free_since = None
-                self._aim(obs,entities,intent,noise,leaving)
             elif self.free_since is None:
                 self.free_since = now
+            if self.mouse(intent):
+                self._aim(obs,entities,intent,noise,leaving)
             action = self._action(plane,obs,entities,intent,fire_once=True)
             eng.apply(plane,action)
+        if self.airfield is not None:
+            plane.want_home = self.executed.maneuver==10
+            if plane.takeoffs!=self.takeoffs:
+                # Just took off: aim afresh from the runway heading (the old aim pointed at the airfield).
+                # (vertical_mode 'angle': the vertical option is taken up afresh, so level captures the take-off altitude)
+                self.takeoffs,self.aim_heading,self.aim_vertical = plane.takeoffs,None,None
+                if self.aim_altitude is None:
+                    self.aim_altitude = plane.own.position[2]
+                if self.mouse(self.executed):
+                    self._aim(obs,entities,self.executed,self.last_noise,False)
         # Continuous keyboard flight, radar pointing and tracking camera follow
         # the latest available observation, not the entity's true position.
         intent = self.executed
-        if intent.view_mode==0 and self.aim_heading is not None and (intent.maneuver_ref is not None or intent.maneuver in (7,10)):
+        if self.mouse(intent) and self.aim_heading is not None and (intent.maneuver_ref is not None or intent.maneuver in (7,10)):
             self._aim(obs,entities,intent,self.last_noise,False)
         eng.apply(plane,self._action(plane,obs,entities,intent,fire_once=False))
         camera = plane.camera
@@ -238,7 +314,8 @@ class IntentExecutor:
             if entity is not None and entity.bearing is not None:
                 camera.point(entity.bearing,entity.elevation or 0.,1)
         else:
-            aim_el=plane.own.pitch_deg if self.aim_altitude is None else max(-30.,min(30.,
+            aim_el=max(-30.,min(30.,self.aim_climb)) if self.aim_climb is not None else \
+                plane.own.pitch_deg if self.aim_altitude is None else max(-30.,min(30.,
                      math.degrees(math.asin(max(-1.,min(1.,(self.aim_altitude-obs.own.altitude_m)/max(1.,6*obs.own.speed_mps)))))))
             camera.point(self.aim_heading if self.aim_heading is not None else plane.own.heading_deg,
                          aim_el,0)
@@ -252,6 +329,7 @@ class IntentExecutor:
         ref=next((e for e in entities if e.key==i.maneuver_ref),None)
         bearing=own.heading_deg if ref is None or ref.bearing is None else ref.bearing
         offsets={1:0.,2:-40.,3:40.,4:-90.,5:90.,6:180.,8:-40.,9:40.}
+        self.approach=False
         if i.maneuver==7:
             x,y,_=own.position
             half=obs.map_half_m
@@ -271,18 +349,26 @@ class IntentExecutor:
                 heading=math.degrees(math.atan2(-x,-y))
         elif i.maneuver==10:
             dx,dy=self.home_xy[0]-own.position[0],self.home_xy[1]-own.position[1]
-            heading=own.heading_deg+3. if math.hypot(dx,dy)<12000. else math.degrees(math.atan2(dx,dy))
+            if self.airfield is not None:   # straight to the airfield; the approach inside approach_m (_action)
+                heading=math.degrees(math.atan2(dx,dy))
+                self.approach=math.hypot(dx,dy)<=self.airfield['approach_m']
+            else:
+                heading=own.heading_deg+3. if math.hypot(dx,dy)<12000. else math.degrees(math.atan2(dx,dy))
         elif i.maneuver in offsets:
             heading=bearing+offsets[i.maneuver]
         else:
             heading=own.heading_deg if leaving or self.aim_heading is None else self.aim_heading
         if i.maneuver or leaving or self.aim_heading is None:
             self.aim_heading=(heading+noise)%360.
-        if i.vertical or leaving or self.aim_altitude is None:
+        if self.vertical_mode=='angle':
+            # Persistent: only another option (or taking back mouse flight) changes it; level captures the altitude now.
+            if i.vertical!=self.aim_vertical or leaving or self.aim_altitude is None:
+                self.aim_vertical,self.aim_climb,self.aim_altitude=i.vertical,VERTICAL_ANGLES_DEG[i.vertical],own.altitude_m
+        elif i.vertical or leaving or self.aim_altitude is None:
             self.aim_altitude=(own.altitude_m,11000.,8000.,self.deck_m,max(self.deck_m,own.altitude_m-3000.))[i.vertical]
 
     def _action(self, plane, obs, entities, i, fire_once):
-        if i.view_mode:
+        if not self.mouse(i):
             flight=KeyboardCommand(i.kb_roll-1,i.kb_pitch-1,(1,0,-1)[i.speed],i.speed==2,self.authority)
         else:
             from .rl_observation import energy_state
@@ -292,9 +378,20 @@ class IntentExecutor:
             ratio=self.performance_ratio
             warning=bool(obs.maw or obs.missile_marks or any(c.missile_warning for c in obs.rwr))
             max_load=2. if i.weapon else 3. if not warning and ratio is not None and ratio<1. else 9.
-            flight=FlightCommand(heading_deg=self.aim_heading,altitude_m=self.aim_altitude,max_load=max_load,
-                                 throttle_percent=(110.,85.,0.)[i.speed],airbrake_allowed=i.speed==2,
-                                 speed_mps=50. if i.speed==2 else None,**({} if self.ground_floor else {'floor_m':None}))
+            altitude,speed,brake=self.aim_altitude,50. if i.speed==2 else None,i.speed==2
+            extra={} if self.ground_floor else {'floor_m':None}
+            climb=None
+            if self.approach:   # airfield approach: down to approach_alt_m, throttle back (airbrake) to approach_ias_kmh
+                a=self.airfield
+                altitude,brake=a['approach_alt_m'],True
+                speed=a['approach_ias_kmh']/3.6/math.sqrt(atmosphere(max(0.,min(19999.,obs.own.altitude_m)))[0]/1.225)
+            elif self.aim_climb is not None:   # vertical_mode 'angle': hold the flight-path angle, climbs not below 250 m/s
+                altitude,climb=None,self.aim_climb
+                if climb>0.:
+                    extra=dict(extra,min_speed_mps=ANGLE_CLIMB_MIN_SPEED_MPS)
+            flight=FlightCommand(heading_deg=self.aim_heading,altitude_m=altitude,climb_deg=climb,max_load=max_load,
+                                 throttle_percent=(110.,85.,0.)[i.speed],airbrake_allowed=brake,
+                                 speed_mps=speed,**extra)
         target=next((e for e in entities if e.key==i.target and e.track_id is not None),None)
         track=None if target is None else target.track_id
         data=plane.radar.radar if plane.radar else None
@@ -310,17 +407,50 @@ class IntentExecutor:
                       1 if fire_once and i.chaff==1 else 0)
 
 
-def from_flight_action(action, obs, entities, *, phase='', home_xy=(0.,0.), guard=False):
+def angle_option(f, own):
+    """vertical_mode 'angle': the vertical option for a script's FlightCommand ``f``. An altitude target within the
+    deadband levels (0); above it a climb (1 steep beyond SCRIPT_ALT_STEEP_M, else 2), below it a descent (4 dive beyond
+    SCRIPT_ALT_STEEP_M, else 3). A flight-path command (direction / climb_deg) takes the nearest angle; descending toward
+    its floor it levels in time: the deadband, SCRIPT_FLOOR_LEAD_S of sink rate and a SCRIPT_FLOOR_PULL_G pull-out above
+    the floor."""
+    alt=own.altitude_m
+    if f.direction is not None or (f.altitude_m is None and f.climb_deg is not None):
+        if f.direction is not None:
+            n=math.sqrt(sum(x*x for x in f.direction))
+            gamma=0. if n<1e-9 else math.degrees(math.asin(max(-1.,min(1.,f.direction[2]/n))))
+        else:
+            gamma=f.climb_deg
+        sink=max(0.,-own.velocity[2])
+        if gamma<0. and f.floor_m is not None and alt-f.floor_m<SCRIPT_ALT_DEADBAND_M+SCRIPT_FLOOR_LEAD_S*sink+\
+                sink*sink/(2.*SCRIPT_FLOOR_PULL_G*9.80665):
+            return 0
+        return min(range(5),key=lambda j:abs(gamma-(VERTICAL_ANGLES_DEG[j] or 0.)))
+    target=alt if f.altitude_m is None else f.altitude_m
+    gap=target-alt
+    if abs(gap)<SCRIPT_ALT_DEADBAND_M:
+        return 0
+    if gap>0.:
+        return 1 if gap>SCRIPT_ALT_STEEP_M else 2
+    return 4 if -gap>SCRIPT_ALT_STEEP_M else 3
+
+
+def from_flight_action(action, obs, entities, *, phase='', home_xy=(0.,0.), guard=False, vertical_mode=None):
     """Quantise an archetype's geometric proposal to the public 15 heads.
 
     No continuous command bypasses the executor. The legacy geometric adapter
-    remains available to existing callers of Pilot.decide().
+    remains available to existing callers of Pilot.decide(). ``vertical_mode``
+    (None: the one ``entities`` carries, rl_observation.EntityList, from the
+    script's own executor; 'altitude' without one) picks the vertical options:
+    'altitude' quantises the target to 11 km / 8 km / 100 m, 'angle' translates
+    it into level / climb / descent (angle_option).
     """
     f, own = action.flight, obs.own
+    mode=vertical_mode or getattr(entities,'vertical_mode','altitude')
     target=next((e for e in entities if e.track_id==action.fire),None) if action.fire is not None else None
-    # A script never takes a missile track (radar_sees_missiles) as its reference or radar target.
+    # A script never takes a missile track (radar_sees_missiles) as its reference or radar target, nor an entity only
+    # carried from memory (entity_memory_s).
     candidates=[e for e in entities if e.bearing is not None and e.kind in ('radar','box','map','visual','contrail','rwr')
-                and not e.friend and e.missile is None]
+                and not e.friend and e.missile is None and not getattr(e,'memory',False)]
     ref=target or (min(candidates,key=lambda e:abs(wrap(e.bearing-(own.heading_deg+action.radar.azimuth_deg)))) if candidates and action.radar else None)
     heading=own.heading_deg if f.heading_deg is None else f.heading_deg
     if f.direction is not None:
@@ -332,10 +462,13 @@ def from_flight_action(action, obs, entities, *, phase='', home_xy=(0.,0.), guar
         maneuver=10
     if guard:
         maneuver=7
-    altitude=own.altitude_m if f.altitude_m is None else f.altitude_m
-    vertical=0 if abs(altitude-own.altitude_m)<400. else min(range(1,4),key=lambda j:abs(altitude-(11000.,8000.,100.)[j-1]))
-    if f.direction and f.direction[2]<-.05:
-        vertical=4
+    if mode=='angle':
+        vertical=angle_option(f,own)
+    else:
+        altitude=own.altitude_m if f.altitude_m is None else f.altitude_m
+        vertical=0 if abs(altitude-own.altitude_m)<400. else min(range(1,4),key=lambda j:abs(altitude-(11000.,8000.,100.)[j-1]))
+        if f.direction and f.direction[2]<-.05:
+            vertical=4
     if ref is None and maneuver in (1,2,3,4,5,8,9):
         # The first flank is an absolute look-direction reference observed from
         # own state; absent a contact the public actions still allow a reversal.

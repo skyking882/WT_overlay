@@ -834,5 +834,59 @@ class SensorAccessorTests(unittest.TestCase):
         self.assertEqual(radar.tracked_ids(), set())
 
 
+
+@unittest.skipUnless(HAVE_MISSILE_SIM, "missile_sim not present")
+class AirfieldTests(unittest.TestCase):
+    """Opt-in airfield (docs/airfield_rearm_spec.md): the landing rule, the parked state and the radar track drop."""
+
+    def near_home(self, want_home=True, offset=(500., 1000.), altitude=400., speed=130., **airfield):
+        """A duel with the Golden Eagle (airfield = its spawn point (0, -20000)) put near its airfield, low and slow,
+        stepped once."""
+        eng = duel(Scripted(0.), Scripted(180.), airfield=airfield)
+        ge = eng.planes[0]
+        self.assertEqual(ge.airfield_xy, (0., -20000.))
+        ge.flight.state = dataclasses.replace(ge.flight.state, position=(offset[0], -20000.+offset[1], altitude),
+                                              velocity=(0., speed, 0.))
+        ge.want_home = want_home
+        eng.step()
+        return eng, ge
+
+    def test_landing_needs_go_home_near_low_and_slow(self):
+        eng, ge = self.near_home()
+        self.assertTrue(ge.grounded)
+        land = events(eng, "landing")[0]
+        self.assertEqual((land["plane"], land["altitude_m"] <= 600, land["ias_kmh"] <= 550), (0, True, True))
+        self.assertEqual((ge.own.position, ge.own.velocity, ge.radar.mode), ((0., -20000., 0.), (0., 0., 0.), "off"))
+        for kw in (dict(want_home=False), dict(offset=(0., 2600.)), dict(altitude=650.), dict(speed=170.),
+                   dict(offset=(0., 2000.), land_radius_m=1500.)):
+            eng, ge = self.near_home(**kw)
+            self.assertFalse(ge.grounded or events(eng, "landing"), kw)
+        self.assertNotIn("airfield", duel(Scripted(0.), Scripted(180.)).__dict__["replay"].lines[0])
+
+    def test_a_parked_plane_skips_crash_and_boundary_checks_and_ignores_commands(self):
+        eng, ge = self.near_home()
+        ge.flight.state = dataclasses.replace(ge.flight.state, position=(70000., 0., -5.))   # frozen flight state
+        for _ in range(48*16):
+            eng.step()
+        self.assertTrue(ge.alive and ge.grounded)
+        eng.apply(ge, Action(FlightCommand(heading_deg=90.), RadarCommand("tws", 0, 0., 0.), None, 3))
+        self.assertEqual((ge.radar.mode, ge.chaff, ge.flight.command.heading_deg), ("off", 40, 0.))
+        self.assertEqual(eng.summary()["planes"][0]["landings"], 1)
+
+    def test_enemy_radars_drop_the_track_at_the_landing(self):
+        eng = duel(Scripted(0.), Scripted(180.), airfield={})
+        ge, sm2 = eng.planes
+        for _ in range(48*20):
+            eng.step()
+            if 0 in sm2.tracked:
+                break
+        self.assertIn(0, sm2.radar.tracked_ids())
+        eng._land(ge)
+        self.assertEqual((sm2.radar.tracked_ids(), sm2.tracked), (set(), set()))
+        self.assertEqual(events(eng, "track_lost")[-1]["target"], 0)
+        eng.step()
+        self.assertFalse(sm2.radar.picture(eng.time, sm2.own).contacts)
+
+
 if __name__ == "__main__":
     unittest.main()
