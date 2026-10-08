@@ -79,11 +79,11 @@
   ],
   "clutter": "look_down_angle",
   "clutter_min_depression_deg": 2.0,
-  "early_miss_s": 2.0,
+  "early_miss_s": 0.0,
   "target": "straight and level, no reaction",
   "surface": "flat, sea level",
-  "created": "2026-10-05 19:08:39",
-  "elapsed_s": 51.8,
+  "created": "2026-10-08 13:54:28",
+  "elapsed_s": 76.0,
   "runs": 6768
  },
  "rows": [
@@ -296,11 +296,11 @@
    "azimuth_deg": 60.0,
    "worst": [
     9000.0,
-    14000.0
+    16000.0
    ],
    "reference": [
     9000.0,
-    14000.0
+    19000.0
    ]
   }
  ]

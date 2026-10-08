@@ -79,11 +79,11 @@
   ],
   "clutter": "look_down_angle",
   "clutter_min_depression_deg": 2.0,
-  "early_miss_s": 2.0,
+  "early_miss_s": 0.0,
   "target": "straight and level, no reaction",
   "surface": "flat, sea level",
-  "created": "2026-10-05 19:01:25",
-  "elapsed_s": 65.8,
+  "created": "2026-10-08 13:53:11",
+  "elapsed_s": 87.6,
   "runs": 6768
  },
  "rows": [
@@ -271,11 +271,11 @@
    "pitch_deg": 45.0,
    "azimuth_deg": 0.0,
    "worst": [
-    4000.0,
+    2000.0,
     23000.0
    ],
    "reference": [
-    4000.0,
+    2000.0,
     33000.0
    ]
   },
@@ -283,11 +283,11 @@
    "pitch_deg": 45.0,
    "azimuth_deg": 30.0,
    "worst": [
-    3000.0,
+    2000.0,
     23000.0
    ],
    "reference": [
-    3000.0,
+    2000.0,
     32000.0
    ]
   },
@@ -296,11 +296,11 @@
    "azimuth_deg": 60.0,
    "worst": [
     2000.0,
-    23000.0
+    26000.0
    ],
    "reference": [
     2000.0,
-    23000.0
+    28000.0
    ]
   }
  ]

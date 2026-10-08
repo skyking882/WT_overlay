@@ -6,7 +6,8 @@ launch pitch and target off-boresight azimuth. The window is where every
 worst-case height (25-35 m, multipath gain 0.5) is hit on both a hot and a cold
 course: the far edge is set by multipath, the near edge by how steeply the
 missile can dive. Looked up multilinearly in ownship altitude, TAS and pitch,
-clamped to the grid; a window missing at any corner is missing.
+clamped to the grid; a window missing at any corner is missing. Aliases share
+their base missile's tables (``pk.ALIASES``, e.g. SD-10A uses PL-12).
 """
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
+
+from .pk import ALIASES
 
 DATA_DIR = Path(__file__).resolve().parents[1]/"data"/"lowalt_window"
 # Values are clamped to the grid edge; only clearly outside counts as "outside the table".
@@ -66,8 +69,9 @@ class LowAltWindow:
 
 
 def available(data_dir: Path | None = None) -> list[str]:
-    """Missiles with at least one low-target table on disk."""
-    return sorted({p.name.split("__")[0] for p in Path(data_dir or DATA_DIR).glob("*__*.json")})
+    """Missiles with at least one low-target table on disk, aliases included."""
+    found = {p.name.split("__")[0] for p in Path(data_dir or DATA_DIR).glob("*__*.json")}
+    return sorted(found | {alias for alias, base in ALIASES.items() if base in found})
 
 
 class LowAltLibrary:
@@ -76,7 +80,7 @@ class LowAltLibrary:
     def __init__(self, missile: str, data_dir: Path | None = None):
         self.missile = missile
         self._grid, shapes = {}, set()
-        for path in sorted(Path(data_dir or DATA_DIR).glob(f"{missile}__*.json")):
+        for path in sorted(Path(data_dir or DATA_DIR).glob(f"{ALIASES.get(missile, missile)}__*.json")):
             data = json.loads(path.read_text())
             meta = data["meta"]
             rows = {(float(r["pitch_deg"]), float(r["azimuth_deg"])):

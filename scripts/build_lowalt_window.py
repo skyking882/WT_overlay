@@ -11,7 +11,8 @@ reference height alone (20 m). A window is the longest contiguous run of hits
 on the range ladder (``None`` when nothing hits); the run does not extend past
 a ladder gap, so the edges carry the ladder's resolution. Only the
 multipath-limited far edge and the look-down-limited near edge are covered:
-the target never reacts.
+the target never reacts. Every shot is flown to the end (no early-miss
+shortcut, see --early-miss-s).
 
 Writes JSON under data/lowalt_window/; all limits of build_lowalt_table.py and
 missile_sim apply (flat sea-level surface, units-only proximity fuse, datalink
@@ -67,7 +68,9 @@ def main(argv=None):
     parser.add_argument("--ranges-km", default="2:10:0.5,11:40:1")
     parser.add_argument("--gain", type=float, default=.5)
     parser.add_argument("--max-time-s", type=float, default=150.)
-    parser.add_argument("--early-miss-s", type=float, default=2.)
+    parser.add_argument("--early-miss-s", type=float, default=0.,
+                        help="missile_sim early-miss shortcut; 0 (default) flies every shot to the end, because "
+                             "the shortcut calls nose-up lofts against off-axis cold targets misses before the dive")
     parser.add_argument("--clutter-depression-deg", type=float, default=2.)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--out", type=Path)
@@ -81,7 +84,7 @@ def main(argv=None):
     every = sorted(set(heights) | {args.reference_height_m})
     bases = {(p, az): dict(launch_altitude_m=args.launch_altitude_m, launch_speed_kmh=args.launch_speed_kmh,
                            launch_pitch_deg=p, target_speed_kmh=args.target_speed_kmh, azimuth_deg=az,
-                           max_time_s=args.max_time_s, early_miss_s=args.early_miss_s)
+                           max_time_s=args.max_time_s, early_miss_s=args.early_miss_s or None)
              for p in pitches for az in azimuths}
     keys = [(p, az, h, c, r) for p in pitches for az in azimuths for h in every for c in courses for r in ranges]
     jobs = [(bases[(p, az)], h, c, r, args.gain, []) for p, az, h, c, r in keys]

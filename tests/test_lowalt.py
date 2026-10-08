@@ -64,6 +64,15 @@ class LowAltTests(unittest.TestCase):
             LowAltLibrary("x", Path(self.dir.name))
         self.assertEqual(available(Path(self.dir.name)), ["m"])
 
+    def test_alias_uses_its_base_missile_tables(self):
+        meta = dict(missile="us_aim_120c_5", launch_altitude_m=7000., launch_speed_kmh=1300., reference_height_m=20.)
+        rows = [dict(pitch_deg=0., azimuth_deg=0., worst=[3500., 11000.], reference=[3500., 17000.])]
+        Path(self.dir.name, "us_aim_120c_5__7000m_1300kmh.json").write_text(json.dumps(dict(meta=meta, rows=rows)))
+        w = LowAltLibrary("us_aim_120c_7", Path(self.dir.name)).window(7000., 1300/3.6, 0.)
+        self.assertEqual((w.missile, w.center()), ("us_aim_120c_7", (3500., 11000.)))
+        self.assertIn("us_aim_120c_7", available(Path(self.dir.name)))
+        self.assertNotIn("cn_sd10a", available(Path(self.dir.name)))  # Its base, PL-12, has no table here.
+
     def test_incomplete_grid_uses_the_nearest_table(self):
         Path(self.dir.name, "m__8000m_1300kmh.json").unlink()
         w = LowAltLibrary("m", Path(self.dir.name)).window(7900., 1250/3.6, 0.)

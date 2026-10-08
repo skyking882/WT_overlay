@@ -79,11 +79,11 @@
   ],
   "clutter": "look_down_angle",
   "clutter_min_depression_deg": 2.0,
-  "early_miss_s": 2.0,
+  "early_miss_s": 0.0,
   "target": "straight and level, no reaction",
   "surface": "flat, sea level",
-  "created": "2026-10-05 19:05:31",
-  "elapsed_s": 42.6,
+  "created": "2026-10-08 14:23:08",
+  "elapsed_s": 66.4,
   "runs": 6768
  },
  "rows": [
