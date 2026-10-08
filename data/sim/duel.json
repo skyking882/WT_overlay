@@ -1,0 +1,26 @@
+{
+  "name": "F-15C versus Su-30SM2",
+  "seed": 1,
+  "time_limit_s": 900,
+  "map_half_m": 64000,
+  "teams": [
+    [{
+      "aircraft": "f_15c_golden_eagle",
+      "archetype": "middle",
+      "skill": "top",
+      "missile": "us_aim_120c_5",
+      "missiles": 12,
+      "position_m": [0, -30000, 2500],
+      "velocity_mps": [0, 300, 0]
+    }],
+    [{
+      "aircraft": "su_30sm2",
+      "archetype": "middle",
+      "skill": "top",
+      "missile": "su_r_77_1",
+      "missiles": 12,
+      "position_m": [0, 30000, 2500],
+      "velocity_mps": [0, -300, 0]
+    }]
+  ]
+}

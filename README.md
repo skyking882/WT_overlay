@@ -2,6 +2,23 @@
 
 Windows 8111 透明能量 HUD 与静态 SEP 研究原型。显示层使用 PySide6；遥测、能量与 FM 计算仍只使用 Python 标准库。
 
+## 无画面空战模拟器
+
+在项目目录运行 `python -m wt_overlay.sim`，默认完成一场固定种子的 F-15C 金鹰对苏-30SM2 1v1 导弹交战。需要 Python 3.11+ 和相邻目录 `../missle_sim` 的现有导弹模型；此入口只使用标准库，独立于 HUD、游戏遥测和 RL 训练。可指定模型目录：`--missile-sim /path/to/missle_sim`。
+
+```text
+python -m wt_overlay.sim --scenario data/sim/duel.json --out outputs/headless/duel
+python -m wt_overlay.sim --scenario data/sim/duel.json --seed 2 --out outputs/headless/seed2
+```
+
+[示例场景](data/sim/duel.json) 的 `teams` 包含两个各有一架飞机的队伍；`position_m` 和 `velocity_mps` 分别是东、北、上方向的位置（m）与速度（m/s）。可改机型、导弹及数量、脚本类型 `archetype`（left/right/middle/crawler/rusher）、技能 `skill`（normal/top）、初始状态、`seed`、`time_limit_s` 和 `map_half_m`。可选 `chaff`、`mass_factor`、`rcs_ratio`、`flame_probability`；未指定的装备和脚本参数按现有对局模型与种子抽样，实际值会写入输出。`missile: null` 表示无挂载。场景拒绝未知字段、不支持的挂载和无效初始值。
+
+输出目录包含 `scenario.json`（请求与实际参数）、`replay.jsonl`（0.25 s 世界帧、48 Hz 全精度导弹状态、事件）和 `result.json`（终局、发射／命中／未命中、仍在飞行的导弹、导弹错误、FM 越界次数和性能统计）。雷达／目视／告警的出现与消失记录的是飞行员实际收到的观测；回放中的世界真值仅供分析。脚本沿用有限视野相机与共同的意图执行器。`python scripts/plot_engagement.py --help` 可查看既有轨迹绘图入口。
+
+相同场景和种子在相同模型与运行环境下可直接比较回放文件及其 `replay_sha256`；结果比较只排除 `performance`（墙钟时间与性能计数）字段。Python 调用可使用 `from wt_overlay.sim import build_simulation, result_document`，以场景字典构建世界，然后 `sim.step()`（1/48 s）或 `sim.run()`，最后 `result_document(sim)`。完整命令正常结束返回 0；记录到导弹错误或 FM 越界时仍保存结果并返回 1。时间上限／僵局允许平局，未结束的导弹明确标为未决；未命中的额外原因没有记录时保持未知。
+
+此版本沿用现有平地、飞机操纵与传感器近似，以及“引信触发即击落”的规则；完整运行和可重复性不代表已校准到战雷实际对局。
+
 ## 在 Windows 上运行
 
 使用 Python 3.11 或更新版本。将整个目录复制到 Windows 后，双击 `start_windows.cmd`。启动器会在项目的 `.venv` 中创建独立环境，并在首次运行时安装 PySide6，因此首次运行需要联网。准备完成后，图形界面使用 `pythonw.exe` 独立运行，双击启动产生的命令窗口随即关闭；`--headless` 和 `--help` 保留控制台输出。图形启动出错时会弹出错误提示，记录保存在 `%LOCALAPPDATA%\WT Energy\startup.log`。
