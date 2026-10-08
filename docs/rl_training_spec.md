@@ -43,6 +43,24 @@
 - 镜头转动有速率上限，暂定 180°/s（D）。
 - 交战环境里已有接口 `wt_overlay/engagement.py` 的 `Camera.sees()`，但目前对任何方向都返回 True。**具体的镜头模型要先实现，否则视角动作对观测没有影响，策略学不到观察。**
 
+### 2.1 可选的策略观测视图（2026-10-08，`wt_overlay/policy_view.py`）
+
+`MatchEnv` 配置键，不设时观测逐位不变。只改策略飞机拿到的观测：交战/传感器模型、脚本（故意保留全信息）、critic 真值、目标合法性（航迹号、屏蔽、`launch_ok`）和执行都不变。输入维度不变。实现：`select_view_entities` 给每个显示实体配一个同 key 的全信息孪生实体，执行器和屏蔽用孪生实体，排序、数量上限、记忆外推只用显示值；脚本给策略飞机出的标签仍按原始观测算。
+
+**用户事实（WT，2026-10-08）**：B 显上没有任何数字，只能从目标在屏幕上的位置读出距离（纵向）和方位（横向）；搜索、TWS、STT 下每个目标都画速度矢量线，方向是目标自身速度方向、长度随速度变，方向准确，只在目标的 notch 附近不稳定、来回摆（不是每次刷新都建立稳定的速度估计）；雷达目标一律不显示高度，只能用天线俯仰扫描覆盖结合距离推断大致高度层；不显示接近率；镜头内目标的 3D 框显示距离、接近率、相对高度（`box` 实体，保持精确）；本方导弹在 B 显上按距离/方位显示，导引头开机前在目标/INS 瞄准点画圈、导弹线末端为虚线，开机后实线无圈，不显示导弹高度；队友在 B 显上可选，保留现在的 `friend` 地图标记；游戏的动态发射区当作不存在。
+
+- **`radar_display: "bscope"`**（或 `{"mode": "bscope", ...}`，括号内为缺省值，全部 D、可配）：
+  - 距离、方位：按显示量程量化（`range_res_frac` 0.005 × 量程；量程 = 雷达数据里各测距对空波形能报的最远距离 min(rangeMax, 信号距离上限)，或 `display_range_m`），方位相对机头量化（`az_res_deg` 0.5）。可加高斯读数噪声（`range_noise_frac` 0、`az_noise_deg` 0），每次雷达刷新该目标（`updated_s` 变）时抽一次，刷新之间保持。电扫雷达的航迹每个快扫周期都刷新，所以每个决策步都是一次刷新。
+  - 速度：所有模式（含搜索点迹）都给目标真值速度（最后刷新时刻），只给水平分量（B 显是二维画面）；刷新之间保持。r = |v·视线单位向量| < `notch_band_mps` 60 时每次刷新抖动：k = 1 − r/60，以 `dropout_p` 0.3 × k 的概率缺失，否则方向误差 σ = `jitter_deg` 60 × k、速度倍数误差 σ = `jitter_speed_frac` 0.4 × k。随机数每局每架飞机一个独立生成器，随 snapshot/restore 保存。
+  - 接近率：未知（值 0、标志 0）。
+  - 高度：刷新时扫描的俯仰覆盖（最低条中心 − 波束半宽 ～ 最高条中心 + 波束半宽，`RadarSensor.elevation_coverage`；STT 用锁定后要回到的扫描）乘以显示距离得到高度带（低端不低于 0），带中心写进俯仰和高度字段，半宽（`band_half_width` True）写进 vz 槽（尺度 20 km；B 显不给垂直速度，这个槽本来就空出来了）。STT 同样处理。能量估计 = 带中心 + 水平速度动能；若现在发射的飞行/开机时间也只用显示值。
+  - 本方导弹（`shot`）：在显示范围内（雷达方位极限、量程内）给量化后的距离、方位，不给俯仰/高度；保留开机、数据链支援、所导目标标记；导引头开机前瞄准点（导弹自己的数据链/INS 目标估计，同样量化、无高度）以相对本机的东/北偏移写进 vx/vy 槽（尺度 120 km，自我中心坐标下同样旋转）。不再用导弹的 3D 镜头标记。
+  - 雷达看到的友方导弹：现在没有（雷达只看敌机，`radar_sees_missiles` 只加敌方导弹），敌方导弹航迹按同样规则处理。
+  - **地图不在这个选项里**：交战环境把每条雷达航迹的精确位置放上队伍地图（保持 20 s），单开 `radar_display` 时策略仍能从 `map` 实体读到精确距离。要和 `map_spotting_m` 一起用。
+- **`launch_zone_info: False`**：去掉每个实体"若现在发射"的飞行时间和开机时间（置未知）。本机向量的 `rmax` 不变：它是射程表对迎头、同高度、不规避目标在本机当前高度和速度下的 Rmax（无射程表时用命中概率模型的迎头线），只取决于本机和所带导弹，不针对具体目标。
+- **`map_spotting_m`**（例如 8000）：敌方地图标记只来自"被发现"：在本机或任一活着的空中队友该距离内（用户认可的简化）；雷达航迹不再给策略打标记。`map_hold_s`（缺省 20）为策略侧标记保持时间。策略侧标记表与交战环境的共享表分开，脚本看到的标记不变。雷达航迹、目标框、本方导弹上的 `mark_id` 是固定的每架敌机编号，与地图表无关，照常工作。
+- **`wreck_s`**（例如 20）：被击落的飞机在 wreck_s 秒内仍是策略飞机雷达可探测、镜头可见的目标（保持最后速度、受重力下落、落地停止；探测规则不变：RCS、notch、视场、镜头），可跟踪、可锁定、可对它发射（导弹浪费，不改追）。在飞导弹的制导和击杀逻辑、`retarget_dead` 不变。敌方地图标记不再刷新、到期消失；死亡队友的 `friend` 标记以残骸位置保留 wreck_s；本方导弹的目标死后，只要本机雷达还跟踪着残骸，就继续显示原目标标记和原支援状态（模拟器里数据链已断、导弹可能已改追，策略看不到）。脚本的传感器看不到残骸，脚本给策略飞机算标签时的观测去掉残骸。
+
 ## 3. 动作（3 个指向头 + 12 个分类头）
 
 | 头 | 选项 | 条件输入 | 何时可用 |
@@ -51,7 +69,7 @@
 | 雷达 / 武器目标 | N + 1 | GRU + 机动参考 | 始终 |
 | 视角对象 | N + 1 | GRU | 视角模式为"看对象" |
 | 机动 | 11：保持 / 对准 / 左右偏转 30–50° / 左右三九 / 掉头 / 回中线 / 绕左 / 绕右 / 回家 | GRU + 机动参考 | 瞄准视角，且不在保持期 |
-| 垂直 | 5：保持 / 爬升 / 中空 / 贴地 / 俯冲 | 同上 | 同上 |
+| 垂直 | 5：默认（`vertical_mode: "altitude"`）保持目标 / 爬升 11 km / 中空 8 km / 贴地 / 俯冲（低 3 km）；`"angle"` 时为平飞 / 陡爬 +25° / 缓爬 +10° / 缓降 −10° / 俯冲 −30° | 同上 | 同上 |
 | 速度 | 3：全加力 / 巡航 / 收油加减速板 | 同上 | 始终 |
 | 箔条 | 3：不放 / 一包 / 连续 | 同上 | 有箔条时 |
 | 雷达模式 | 3：TWS 宽 / TWS 窄 / STT | GRU + 两个对象 | 始终（STT 需要目标） |
@@ -73,21 +91,26 @@
 **自由视角的规则**：
 - 自由视角时屏蔽鼠标飞行（机动、垂直两个头），改由键盘头飞行；雷达、武器、箔条、速度照常可用。
 - 键盘按满行程执行（`flight.KeyboardCommand`），受每架飞机自身的过载限制；舵量系数 `authority` 按玩家随机，默认 1。
-- **退出自由视角的那一步**，机动和垂直两个头必须按当前观测重新给出，不沿用进入自由视角前的旧意图，保持计时也从这一步重新开始。
+- **退出自由视角的那一步**：保持已过时，机动参考、机动、垂直按当前观测重新给出，保持计时从这一步重新开始；保持期内退出，这三个头只能取保持值（进入自由视角前最后一条鼠标意图的值，按当前状态重新瞄准），保持不重启。退出仍然从不拒绝（拒绝的随机数照抽但不生效），飞行员总能收回控制；保持值由上一条规则守住，所以退出不再能换机动。
+- **垂直头角度模式**（可选，`execution.vertical_mode: "angle"`，缺省 `"altitude"` 逐位不变）：选项一直执行到换别的选项，重复发布同一个值等于保持；平飞在选中（执行）时捕获当时高度，按通常的高度捕获动态保持；两档爬升速度低于 250 m/s 时不再爬，接近升限渐减；俯冲 −30°。不另加离地保护（`policy_ground_floor` / `policy_deck_m` 照旧，角度模式不用 `deck_m`）。脚本仍给绝对目标高度，由 `intent.from_flight_action` 翻译：与目标差 < 300 m 平飞，差 300–2500 m 缓爬 / 缓降，> 2500 m 陡爬 / 俯冲；带地板的下扎在地板之上 300 m + 2 s 下沉量 + 3 g 拉起距离处改平。模式经 `select_entities` 返回的实体列表（`EntityList.vertical_mode`）传给 `from_flight_action`，传模式不用改 `archetypes`（爬升完成的判定要改，见实现说明）。
+- **只看对象**（可选，`execution.view_model: "object_only"`，缺省 `"full"`）：视角模式"看方向"一直屏蔽；看对象时飞机继续执行最后一条鼠标意图（机动参考、机动、垂直被屏蔽为该值，速度头照常），不用键盘；键盘两头只剩中间档，看方向的方位、俯仰各只剩一个值。各头选项数不变，屏蔽仍只用观测。
 
 ## 4. 保持规则
 
 - **只约束高层机动意图**，即机动参考、机动、垂直三个头。一旦改变，至少保持 2.0 s。保持期内这三个头被屏蔽为"维持当前值"，只有一个合法选项，不产生梯度。
 - **键盘、视角、雷达、武器、箔条、速度不受保持限制。**
+- **保持跨越视角切换**（2026-10-07 修正）：进入、退出自由视角都不解除也不绕过保持，保持值是最后一条鼠标意图的三个头（`IntentExecutor.aim_heads`），保持中的机动参考在自由视角期间仍保留为实体。以前保持只在瞄准视角下成立：保持期内切到自由视角，下一步屏蔽全开，来回切换约每 0.84 s 就能换一次机动。
 - **计时从建议发布时刻开始**，也就是策略做出该决策的时刻，不从玩家开始执行的时刻算起。
 - **紧急解除**：出现以下任一个**可见**的新告警时，保持立即解除：
   - RWR 导弹告警；
-  - MAW；
+  - MAW（`execution.maw_entities: False` 时不算，见下）；
   - 新的 STT 锁定；
   - 视场内新出现的导弹标记。
 
   不得读取模拟器真值（例如真实的剩余命中时间）。
 - 剩余保持时间、建议已发布时长都作为观测输入，合法动作屏蔽同时交给策略。
+- **不用 MAW**（可选，`execution.maw_entities: False`，缺省 True 不变）：actor 观测里没有 MAW 实体，本机的"有 MAW"一项为 0，MAW 也不解除保持，所有机型给策略的输入一样。执行器按导弹告警放开过载上限时仍看 MAW（玩家自己看得到）。
+- **实体记忆**（可选，`execution.entity_memory_s: N`，缺省 None 不变）：任何敌方实体最后一次看到后保留 N 秒，作为外推实体（外推标志、年龄照常增长、无航迹、不可发射，屏蔽不把它当目标，可作机动参考 / 视角对象）；只占观测实体留下的空位，不挤掉观测到的实体，不计入丢弃数。保持中的参考对象丢失后的外推改为按转弯率沿圆弧（常数见 rl_design 第 8 节），这一项不是可选的。
 
 ## 5. 玩家执行模型：两条响应路径，不叠加
 
@@ -170,7 +193,7 @@
 - **联合概率比**：3 个指向头和 12 个分类头的条件 log-prob 相加，对联合比只裁剪一次。被屏蔽、只剩一个合法选项的头，log-prob 为 0。
 - **熵**：只对合法选项数 K > 1 的头计算，每个头的熵除以 log K 后取平均。
 - **advantage**：在整批有效数据上统一标准化。奖励不按单局归一化。
-- **奖励**：击落 +1，被击落 −2（含撞地），助攻 +0.3，团队胜负不计。
+- **奖励**：击落 +1，被击落 −2（含撞地），助攻 +0.3，团队胜负不计。可选项（2026-10-07，docs/fuel_spec.md 第 1 节；不设时不变）：`assist_rule: "first_shot"`（助攻只给比击落导弹更早指向受害者、且在飞或结束不到 20 s 的队友，每对开火者 / 受害者整局一次）、`launch_reward`（策略飞机每发射一枚加这个值，例如 −0.05）、`retarget_kill_reward`（改追过目标的导弹打下的击落改记这个值，例如 0.5，迟到战果同；tallies 仍算击落）。另有 `timeout_reward`、`friendly_fire_reward`（见下文实现说明与 docs/airfield_rearm_spec.md）。
 
 **批量**：
 
@@ -348,12 +371,12 @@ obs, rewards, dones, info = env.step(actions)   # actions: {agent_id: {head_name
 `wt_overlay.rl_env.MatchEnv` 实现第 13/13.1 节；运行时仅用 Python 标准库。训练入口可用
 `--set env.cls=wt_overlay.rl_env:MatchEnv`，`rl/` 无需修改。
 
-- 默认 1 对 1、只控制 slot 0；`team_size=1..16`，`controlled="all"` 或 `policy_ids=[0,...]` 指定受控槽位；兼容假环境的 `n_agents`（控制前 N 个槽位）和 `max_steps`（时间上限为 N×20/48 s）。`teams` 为两组 `match.scenario` 的机型/打法/技术水平字典，支持不对称人数；`range_km` 指定出生线距离。`model/model_path/aircraft_pool` 控制 BR 机型池和打法先验。配置示例：`{"team_size":4,"policy_ids":[0],"time_limit_s":120}`。
-- `fov_range=[90,120]`、`rcs_m2=5`（也可用机型或整数槽位为键的映射）、`multipath_gain=null`（关闭）、`missile_marker_range_m=10000`、`reach_dir`、`target_selection` 均可配置。`execution` 支持 `hold_s/error_deg/reject_p/renotice_s/authority/delay`；`delay` 的 `follow/autonomous` 各支持 `median_range/sigma/bounds`。每名玩家每局只抽一次个人中位数，意图事件在该中位数附近抽样，重复相同持续意图不重新启动延迟。独立的发射/单包箔条请求按事件处理；连续箔条按执行状态每 0.5 s 一包。
-- `AgentObs` 是有字段的 dataclass，数值为 list/float。`masks` 精确采用 13.1 的条件表；训练侧按原采样动作存 log-prob，执行器不改写该动作。内部指向头保存观测实体的稳定 key，每步翻译为当前实体索引，最后一项为不指定。保持中的参考对象若暂时失去观测，保留最后观测的外推 token；不把它当作可发射的新航迹。保持仅约束瞄准模式下的参考/机动/垂直。退出自由视角重新取这三头，重启保持期。告警解除只看 RWR 导弹/锁定、MAW、新可见导弹标记。
+- 默认 1 对 1、只控制 slot 0；`team_size=1..16`，`controlled="all"` 或 `policy_ids=[0,...]` 指定受控槽位；兼容假环境的 `n_agents`（控制前 N 个槽位）和 `max_steps`（时间上限为 N×20/48 s）。`teams` 为两组 `match.scenario` 的机型/打法/技术水平字典，支持不对称人数；`range_km` 指定出生线距离。`model/model_path/aircraft_pool` 控制 BR 机型池和打法先验。配置示例：`{"team_size":4,"policy_ids":[0],"time_limit_s":120}`。`policy_count=[lo,hi]`（可选，2026-10-07 为 4v4 加）：对脚本的局里策略只控制 `policy_ids` 中随机抽的 k 架（k 在 lo..hi 均匀取），本队其余飞机由各自的脚本飞，相当于实际使用时的真人队友；自博弈和历史局仍控制全部槽位。不设时不多抽随机数，行为不变。`team_size_mix=[[人数,权重],...]`（可选，2026-10-07）：随机对局每局按权重抽人数（4v4 训练里混约 25% 的 1v1，防止 1v1 本事退化：练了 80 轮纯 4v4 的第 384 轮在 1v1 里只赢第 304 轮 10:38）；`policy_ids` 里超出本局 0 队槽位的不参加该局，`policy_count` 按剩下的数截断。不能和 `teams` 同用；评估时去掉。
+- `fov_range=[90,120]`、`rcs_m2=5`（也可用机型或整数槽位为键的映射）、`multipath_gain=null`（关闭）、`missile_marker_range_m=10000`、`reach_dir`、`target_selection` 均可配置。`execution` 支持 `hold_s/error_deg/reject_p/renotice_s/authority/delay`，以及可选的 `vertical_mode`（`"altitude"`/`"angle"`）、`view_model`（`"full"`/`"object_only"`）、`entity_memory_s`（None 或秒）、`maw_entities`（True/False）（第 3、4 节；它们和其余 `execution` 键一样交给每个执行器，脚本和策略飞机都用）；`delay` 的 `follow/autonomous` 各支持 `median_range/sigma/bounds`。每名玩家每局只抽一次个人中位数，意图事件在该中位数附近抽样，重复相同持续意图不重新启动延迟。独立的发射/单包箔条请求按事件处理；连续箔条按执行状态每 0.5 s 一包。
+- `AgentObs` 是有字段的 dataclass，数值为 list/float。`masks` 精确采用 13.1 的条件表；训练侧按原采样动作存 log-prob，执行器不改写该动作。内部指向头保存观测实体的稳定 key，每步翻译为当前实体索引，最后一项为不指定。保持中的参考对象若暂时失去观测，保留最后观测的外推 token；不把它当作可发射的新航迹。保持约束参考/机动/垂直，与视角模式无关（2026-10-07 起，第 4 节）；保持已过时退出自由视角可重新取这三头，并重启保持期。告警解除只看 RWR 导弹/锁定、MAW、新可见导弹标记。
 - `own/entities` 使用 `rl_observation.OWN_FIELDS/ENTITY_FIELDS` 声明的顺序：前半部为归一化数值，后半部为逐字段有效性。角度用正余弦，位置尺度 64 km、高度 20 km、速度 1000 m/s、距离 120 km、能量高度 40 km、Ps 300 m/s、飞行/开机时刻 300 s。上一意图为 15 个归一化头、15 个持续时间（60 s）、15 个有效标志及发布年龄/保持剩余/发布视角模式。critic 真值使用 20 个数值加 20 个标志，最多 128 token，飞机优先，剩余空间给近处导弹；只在 actor 观测和屏蔽构造完后独立编码。
 - 当前 Pk 接口只给不规避目标的 Rmax 与概率线，没有定义可作为不可逃逸区的接口。`own.rne` 暂为无效（数值与标志均 0），不会把 Pk50 或背离 Rmax 冒充不可逃逸区。敌方未知机型不读取真值：视场内目标框可识别，RWR 的雷达型号仅在唯一对应机型时识别；其他情况类型标志为无效，机体正过载描述与雷达可转动范围取当前 BR 机型池的等权平均；已识别的机型取该型号的 FM（质量空重×1.3）与设备描述（D）。实体的水平位置可由方位/距离与本机坐标还原，不另占两个特征。能量估计只由航迹测得的位置/速度产生。
-- `Pilot.propose()` 给 `Intent`，`ScriptController` 和 `MatchEnv` 都走同一 `IntentExecutor`。`Pilot.decide()` 保留原几何 Action 适配器供已有低层调用/测试；生成的 `Match.engagement()` 默认启用意图层。原脚本的自主反应等待在 `propose` 路径关闭，执行器承担唯一的自主反应延迟。连续几何航向/高度量化到第 3 节的离散动作，因此路径与里程碑 A 会有差异；没有隐藏连续飞行指令旁路。爬升完成按实际执行的 8 km 高度档判定，避免原 7.5–9 km 随机目标在离散档下永远无法到达。第一阶段侧移角量化为 ±40°，高度档为 11 km/8 km/100 m，俯冲指向比当前低 3 km；巡航为 85% 油门。
+- `Pilot.propose()` 给 `Intent`，`ScriptController` 和 `MatchEnv` 都走同一 `IntentExecutor`。`Pilot.decide()` 保留原几何 Action 适配器供已有低层调用/测试；生成的 `Match.engagement()` 默认启用意图层。原脚本的自主反应等待在 `propose` 路径关闭，执行器承担唯一的自主反应延迟。连续几何航向/高度量化到第 3 节的离散动作，因此路径与里程碑 A 会有差异；没有隐藏连续飞行指令旁路。爬升完成按实际执行的 8 km 高度档判定，避免原 7.5–9 km 随机目标在离散档下永远无法到达。第一阶段侧移角量化为 ±40°，高度档为 11 km/8 km/100 m，俯冲指向比当前低 3 km；巡航为 85% 油门。`vertical_mode: "angle"` 时目标高度不再量化成档，按第 3 节翻译成平飞 / 爬升 / 下降，扰动后的 5–11.5 km 平飞高度和爬虫 2.5–4 km 的抬头都能飞到；但"爬升完成按 8 km 判定"在角度模式下要改成按 `level_alt_m` 判定（`archetypes._climb`，平飞在 8.4 km 以上的未扰动飞行员否则一直停在爬升阶段）。
 - 相机采用水平视场、16:9 透视投影和水平稳定的镜头轴（D）。生成的对局与训练环境使用真实视场与 180°/s 联合方位/俯仰限速。`OPEN_CAMERA` 保留给原低层 `Engagement` 的兼容调用；显式 `Camera()` 默认 90°。雷达/RWR/MAW/地图不受视场影响；敌方地图标记只有平面坐标。9500 m 以上航迹云在视场内无限距离可见。目标框有距离/接近率/机型；雷达框距离/速度取测量，目视框参数为 HUD 近似（D）。
 - `step` 始终推进 20 个节拍；若在中途结束，完成剩余节拍再返回，`dt=20/48`。超时保留存活受控飞机的最终观测，其他整局终止返回空观测。死亡后不再返回该 agent；奖励与 dones 的键只含本步行动的存活 agent。一方全灭但仍有在飞导弹时继续结算到导弹结束或超时。误伤只给受害者 −2，不给误伤者击落/助攻奖励。`info.events` 包含基础五项，以及 `friendly_fire/retarget/crash/out_of_bounds/missile_error`。
 - `snapshot/restore` 复制整个可变图：随机状态、飞机积分器及量化缓存、雷达/RWR、导弹/代理/支援回调、脚本、保持期与待执行队列、实体记忆和当前屏蔽。只共享不可变 FM 源数据和气动力表。导弹支援用可复制的 callable 对象，避免闭包指向保存前的世界。恢复不重新采样也不调用观测生成器。
@@ -379,6 +402,19 @@ obs, rewards, dones, info = env.step(actions)   # actions: {agent_id: {head_name
   - 考试分两组脚本：`fixed`（去掉 `script_perturbation`，长期对比用）`r<轮>_fixed_<场景>.jsonl`，`train`（保留训练时的扰动）`r<轮>_train_<场景>.jsonl`；配置里没有扰动时 `train` 跳过（与 fixed 完全相同），记在 `exams.jsonl` 的 `skipped_sets`。自博弈考试仍为 `r<轮>_sp_<场景>.jsonl`。`--sets` 可只跑其中一组。
   - `--stats` 的 `mean_return` 改为 env 实际发给被评估槽位的奖励之和（含超时奖励和迟到战果，与训练回报同口径），以前是 (击落 − 2×被击落)/N。新增 `win_no_kill`（胜但自己没有击落，训练里记作 none）。
   - 参考评估推荐用成对对局：`python -m rl.eval_replay --run-dir RUN --stats 100 --paired --opponent-checkpoint OLD/ppo/ckpt_XXXXXX.pt`，每个种子打两局，两个策略交换槽位（出生方和机型随之交换），共 200 局；输出一行 JSON，计数是新策略在全部 2N 局的结果，另有 `pairs`、`by_slot`（`slot0`/`slot1` 各自的胜负、胜率、交换比、平均回报）、`env_source`、`env_overrides`。参考检查点训练时的 env 配置不同（例如 `observation_frame`）时会在 stderr 提示：两局都按被评估检查点的配置建环境。
+  - 团队评估（2026-10-07）：env 配置 `team_size` n>1 时，`--stats` 每局按同样的出场频率每队抽 n 架；策略默认飞本队全部 n 架，`--team-control K` 只飞前 K 架、其余由 env 脚本按训练时的执行路径飞；对方整队是脚本（`--opp-skill`）或 `--opponent-checkpoint` 的冻结策略，`--paired` 交换两队（`by_team`）；`--scripted` 由脚本替策略那几个槽位决策（"策略飞 4 架中的 1 架"对"脚本飞这一架"）。每个策略槽位各一个随机数，种子 = 局号 + 槽位 × `OPPONENT_SEED_BASE`。结果按队算：只有本队有幸存为 win、只有对方有为 loss、都没有为 trade、都有为 timeout；`exchange` = 敌方阵亡 / 己方阵亡（全队、任何原因），另有策略飞机的 `survival`、每架击落/阵亡/发射、`crashes`、`friendly_fire` 和 `mean_return`（策略槽位回报之和的平均）；顶层多 `team_size`、`team_control`。n=1 的抽签、种子和输出都不变。考试只跑与 `team_size` 相同的场景（新增 4v4：`4v4_a/b` 和 `4v4_c_heldout`（原名 `4v4_c`），双方混合顶级机型，红方原型与技能混合），策略飞整个 0 队并在回放里标 "AI"，自博弈考试由同一检查点飞两队。评估也去掉 `policy_count`。
+  - 评估审计后的修正（2026-10-07）：
+    - 局数：`--stats` 不带 N 时打 200 局（`--paired` 时 100 对，也是 200 局）。胜率 p 在 n 局独立对局上的标准误为 √(p(1−p)/n)，p≈0.5 时 60 局 6.5 个百分点（95% 区间 ±12.7），120 局 4.6（±8.9），200 局 3.5（±6.9）；成对的两局不独立，保守起见按对数算。
+    - 参考对手不能是训练对手：`--opponent-checkpoint` 若在本 run 的联赛里（`RUN/config.json` 或检查点所存 cfg 的 `league.references` 同一文件、同权重或在本机无法比较时同文件名；`RUN/league/` 下快照或参考副本同权重；本 run 在快照轮次（`history_prob>0` 且轮次是 `snapshot_every` 的倍数、早于被评估轮次）的检查点，即使快照早已被挤出池），stderr 警告，JSON 加 `"opponent_in_league": true` 和 `opponent_league_matches`（`[{member, by: path|weights|basename|snapshot}]`）；`--require-held-out-opponent` 时直接拒绝（不在联赛里则写 `"opponent_in_league": false`）。不加该参数且不在联赛里时输出与以前逐位相同。审计时发现的情况：s1 的 `league.references` 有 `refs/s1_r304.pt`，统计循环又拿它做成对评估的对手，头条结果其实是对训练对手的成绩。
+    - 留出机型（rl_design 第 5 节：JAS 39E `saab_jas39e`、米格-35 `mig_35`；名单只在 `rl.config.HELD_OUT_AIRCRAFT`）：训练用 `--set env.held_out=True`（或 `--set "env.held_out=['mig_35']"`），`rl.train` 读配置时把它解析成显式的 `env.config.aircraft_pool`（模型池或已有的 `aircraft_pool` 去掉这些机型），写进 config.json 和每个检查点；MatchEnv 两队都从 `aircraft_pool` 抽，所以训练里既不飞也不遇到留出机型。`Config.validate` 拒绝未解析、池里还有留出机型、`teams` 里用了留出机型的配置。缺省 `False`，不变。
+    - `--stats` 的抽签遵守检查点 env 配置里的 `aircraft_pool`（以前忽略它，会把留出机型混进"池内"成绩）；没有 `aircraft_pool` 的配置抽签逐位不变。`--env-config '{"aircraft_pool": null}'` 去掉它（MatchEnv 看的是键在不在）。
+    - `--stats --held-out [IDS]`：策略飞的飞机从留出机型里均匀抽（每局自己的随机数；不带 IDS 时用检查点 `env.held_out` 的名单，没有则 `HELD_OUT_AIRCRAFT`），其余一切（对手/脚本队友机型、env 种子、脚本技能）与同局号的池内对局完全相同，所以第 i 局只差策略的机型，可与池内结果直接对比。对手和队友仍从训练池（`aircraft_pool`）抽；交给 env 的配置去掉 `aircraft_pool`（它不含策略正在飞的机型；有显式 `teams` 时 MatchEnv 本就不用它抽签，去掉是为了不让以后的检查误伤）。团队局里策略飞的 K 个槽位换成留出机型，脚本队友保持原抽签。输出加 `held_out`、`held_out_seen_in_training`（检查点训练池里含有的留出机型：没存 `aircraft_pool`，或池里列着；同时 stderr 警告"不是留出测试"），1v1 另有 `by_aircraft`。不能与 `--paired` 同用（交换槽位会把留出机型交给对手）。现有检查点都是在全池上训练的，对它们 `--held-out` 只是"这两种机型上的成绩"，不是泛化测试；真正的留出测试要从 `env.held_out=True` 的 run 开始。
+    - 考试里 0 队用留出机型的场景改名 `*_heldout`，结果行和回放头的 exam 记录带 `"held_out": [机型]`：`4v4_c_heldout`（原 `4v4_c`，种子和阵容不变，`--scenarios 4v4_c` 仍可用）、新增 1v1 `jas39e_vs_sm2_heldout`（种子 15，对顶级左翼 Su-30SM2）和 `mig35_vs_ge_heldout`（种子 16，对顶级中路 F-15C 金鹰）。默认考试多两局 1v1。
+    - 远端统计循环（每个被评估检查点，`--checkpoint` 固定为同一个文件，`--procs` 按核数）：
+      1. 池内：`python -m rl.eval_replay --run-dir RUN --checkpoint CK --stats 200 --opp-skill top`（4v4 run 同样，另可加 `--team-control 1`）；
+      2. 留出（只对 `env.held_out=True` 训练的 run 有意义）：`... --checkpoint CK --stats 200 --opp-skill top --held-out`；
+      3. 成对参考：`... --checkpoint CK --stats 100 --paired --opponent-checkpoint REF --require-held-out-opponent`，REF 不在 `league.references` 里，也不是本 run 快照轮次的检查点：例如联赛开始前另存到 run 目录外的旧检查点（复制到 `~/rl_refs/`，不放进 references），或别的 run 的检查点。现在的 `refs/s1_r304.pt` 若仍在 references 里就不能再当 REF。
+  - 每轮动作分布（2026-10-07，`rl.rollout.action_stats`，metrics.jsonl）：本轮有效步（不含上一轮拷来的 burn-in、padding 和历史局冻结方，这些都不是本轮存下的有效步；结算步照算）上每个头采样选项的比例：`action_freq`（每个类别头 `CAT_SIZES` 个比例，和为 1）、`action_freq_pointer`（指向头选实体 `entity` / 选"无" `none`）；采样端另记每步每头的合法选项数（`HeadOut.k`），得到 `head_active_frac_round`（本轮有效步里该头有多于一个合法选项的比例，整轮、采样时；`head_active_frac` 只统计实际做了更新的小批次，跨 epoch 重复计，critic 预热轮全为 0）和只在这些步上的 `action_freq_active` / `action_freq_pointer_active`（从没有选择余地的头不列），被强制的选项不掩盖策略自己的选择。与 `entropy_head` 一起看：塌缩成"从不变"的头在一个选项上接近 1；"给定状态确定"的头熵低但选项分散。比例取 5 位小数。
 - 历史对手（league，2026-10-06，可选；默认关，关时逐位不变）：
   - 起因：s1_ego2 约第 170 轮起漂移，发射多约 35%，武器头熵 0.11 → 0.16，对固定脚本胜率 78% → 57%，对冻结的旧存档一直打平。自博弈双方同时变，打不出"比过去强没有"。
   - 环境：`MatchEnv` 配置 `history_prob`（与 `self_play_prob` 同一次抽签：`u < p_self` 自博弈，`u < p_self + p_hist` 历史局，其余对脚本；两者之和不超过 1）。历史局所有槽位都由策略控制，再抽一次哪一方由冻结的旧策略飞（观测以自身为中心，两方等价），这一方整队的槽位记在 `env.frozen_ids`；`env.episode_kind = "history"`，场景串后缀 `:history`，`info["frozen_ids"]`，`info["events"]["history_decisions"]`（当前策略的决策数；以上只在配置里有 `history_prob` 时输出）。`pending_credit()` 不为冻结方结算（它不训练）。
@@ -390,3 +426,6 @@ obs, rewards, dones, info = env.step(actions)   # actions: {agent_id: {head_name
 - 分头 KL 约束（可选；默认 `ppo.head_kl = {}` 关，关时逐位不变）：`ppo.head_kl = {"weapon": {"target": 2e-4, "coef": 1.0}}`（可另给 `coef_min`/`coef_max`，默认 0.01/100）。每个小批次在 actor loss 上加 `coef × KL_weapon`，KL_weapon 是该头对行为策略的 k3 估计（`buf.logp_heads` 与当前 log-prob，按有效步平均，只有一个合法选项的步为 0）。每轮结束后按本轮各小批次的均值调整：大于 1.5×target 乘 1.5，小于 target/1.5 除以 1.5，夹在范围内；调整后的系数存在训练器状态（检查点）里。指标 `head_kl.weapon = {kl, coef, coef_next, target}`，另有每轮各头对行为策略的 k3 KL `kl_target_head`（不论开关都记，用来定目标）。
   - 目标取 2e-4 的依据：s1_ego2 的 `kl_skip_first` 诊断里武器头的 k3 KL 中位数 2.7e-4、均值 6.4e-4、最大 1.9e-3（这些是 KL 尖峰的小批次），同时整体 `kl_target` 约 5e-3–8e-3；武器头只在约一半的步里有多个合法选项。0.002 几乎从不超过 1.5 倍，系数只会降到下限，起不到作用；2e-4 落在平常水平，武器头动得比平常多时系数才会升上去。
   - 局限：这是对每轮行为策略的约束，只限制每轮的步长，不拉回已经发生的漂移；漂移持续多轮时它只是把速度压下来。要固定住，需要对固定参考的 KL（类似 BC 参考的 `kl_beta`，只作用于武器头），这一版没做。
+- 分头熵下限（2026-10-07，可选；默认 `ppo.ent_floor = {}` 关，关时逐位不变，训练器状态也不多存东西）：`ppo.ent_floor = {"vertical": {"floor": 0.01}, "speed": {"floor": 0.01}}`（可另给 `up`/`down`/`max_scale`，默认 1.5/1.5/30；floor 在 (0, 1)，up、down > 1，max_scale ≥ 1）。起因：4v4 里 vertical 头的归一化熵掉到约 0.001（1v1 约 0.02），固定 10 倍的 `ent_head_scale` 7 轮没拉回来，只能手动处理；speed 头现在也在 0.001 左右。每个列出的头有一个自适应倍数 m（起点 1），乘在它的 `ent_head_scale` 上（熵奖励里该头的实际倍数 = ent_head_scale × m），一轮内固定（同 `head_kl`）。每轮更新后看该头本轮的平均归一化熵，就是指标里的 `entropy_head[头]`（只算该头有多于一个合法选项的有效步，在实际做了更新的小批次上按当时的参数计算，三个 epoch 一起平均）：低于 floor 则 m 乘 up（不超过 max_scale），高于 2×floor 则 m 除以 down（不低于 1），其间不变；本轮没有 actor 更新（critic 预热、第一个小批次就停）时也不变。m 存在训练器状态（检查点 `trainer.ent_floor_mult`）里，续训时恢复：配置里去掉的头丢弃，新加的头从 1 开始，恢复值夹在 [1, max_scale]。指标 `ent_floor.<头> = {entropy, floor, mult（本轮用的）, mult_next, scale（本轮实际倍数）}`；train.log 每轮一行末尾加 `entfloor[头] 熵 x倍数`（只在配置了时）。
+  - 注意：熵在塌缩处的梯度很小（对少数选项 logit 的梯度约 p·log p），熵奖励还要除以该步多选项头的个数，所以需要的倍数可能很大；m 从 1 升到上限 30 要连续 9 轮低于 floor。30 倍还不够时加大 `max_scale` 或同时设 `ent_head_scale`。floor 不要高于该头正常时的水平（例如 1v1 的 vertical 约 0.02），否则会把"给定状态本该确定"的选择推向随机。
+- 教师模仿（kickstart，2026-10-07，可选；环境 `teacher` 和 `ppo.kickstart` 默认都关，关时逐位不变，训练器状态也不多存东西）：详见 `docs/kickstart_spec.md`。环境按教师规则给部分决策的部分头打标签（现在只有开局爬升 `teacher: {"climb": {}}`：前 150 s、低于 8 km − 300 m、速度 ≥ 250 m/s、没有感知到导弹、vertical 头没在保持时，角度模式标 +25°（低于目标 2 km 以上）或 +10°），`info["teacher"]` 经 worker 的 StepResult `"teacher"` 和采样端存进 `buf.teacher`（每步每头一个选项，−1 = 无）；`ppo.kickstart = {"coef": 0.5, "decay_rounds": 40}` 在 actor loss 上加 coef_t × 有标签步的平均 −log π(标签)（只算在存储的掩码下合法的标签），coef_t 从起始轮（存在训练器状态里）起 40 轮线性降到 0。它和 PPO 项在同一个小批次里，会被 `kl_mode` 的跳过/停止一起挡掉，并且自己会推高 KL；指标 `kickstart`（coef、label_share、agree、ce、legal_share、applied_share、kl_skipped_minibatches），train.log 行尾 `ks ... lab ... agree ... ce ... skip ...`。网络输入、输出头不变。

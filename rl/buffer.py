@@ -44,6 +44,11 @@ class RoundBuffer:
         self.trunc = torch.zeros(N, dtype=torch.bool)     # truncated: bootstrap from the value net
         self.boot_final = torch.zeros(N, dtype=torch.bool)  # bootstrap obs available (else own value)
         self.aircraft = torch.zeros(N, dtype=torch.long)
+        # teacher labels (env teacher, docs/kickstart_spec.md): option per head of the decision, -1 = no label;
+        # teacher_name: index into teacher_names (the sampler's list), -1 = none. Frozen-side steps are never stored.
+        self.teacher = torch.full((N, spec.N_HEADS), -1, dtype=torch.int16)
+        self.teacher_name = torch.full((N,), -1, dtype=torch.int8)
+        self.teacher_names: List[str] = []
         self.boot_obs: List[tuple] = []                   # (flat idx, wire obs) of final timeout obs
         self.end_obs: Dict[int, tuple] = {}               # stream -> wire obs pending after the last tick
         self.end_first: Dict[int, bool] = {}
@@ -73,6 +78,9 @@ class RoundBuffer:
             for name in names:
                 x = getattr(obj, name)
                 setattr(obj, name, torch.cat([x, x.new_zeros((add,) + tuple(x.shape[1:]))]))
+        for name in ("teacher", "teacher_name"):        # padding carries no label (-1)
+            x = getattr(self, name)
+            setattr(self, name, torch.cat([x, x.new_full((add,) + tuple(x.shape[1:]), -1)]))
         st.dt = torch.cat([st.dt, torch.full((add,), spec.DT_STEP)])
         st.N += add
         self.T += n

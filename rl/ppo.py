@@ -9,6 +9,18 @@
 * actor loss = PPO - ent_coef * normalised entropy + beta * KL(pi_BC || pi)
   (KL averaged over heads with >1 legal option) [+ sum over ppo.head_kl heads of coef_h * KL_h, the head's k3 KL to
   the behaviour policy per valid step; coef_h adapts per round toward its target]; critic loss = MSE / (return std)^2.
+* ppo.ent_floor (opt-in): a listed head's entropy-bonus scale is ent_head_scale x m_h, m_h adapted per round from the
+  head's round entropy (x up below the floor, / down above twice the floor, within [1, max_scale]).
+* ppo.kickstart (opt-in, docs/kickstart_spec.md): + coef_t x the mean over the labelled steps (env teacher labels,
+  buf.teacher) of -log pi(label) of the labelled heads, only where the label is legal under the stored masks and the
+  sampled earlier heads; coef_t falls linearly from coef to 0 over decay_rounds rounds from start_round (trainer
+  state). It goes through the same KL controls as the rest of the actor loss: a minibatch that kl_mode "skip" leaves
+  out, or the actor stop, drops its kickstart term too (metrics kickstart.applied_share / kl_skipped_minibatches).
+  ppo.kickstart.tiers (opt-in): [[coef, share], ...] in place of coef; every actor minibatch (also those after a KL
+  stop) draws its tier from the trainer's kickstart generator (ks_gen, trainer state; self.gen and so the minibatch
+  order are untouched) and uses tier coef x s x decay. ppo.kickstart.adapt (opt-in): after a round with kickstart
+  active, the share of actor minibatches the KL controls skipped or stopped moves the scale s on every coef and 0.05
+  of share between the highest- and the lowest-coef tier (_kickstart_adapt; s and the shares in the trainer state).
 * advantages normalised over the whole valid batch of the round; padding never enters any
   loss or statistic.
 """
@@ -21,6 +33,7 @@ import torch
 
 from rl import spec
 from rl.buffer import RoundBuffer
+from rl.config import ent_floor_spec, kickstart_spec
 from rl.model import Actor, Critic, HeadOut
 
 
@@ -127,6 +140,25 @@ def ref_kl(out: HeadOut, ref_cat, ref_ptr):
     return (kl * active).sum(-1) / active.sum(-1).clamp(min=1.0), kl, active
 
 
+def kickstart_ce(out: HeadOut, labels):
+    """Teacher cross-entropy per step. labels [M,15] long (-1 = no label). Returns (ce [M]: sum over the labelled heads
+    whose label is legal (the effective mask of out, i.e. the stored masks given the earlier heads' actions) of
+    -log pi(label); 0 elsewhere, legal [M,15] bool)."""
+    ce = torch.zeros(labels.shape[0], device=labels.device)
+    legal = torch.zeros_like(labels, dtype=torch.bool)
+    for i, hname in enumerate(spec.HEAD_NAMES):
+        li = labels[:, i]
+        has = li >= 0
+        if not bool(has.any()):
+            continue
+        lp, eff = out.logp_all[hname], out.eff[hname]
+        idx = li.clamp(0, lp.shape[-1] - 1).unsqueeze(1)
+        ok = has & (li < lp.shape[-1]) & eff.gather(1, idx).squeeze(1)
+        ce = ce + torch.where(ok, -lp.gather(1, idx).squeeze(1), torch.zeros_like(ce))
+        legal[:, i] = ok
+    return ce, legal
+
+
 class PPOTrainer:
     def __init__(self, cfg, actor: Actor, critic: Critic, ref: Optional[Actor], device):
         self.cfg = cfg
@@ -149,6 +181,23 @@ class PPOTrainer:
         self.head_kl = {h: (spec.HEAD_INDEX[h], float(v["target"]), float(v.get("coef_min", 0.01)),
                             float(v.get("coef_max", 100.0))) for h, v in p.head_kl.items()}
         self.head_kl_coef = {h: float(v.get("coef", 1.0)) for h, v in p.head_kl.items()}
+        # ppo.ent_floor: head -> (floor, up, down, max_scale); the adapted multipliers m_h live in the trainer state
+        self.ent_floor = ent_floor_spec(p.ent_floor)
+        self.ent_floor_mult = {h: 1.0 for h in self.ent_floor}
+        # ppo.kickstart: None = off; ks_start is the round its decay counts from (set at the first update when the
+        # config gives none, kept in the trainer state)
+        self.kickstart = ks = kickstart_spec(p.kickstart)
+        self.ks_start = None if ks is None else ks["start_round"]
+        # ppo.kickstart.tiers: tier coefs, current shares (moved by adapt), the tier generator; adapt: the scale s
+        self.ks_tiers = None if ks is None or ks["tiers"] is None else [c for c, _ in ks["tiers"]]
+        self.ks_shares = None if self.ks_tiers is None else [sh for _, sh in ks["tiers"]]
+        self.ks_adapt = None if ks is None else ks["adapt"]
+        a = self.ks_adapt
+        self.ks_scale = 1.0 if a is None else min(max(1.0, a["min_scale"]), a["max_scale"])
+        self.ks_gen = None
+        if self.ks_tiers is not None:
+            self.ks_gen = torch.Generator()
+            self.ks_gen.manual_seed(cfg.run.seed + 29)
         self.decisions = 0
         self.round = 0
         self.gen = torch.Generator()
@@ -156,9 +205,21 @@ class PPOTrainer:
 
     # ------------------------------------------------------------------ state
     def state_dict(self):
-        return {"opt_a": self.opt_a.state_dict(), "opt_c": self.opt_c.state_dict(),
-                "ent": self.ent_sched.state_dict(), "decisions": self.decisions, "round": self.round,
-                "gen": self.gen.get_state(), "head_kl_coef": dict(self.head_kl_coef)}
+        d = {"opt_a": self.opt_a.state_dict(), "opt_c": self.opt_c.state_dict(),
+             "ent": self.ent_sched.state_dict(), "decisions": self.decisions, "round": self.round,
+             "gen": self.gen.get_state(), "head_kl_coef": dict(self.head_kl_coef)}
+        if self.ent_floor:                  # only when configured: without it the state is as before
+            d["ent_floor_mult"] = dict(self.ent_floor_mult)
+        if self.kickstart is not None:      # likewise
+            d["kickstart_start"] = self.ks_start
+        if self.ks_gen is not None:         # ppo.kickstart.tiers
+            d["kickstart_gen"] = self.ks_gen.get_state()
+        if self.ks_adapt is not None:       # ppo.kickstart.adapt: s, and the shares with the tiers they belong to
+            d["kickstart_scale"] = self.ks_scale
+            if self.ks_tiers is not None:
+                d["kickstart_shares"] = {"tiers": [list(t) for t in self.kickstart["tiers"]],
+                                         "shares": list(self.ks_shares)}
+        return d
 
     def load_state_dict(self, d):
         self.opt_a.load_state_dict(d["opt_a"])
@@ -170,6 +231,82 @@ class PPOTrainer:
         for h, c in (d.get("head_kl_coef") or {}).items():    # heads still configured keep their adapted coef
             if h in self.head_kl_coef:
                 self.head_kl_coef[h] = float(c)
+        for h, m in (d.get("ent_floor_mult") or {}).items():  # heads still configured keep m_h, within [1, max_scale]
+            if h in self.ent_floor_mult:
+                self.ent_floor_mult[h] = min(max(float(m), 1.0), self.ent_floor[h][3])
+        # a configured start_round wins; else a restart continues the schedule the checkpoint started
+        if self.kickstart is not None and self.kickstart["start_round"] is None and d.get("kickstart_start") is not None:
+            self.ks_start = int(d["kickstart_start"])
+        if self.ks_gen is not None and d.get("kickstart_gen") is not None:
+            self.ks_gen.set_state(d["kickstart_gen"])
+        a = self.ks_adapt
+        if a is not None and d.get("kickstart_scale") is not None:
+            self.ks_scale = min(max(float(d["kickstart_scale"]), a["min_scale"]), a["max_scale"])
+        sh = d.get("kickstart_shares")
+        # adapted shares only for the same configured tiers (coefs and shares): a changed tier list starts afresh
+        if a is not None and self.ks_tiers is not None and sh and \
+                [list(t) for t in sh["tiers"]] == [list(t) for t in self.kickstart["tiers"]]:
+            self.ks_shares = [float(x) for x in sh["shares"]]
+
+    def kickstart_decay(self) -> float:
+        """decay_t of the round about to be updated (self.round): 1 - (round - start) / decay_rounds, 0 before
+        start_round and from start + decay_rounds on. The first call without a start fixes it at this round."""
+        if self.kickstart is None:
+            return 0.0
+        if self.ks_start is None:
+            self.ks_start = self.round
+        k = self.round - self.ks_start
+        if k < 0:
+            return 0.0
+        return max(0.0, 1.0 - k / self.kickstart["decay_rounds"])
+
+    def kickstart_coef(self) -> float:
+        """coef_t of the round about to be updated: coef x decay_t (x s with adapt). With tiers: the expected coef,
+        sum over tiers of share x tier coef x s x decay_t (a minibatch uses the coef of the tier it draws)."""
+        decay = self.kickstart_decay()
+        if self.kickstart is None:
+            return 0.0
+        if self.ks_tiers is not None:
+            return sum(c * sh for c, sh in zip(self.ks_tiers, self.ks_shares)) * self.ks_scale * decay
+        if self.ks_adapt is None:
+            return self.kickstart["coef"] * decay
+        return self.kickstart["coef"] * self.ks_scale * decay
+
+    def _draw_tier(self) -> int:
+        """The tier of one actor minibatch, drawn by the current shares with ks_gen."""
+        u = float(torch.rand((), generator=self.ks_gen, dtype=torch.float64))
+        acc = 0.0
+        for i, sh in enumerate(self.ks_shares):
+            acc += sh
+            if u < acc:
+                return i
+        return max(i for i, sh in enumerate(self.ks_shares) if sh > 0)    # shares summing to 1 - 1e-6
+
+    def _kickstart_adapt(self, skip_share):
+        """ppo.kickstart.adapt after a round with kickstart active (first version): skip_share (actor minibatches the
+        KL controls skipped or stopped) above skip_target: s *= step and 0.05 of share goes from the highest-coef tier
+        to the lowest-coef tier; below skip_target / 2: s /= step and 0.05 goes back. s stays in [min_scale,
+        max_scale], every share >= 0.05 (a tier below that gives nothing), the total stays 1."""
+        a = self.ks_adapt
+        if skip_share > a["skip_target"]:
+            self.ks_scale, down = self.ks_scale * a["step"], True
+        elif skip_share < a["skip_target"] / 2:
+            self.ks_scale, down = self.ks_scale / a["step"], False
+        else:
+            return
+        self.ks_scale = min(max(self.ks_scale, a["min_scale"]), a["max_scale"])
+        t = self.ks_tiers
+        if t is None or len(t) < 2:
+            return
+        hi = max(range(len(t)), key=lambda i: t[i])
+        lo = min(range(len(t)), key=lambda i: t[i])
+        if t[hi] == t[lo]:
+            return
+        src, dst = (hi, lo) if down else (lo, hi)
+        move = min(0.05, self.ks_shares[src] - 0.05)
+        if move > 1e-12:
+            self.ks_shares[src] = round(self.ks_shares[src] - move, 12)
+            self.ks_shares[dst] = round(self.ks_shares[dst] + move, 12)
 
     # ------------------------------------------------------------------ update
     def update(self, buf: RoundBuffer) -> Dict:
@@ -191,6 +328,17 @@ class PPOTrainer:
 
         ent_coef = self.ent_sched.coef(self.decisions)
         beta = self.beta_sched.beta(self.decisions) if self.ref is not None else 0.0
+        # teacher labels (buf.teacher, loss region, index t*S+s) and ppo.kickstart
+        ks_coef = self.kickstart_coef()
+        ks_decay = self.kickstart_decay()
+        shares_used, scale_used = (None if self.ks_shares is None else list(self.ks_shares)), self.ks_scale
+        # ppo.kickstart.tiers: per tier [drawn, applied, skipped, stopped, ce sum, legal steps]
+        tier_n = [[0, 0, 0, 0, 0.0, 0] for _ in (self.ks_tiers or ())]
+        lab_round = getattr(buf, "teacher", None)
+        lab_round = None if lab_round is None else lab_round[buf.P * S:]
+        labelled = (lab_round >= 0).any(-1) & valid if lab_round is not None else None
+        n_lab = int(labelled.sum()) if labelled is not None else 0
+        ks_acc = {"ce": 0.0, "legal": 0, "seen": 0, "skipped": 0}
         warm = self.round < p.critic_warmup_rounds
         # segments with at least one valid loss step
         segs = []
@@ -214,6 +362,11 @@ class PPOTrainer:
         head_k3 = torch.zeros(spec.N_HEADS)             # per-head k3 KL to the behaviour policy, sum over actor steps
         hk = [(h,) + self.head_kl[h] + (self.head_kl_coef[h],) for h in self.head_kl]   # coefs fixed for the round
         hk_acc = {h: 0.0 for h in self.head_kl}
+        ef_mult = dict(self.ent_floor_mult)             # ppo.ent_floor: multipliers fixed for the round
+        ent_scale = self.ent_scale
+        if ef_mult:
+            ent_scale = self.ent_scale * torch.tensor([ef_mult.get(h, 1.0) for h in spec.HEAD_NAMES],
+                                                      dtype=self.ent_scale.dtype, device=self.device)
         actor_stopped = False
         stopped_at = -1
         stop_diag = skip_diag = None
@@ -239,6 +392,19 @@ class PPOTrainer:
                 n_lm = lm.sum().clamp(min=1).to(torch.float32)
                 lmf = lm.to(torch.float32)
                 mb_count += 1
+                lab_b = None
+                if n_lab:
+                    lab_b = buf.teacher[widx[:, B:]].reshape(-1, spec.N_HEADS).to(dev).long()
+                    lab_b = torch.where(lm.unsqueeze(-1), lab_b, torch.full_like(lab_b, -1))
+                    if not bool((lab_b >= 0).any()):
+                        lab_b = None
+                tier, mb_coef = None, ks_coef
+                if self.ks_tiers is not None and not warm:     # one draw per actor minibatch, also after a KL stop
+                    tier = self._draw_tier()
+                    mb_coef = self.ks_tiers[tier] * self.ks_scale * ks_decay
+                    tier_n[tier][0] += 1
+                    if actor_stopped:
+                        tier_n[tier][3] += 1
                 # ---------------- actor
                 if (not warm) and not actor_stopped:
                     out, seg = actor_window(self.actor, batch, h0a, B, batch.act[:, B:], keep_dists=True)
@@ -258,6 +424,7 @@ class PPOTrainer:
                         if float(kl_old) > p.target_kl_skip:
                             skip_mb = True
                             acc["kl_skips"] += 1
+                            ks_acc["skipped"] += int(lab_b is not None)
                         elif (acc["kl_old"] + float(kl_old)) / (acc["n_a"] + 1) > p.target_kl:
                             actor_stopped = True
                             stopped_at = mb_count
@@ -279,14 +446,17 @@ class PPOTrainer:
                             stop_diag = diag
                         else:
                             skip_diag = diag
+                    if tier is not None:
+                        tier_n[tier][3 if actor_stopped else 2 if skip_mb else 1] += 1
                     if not actor_stopped and not skip_mb:
                         pg = -clipped_surrogate(ratio, a_b, p.clip)
                         pg_loss = (pg * lmf).sum() / n_lm
                         active = (out.k > 1).to(torch.float32)
                         ent_step = (out.ent * active).sum(-1) / active.sum(-1).clamp(min=1.0)
                         ent_mean = (ent_step * lmf).sum() / n_lm
-                        # Bonus uses per-head scales (ppo.ent_head_scale); the logged entropy stays unweighted.
-                        bonus_step = (out.ent * active * self.ent_scale).sum(-1) / active.sum(-1).clamp(min=1.0)
+                        # Bonus uses per-head scales (ppo.ent_head_scale x the ppo.ent_floor multipliers); the
+                        # logged entropy stays unweighted.
+                        bonus_step = (out.ent * active * ent_scale).sum(-1) / active.sum(-1).clamp(min=1.0)
                         ent_bonus = (bonus_step * lmf).sum() / n_lm
                         if self.ref is not None:
                             rc = buf.ref_cat[lidx.reshape(-1)].to(dev)
@@ -302,6 +472,18 @@ class PPOTrainer:
                             kl_i = (((lr_i.exp() - 1.0) - lr_i) * lmf).sum() / n_lm
                             loss = loss + c * kl_i
                             hk_acc[h] += float(kl_i.detach())
+                        if lab_b is not None:                   # teacher labels: kickstart term / its metrics
+                            with torch.set_grad_enabled(mb_coef > 0.0):
+                                ce_step, ok = kickstart_ce(out, lab_b)
+                                n_ok = int(ok.any(-1).sum())
+                                if mb_coef > 0.0 and n_ok:
+                                    loss = loss + mb_coef * ce_step.sum() / n_ok
+                            ks_acc["ce"] += float(ce_step.detach().sum())
+                            ks_acc["legal"] += n_ok
+                            ks_acc["seen"] += int((lab_b >= 0).any(-1).sum())
+                            if tier is not None:
+                                tier_n[tier][4] += float(ce_step.detach().sum())
+                                tier_n[tier][5] += n_ok
                         self.opt_a.zero_grad(set_to_none=True)
                         loss.backward()
                         gn = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), p.max_grad_norm)
@@ -340,6 +522,17 @@ class PPOTrainer:
                                                  else c, lo), hi)
             self.head_kl_coef[h] = nxt
             head_kl_m[h] = {"kl": kl_h, "coef": c, "coef_next": nxt, "target": target}
+        ent_floor_m = {}
+        for h, (floor, up, down, mx) in self.ent_floor.items():
+            # the round's entropy_head[h] (no actor step or no step with > 1 legal option: m_h stays)
+            i = spec.HEAD_INDEX[h]
+            e_h = float(head_ent[i] / head_cnt[i]) if head_cnt[i] > 0 else None
+            mu = ef_mult[h]
+            nxt = mu if e_h is None else min(mu * up, mx) if e_h < floor else max(mu / down, 1.0) if e_h > 2.0 * floor \
+                else mu
+            self.ent_floor_mult[h] = nxt
+            ent_floor_m[h] = {"entropy": e_h, "floor": floor, "mult": mu, "mult_next": nxt,
+                              "scale": float(p.ent_head_scale.get(h, 1.0)) * mu}
         cnt = head_cnt.clamp(min=1)
         mean_ent = acc["ent"] / na if acc["n_a"] else float("nan")
         m = {
@@ -373,9 +566,59 @@ class PPOTrainer:
         }
         if hk:
             m["head_kl"] = head_kl_m             # {head: {kl (round mean), coef (used), coef_next, target}}
+        if ent_floor_m:
+            # {head: {entropy (= entropy_head), floor, mult (used), mult_next, scale (ent_head_scale x mult, used)}}
+            m["ent_floor"] = ent_floor_m
+        if self.kickstart is not None or n_lab:
+            m["kickstart"] = mk = self._kickstart_metrics(buf, lab_round, labelled, n_lab, n_valid, ks_coef, ks_acc)
+            if self.ks_tiers is not None:
+                mk["decay"] = ks_decay
+                mk["tiers"] = [{"coef": c, "share": sh, "drawn": n[0], "applied": n[1], "skipped": n[2],
+                                "stopped": n[3], "ce": n[4] / n[5] if n[5] else None}
+                               for c, sh, n in zip(self.ks_tiers, shares_used, tier_n)]
+                mk["shares"] = shares_used
+            if self.ks_adapt is not None:
+                # actor minibatches the KL controls left out: skipped (kl_mode "skip") + the stopping one and the rest
+                n_stop = mb_count - stopped_at + 1 if stopped_at > 0 else 0
+                ks_active = ks_coef > 0.0 and n_lab > 0 and not warm and mb_count > 0
+                skip_share = (acc["kl_skips"] + n_stop) / mb_count if ks_active else None
+                if ks_active:
+                    self._kickstart_adapt(skip_share)
+                mk["scale"] = scale_used
+                mk["adapt"] = {"skip_share": skip_share, "scale_next": self.ks_scale,
+                               "shares_next": None if self.ks_shares is None else list(self.ks_shares)}
         self.decisions += n_valid
         self.round += 1
         if acc["n_a"] and mean_ent == mean_ent:
             self.ent_sched.observe(mean_ent, n_valid)
         m["entropy_paused"] = self.ent_sched.paused
         return m
+
+    def _kickstart_metrics(self, buf, lab, labelled, n_lab, n_valid, coef, acc):
+        """metrics kickstart: coef (used this round; None when ppo.kickstart is off and only the env labels), start_round,
+        labelled_steps / label_share (valid loss steps with a label), agree (share of them whose sampled action equals
+        the label on every labelled head), ce (mean -log pi(label) over the labelled steps with a legal label in the
+        applied actor minibatches, every epoch), legal_share (of the labelled steps seen there, those with a legal
+        label), applied_share (labelled steps in applied actor minibatches / (labelled_steps x epochs): what the KL
+        controls and the critic warm-up let through), kl_skipped_minibatches (kl_mode "skip" left out a minibatch that
+        held labels), by_teacher {name: {labelled_steps, agree}}."""
+        out = {"coef": coef if self.kickstart is not None else None, "start_round": self.ks_start,
+               "labelled_steps": n_lab, "label_share": n_lab / max(n_valid, 1), "agree": None, "ce": None,
+               "legal_share": None, "applied_share": acc["seen"] / (n_lab * self.p.epochs) if n_lab else None,
+               "kl_skipped_minibatches": acc["skipped"], "by_teacher": {}}
+        if not n_lab:
+            return out
+        act = buf.store.act[buf.P * buf.S:]
+        agree = (((act == lab.long()) | (lab < 0)).all(-1) & labelled)
+        out["agree"] = float(agree.sum()) / n_lab
+        if acc["legal"]:
+            out["ce"] = acc["ce"] / acc["legal"]
+        if acc["seen"]:
+            out["legal_share"] = acc["legal"] / acc["seen"]
+        names = buf.teacher_name[buf.P * buf.S:].long()
+        for i, name in enumerate(getattr(buf, "teacher_names", None) or []):
+            sel = labelled & (names == i)
+            k = int(sel.sum())
+            if k:
+                out["by_teacher"][name] = {"labelled_steps": k, "agree": float((agree & sel).sum()) / k}
+        return out

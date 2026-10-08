@@ -6,6 +6,9 @@
     python -m rl.train ppo         ...   recurrent PPO from the BC actor (resumes from <run_dir>/ppo)
     python -m rl.train show-config ...
 
+Held-out aircraft (rl.config.HELD_OUT_AIRCRAFT, docs/rl_design.md section 5): --set env.held_out=True trains on the
+match pool without them (env.config aircraft_pool, resolved here and stored in config.json).
+
 `run` executes the three stages in order and skips what is already finished, so after a
 job-time-limit kill the same command continues. Exit code 0 = finished, 75 = stopped early
 (wall limit / SIGTERM / SIGUSR1) after checkpointing: run it again to continue.
@@ -290,6 +293,9 @@ def round_record(cfg, trainer, buf, st, m, sampler):
         "outcomes_by_kind": by_kind,
         "per_aircraft": per_air,
     }
+    # per-head shares of the sampled options over the round's valid steps (action_freq, action_freq_pointer, ...)
+    from rl.rollout import action_stats
+    rec.update(action_stats(buf))
     extra = sampler_extras(st)
     if extra:
         rec["sampler_stats"] = extra
@@ -444,6 +450,17 @@ def summary_line(r):
                                                                    h["decisions"])
     for name, d in sorted((r.get("head_kl") or {}).items()):
         line += "  kl[%s] %s coef %.3g" % (name, "-" if d["kl"] is None else "%.2e" % d["kl"], d["coef"])
+    for name, d in sorted((r.get("ent_floor") or {}).items()):     # ppo.ent_floor: round entropy, multiplier used
+        line += "  entfloor[%s] %s x%.3g" % (name, "-" if d["entropy"] is None else "%.2e" % d["entropy"], d["mult"])
+    ks = r.get("kickstart")
+    if ks and ks.get("coef") is not None:       # ppo.kickstart: coef used, label share, agreement, CE, KL-skipped
+        if ks.get("tiers"):                     # tiers: tier coef:share, scale s, decay
+            line += "  ks t[%s] s%.2f d%.2f" % (" ".join("%g:%.0f%%" % (t["coef"], 100 * t["share"]) for t in ks["tiers"]),
+                                               ks.get("scale", 1.0), ks["decay"])
+        else:
+            line += "  ks %.3g" % ks["coef"] + (" s%.2f" % ks["scale"] if "scale" in ks else "")
+        line += " lab %.3f agree %s ce %s skip %d" % (ks["label_share"], f(ks["agree"]), f(ks["ce"]),
+                                                      ks["kl_skipped_minibatches"])
     return line
 
 
@@ -467,6 +484,7 @@ def load_config(args) -> C.Config:
     if args.rounds is not None:
         cfg.run.rounds = args.rounds
     C.apply_overrides(cfg, args.set or [])
+    C.resolve_held_out(cfg)           # env.held_out -> the explicit env.config aircraft_pool (stored in config.json)
     cfg.validate()
     return cfg
 

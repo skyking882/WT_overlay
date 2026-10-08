@@ -23,6 +23,11 @@ past actor, drawn per episode by league.pick()), with their own recurrent state 
 are never written to the round buffer: those slots stay padding (valid False, no reward, done or bootstrap), so they
 reach no loss, GAE, value target or statistic; their rewards and late rewards are dropped. The current agent of the
 episode trains as in any other episode, late credit and settle ticks included.
+
+Teacher labels (env config teacher, docs/kickstart_spec.md): the worker reports {aid: {head: option, "name": ...}} for
+the decisions on the observations it returns ("teacher"); a stream keeps its label with its pending observation and the
+tick writes it to buf.teacher / buf.teacher_name (-1 = none) at the step of that decision. Frozen-side streams drop
+their labels (their steps are never stored). ppo.kickstart imitates them.
 """
 from __future__ import annotations
 
@@ -56,6 +61,63 @@ class Tail:
         self.h_critic = buf.h_critic[buf.K].clone()
 
 
+def action_stats(buf: RoundBuffer, places: int = 5) -> dict:
+    """Which options the behaviour policy sampled this round, per head (metrics.jsonl), over the valid steps of the
+    loss region: the burn-in history copied from the previous round, padding and the frozen side of history episodes
+    (never stored) are not counted; settle ticks count like any other tick. Shares rounded to ``places``.
+
+    action_freq                 {categorical head (spec.CAT_HEADS): [share of option 0, 1, ..., CAT_SIZES - 1]}
+    action_freq_pointer         {pointer head: {"entity": share of steps picking an entity, "none": picking "none"}}
+    With the sampler's legal-option counts (buf.n_legal, HeadOut.k at sampling time) also:
+    head_active_frac_round      {head: share of the valid steps on which the head had more than one legal option}
+    action_freq_active / action_freq_pointer_active: the same shares over only those steps (a head that never had a
+                                choice is left out), so forced options (one legal option) do not hide the policy's own
+                                choices.
+    Reading it with entropy_head: a head collapsed to "never change" puts ~1 on one option; a head that is
+    deterministic given the state has low entropy but spreads its picks over several options. ppo's head_active_frac
+    counts the steps of the applied actor minibatches instead (every epoch; none in a critic warm-up round)."""
+    off = buf.P * buf.S
+    v = buf.store.valid[off:]
+    act = buf.store.act[off:][v]                        # [n,15] sampled options of the valid steps
+    n = int(act.shape[0])
+    if n == 0:
+        return {}
+    n_legal = getattr(buf, "n_legal", None)
+    k = n_legal[off:][v] if n_legal is not None and n_legal.shape[0] == buf.store.N else None
+    cat_i = torch.tensor([spec.HEAD_INDEX[h] for h in spec.CAT_HEADS])
+    flat = (act[:, cat_i] + torch.tensor([spec.CAT_OFFSETS[h] for h in spec.CAT_HEADS])).reshape(-1)
+    ptr_i = [spec.HEAD_INDEX[h] for h in spec.POINTER_HEADS]
+    none = act[:, ptr_i] == buf.store.ent_n[off:][v].unsqueeze(1)     # option n (the entity count) is "none"
+
+    def cat_freq(weights=None):
+        c = torch.bincount(flat, weights=weights, minlength=spec.CAT_TOTAL).to(torch.float64)
+        res = {}
+        for h in spec.CAT_HEADS:
+            part = c[spec.CAT_OFFSETS[h]:spec.CAT_OFFSETS[h] + spec.CAT_SIZES[h]]
+            tot = float(part.sum())
+            if tot > 0:
+                res[h] = [round(float(x) / tot, places) for x in part]
+        return res
+
+    def ptr_freq(sel=None):
+        res = {}
+        for j, h in enumerate(spec.POINTER_HEADS):
+            x = none[:, j] if sel is None else none[:, j][sel[:, j]]
+            if x.numel():
+                p = float(x.sum()) / x.numel()
+                res[h] = {"entity": round(1.0 - p, places), "none": round(p, places)}
+        return res
+
+    out = {"action_freq": cat_freq(), "action_freq_pointer": ptr_freq()}
+    if k is not None:
+        multi = k > 1                                   # [n,15] the head had a choice
+        out["head_active_frac_round"] = {h: round(float(multi[:, i].sum()) / n, places)
+                                         for i, h in enumerate(spec.HEAD_NAMES)}
+        out["action_freq_active"] = cat_freq(multi[:, cat_i].reshape(-1).to(torch.float64))
+        out["action_freq_pointer_active"] = ptr_freq(multi[:, ptr_i])
+    return out
+
+
 class Sampler:
     def __init__(self, cfg, pool, device, seed=0, league=None):
         self.cfg = cfg
@@ -69,6 +131,8 @@ class Sampler:
         self.stream_env = [s // K for s in range(self.S)]
         self.pending: List[Optional[tuple]] = [None] * self.S
         self.pending_first = [False] * self.S
+        self.pending_teacher: List[Optional[dict]] = [None] * self.S   # teacher label of the pending observation
+        self.teacher_names: List[str] = []      # buf.teacher_name indexes this list (grows, never reordered)
         self.slot_agent = [None] * self.S
         self.ep_ret = [0.0] * self.S
         self.ep_len = [0] * self.S
@@ -100,7 +164,7 @@ class Sampler:
     def start(self, seed_base):
         resets = self.pool.init_envs(self.n_envs, seed_base)
         for j, r in resets.items():
-            self._bind(j, r["obs"], r.get("kind"), r.get("frozen"))
+            self._bind(j, r["obs"], r.get("kind"), r.get("frozen"), r.get("teacher"))
         self.started = True
 
     def _air(self, name):
@@ -110,7 +174,15 @@ class Sampler:
             self.aircraft_names.append(name)
         return i
 
-    def _bind(self, j, obs, kind=None, frozen=None):
+    def _teacher_id(self, name):
+        name = str(name)
+        if name not in self.teacher_names:
+            if len(self.teacher_names) >= 127:
+                raise RuntimeError("more than 127 teacher names")
+            self.teacher_names.append(name)
+        return self.teacher_names.index(name)
+
+    def _bind(self, j, obs, kind=None, frozen=None, teacher=None):
         fz = self.env_frozen[j] = frozenset(frozen or ())
         if fz and self.league is None:
             raise RuntimeError("env %d reports frozen agents (a history episode) but the sampler has no league: "
@@ -119,11 +191,13 @@ class Sampler:
         for s in self.env_streams[j]:
             self.slot_agent[s] = None
             self.pending[s] = None
+            self.pending_teacher[s] = None
             self.frozen[s] = False
         for s, a in zip(self.env_streams[j], sorted(obs, key=str)):
             self.frozen[s] = a in fz
             self.slot_agent[s] = a
             self.pending[s] = obs[a]
+            self.pending_teacher[s] = None if a in fz else (teacher or {}).get(a)
             self.pending_first[s] = True
             self.ep_ret[s] = 0.0
             self.ep_len[s] = 0
@@ -145,6 +219,9 @@ class Sampler:
         S, T, L, B, P = self.S, self.T, self.L, self.B, self.B
         dev = self.device
         buf = RoundBuffer(S, T, L, B)
+        buf.teacher_names = self.teacher_names
+        # legal options per head of every stored step (HeadOut.k at sampling time; 0 on padding): action_stats
+        buf.n_legal = torch.zeros(buf.n_steps, spec.N_HEADS, dtype=torch.uint8)
         if self.tail is not None:
             if P > 0:
                 buf.store.copy_from(self.tail.store, slice(0, P * S), 0)
@@ -198,7 +275,12 @@ class Sampler:
             buf.store.put(flat, dec, first=first, act=actions)
             buf.logp[flat] = out.logp.sum(-1).cpu()
             buf.logp_heads[flat] = out.logp.cpu()
+            if getattr(buf, "n_legal", None) is not None:
+                buf.n_legal[flat] = out.k.clamp(max=255).cpu().to(torch.uint8)
             buf.aircraft[flat] = torch.tensor([self._air(n) for n in dec.aircraft])
+            for i, s in enumerate(learn):
+                if self.pending_teacher[s]:
+                    self._store_label(buf, int(flat[i]), self.pending_teacher[s])
             acts_l = actions.tolist()
             for i, s in enumerate(learn):
                 by_env.setdefault(self.stream_env[s], {})[self.slot_agent[s]] = tuple(acts_l[i])
@@ -212,6 +294,17 @@ class Sampler:
         st["t_worker"] += self.pool.last_worker_time
         self._process(res, t, buf, st)
         return res
+
+    def _store_label(self, buf, f, label):
+        """Write one decision's teacher label {head: option, "name": teacher} to the buffer step f."""
+        for h, v in label.items():
+            if h == "name":
+                continue
+            if h not in spec.HEAD_INDEX or type(v) is not int or not 0 <= v <= spec.PTR_CAP:
+                raise RuntimeError("bad teacher label %r (head names from spec.HEAD_NAMES, option an int index)"
+                                   % (label,))
+            buf.teacher[f, spec.HEAD_INDEX[h]] = v
+        buf.teacher_name[f] = self._teacher_id(label.get("name", ""))
 
     def _act_frozen(self, streams, greedy, by_env, st):
         """Actions of the frozen side of history episodes: one batch per opponent actor, own state and generator;
@@ -252,6 +345,9 @@ class Sampler:
         st["settle_envs"] = len(envs)
         while envs and buf.T - T0 < self.settle_cap:
             buf.extend(L)
+            if getattr(buf, "n_legal", None) is not None:     # RoundBuffer.extend does not know the sampler's table
+                buf.n_legal = torch.cat([buf.n_legal, buf.n_legal.new_zeros(
+                    buf.n_steps - buf.n_legal.shape[0], spec.N_HEADS)])
             for t in range(buf.T - L, buf.T):
                 res = self._tick(actor, greedy, abort, t, buf, st, [s for j in sorted(envs) for s in self.env_streams[j]])
                 envs -= {j for j, r in (res or {}).items() if r["new_episode"]}
@@ -291,6 +387,7 @@ class Sampler:
                 if a is None:
                     continue
                 if self.frozen[s]:                      # acted for the frozen side: nothing stored, nothing counted
+                    self.pending_teacher[s] = None
                     if (not r["new_episode"]) and a in r["obs"] and not r["done"].get(a, False):
                         self.pending[s] = r["obs"][a]
                     else:
@@ -328,6 +425,7 @@ class Sampler:
                     self._end_episode(s, kind, st, (j, a, flat, buf))
                 elif (not r["new_episode"]) and a in r["obs"]:
                     self.pending[s] = r["obs"][a]
+                    self.pending_teacher[s] = (r.get("teacher") or {}).get(a)
                 else:                           # agent vanished without done: truncate, bootstrap from own value
                     buf.trunc[flat] = True
                     st["lost"] += 1
@@ -335,7 +433,7 @@ class Sampler:
             if r["new_episode"]:
                 for key in [key for key in self.finished if key[0] == j]:
                     del self.finished[key]
-                self._bind(j, r["obs"], r.get("kind"), r.get("frozen"))
+                self._bind(j, r["obs"], r.get("kind"), r.get("frozen"), r.get("teacher"))
 
     def _end_episode(self, s, kind, st, where=None):
         st["episodes"].append((self.ep_air[s], self.ep_ret[s], self.ep_len[s], kind, self.ep_kind[s]))
@@ -351,6 +449,7 @@ class Sampler:
                                      "out": len(st["outcomes"])-1}
         self.slot_agent[s] = None
         self.pending[s] = None
+        self.pending_teacher[s] = None
 
     # ------------------------------------------------------------------ post-pass
     def finish(self, buf, critic, ref, gamma_base, lambda_base):

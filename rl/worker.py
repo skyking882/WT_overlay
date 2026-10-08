@@ -23,7 +23,10 @@ StepResult: {"rew","done": {aid:..}, "timeout": bool, "obs": {aid: wire} of agen
   also when the env makes that a terminal step rather than a bootstrapped timeout), "pending": True if the episode
   goes on and env.pending_credit() is still True (the sampler keeps stepping such an env before its PPO update:
   Sampler._settle), "frozen" (with "new_episode", and in init) the env's frozen_ids when there are any: agents of a
-  history episode flown by a frozen past policy (the sampler acts for them but trains nothing on them).
+  history episode flown by a frozen past policy (the sampler acts for them but trains nothing on them), "teacher"
+  (also in init / reset results) {aid: {head: option, "name": teacher}} teacher labels of the decisions on "obs"
+  (MatchEnv config teacher: info["teacher"] after a step, env.teacher_labels after a reset), only for agents that
+  have a label (docs/kickstart_spec.md); absent when there is none.
 The env is reset automatically when no policy-controlled agent is left, or (history episodes) when only frozen agents
 are left and nothing is owed to a downed trained agent any more (pending_credit() False). If the env has
 pending_credit() (missiles of downed policy aircraft still flying) it is first played on without actions until they
@@ -47,6 +50,13 @@ def load_class(path):
     if not name:
         raise ValueError("env class must look like 'package.module:Class', got %r" % path)
     return getattr(importlib.import_module(mod), name)
+
+
+def _labels(labels, obs):
+    """Teacher labels (env info["teacher"] / env.teacher_labels) of the agents in ``obs``, as plain dicts."""
+    if not labels:
+        return {}
+    return {aid: dict(lab) for aid, lab in labels.items() if aid in obs and lab}
 
 
 class EnvHost:
@@ -86,6 +96,9 @@ class EnvHost:
         frozen = getattr(env, "frozen_ids", None)
         if frozen:
             out["frozen"] = list(frozen)
+        labels = _labels(getattr(env, "teacher_labels", None), obs)
+        if labels:
+            out["teacher"] = labels
         return out
 
     # ------------------------------------------------------------------ ops
@@ -153,6 +166,9 @@ class EnvHost:
                 res["obs"] = self._pack(j, nxt)
                 if pending is not None and pending():
                     res["pending"] = True
+                labels = _labels(info.get("teacher"), nxt)
+                if labels:
+                    res["teacher"] = labels
             else:
                 r = self._reset(j)
                 res["obs"] = r["obs"]
@@ -161,6 +177,8 @@ class EnvHost:
                 res["kind"] = r["kind"]
                 if "frozen" in r:
                     res["frozen"] = r["frozen"]
+                if "teacher" in r:
+                    res["teacher"] = r["teacher"]
             out[j] = res
         return out, time.time() - t0
 

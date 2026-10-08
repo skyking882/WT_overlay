@@ -13,6 +13,10 @@ from typing import Any, Dict, List
 
 from rl.spec import HEAD_NAMES
 
+# Aircraft kept out of training for the generalisation test (docs/rl_design.md section 5: JAS 39E, MiG-35). The one
+# place of this list: env.held_out = True (training) and rl.eval_replay --held-out (testing) default to it.
+HELD_OUT_AIRCRAFT = ("saab_jas39e", "mig_35")
+
 
 @dataclass
 class EnvCfg:
@@ -21,6 +25,13 @@ class EnvCfg:
     streams_per_env: int = 1       # max number of policy-controlled agents per episode of one env
     validate_steps: int = 25       # deep contract check (finite values etc.) on the first N steps per env
     seed: int = 1000
+    # Held-out aircraft (opt-in; False = no change). True holds out HELD_OUT_AIRCRAFT, a list those ids instead
+    # (--set env.held_out=True, --set "env.held_out=['mig_35']"). rl.train resolves it when it loads the config
+    # (resolve_held_out): env.config aircraft_pool becomes the match model's pool (or the aircraft_pool already there)
+    # without the held-out ids, so config.json and every checkpoint store the explicit pool. MatchEnv draws both
+    # teams from aircraft_pool: the policy never meets a held-out aircraft in training, neither as its own nor as an
+    # enemy. Test on them with rl.eval_replay --stats --held-out.
+    held_out: Any = False
 
 
 @dataclass
@@ -87,6 +98,19 @@ class PPOCfg:
     # divided by 1.5 if < target / 1.5 (clamped, default [0.01, 100]); the adapted coef is in the trainer state.
     # Suggested for 'weapon': target 2e-4 (s1_ego2's per-minibatch weapon k3 ran ~2e-4..6e-4, the joint KL ~6e-3).
     head_kl: dict = field(default_factory=dict)
+    # Per-head entropy floor (opt-in; {} = off): {head: {"floor": f[, "up": 1.5, "down": 1.5, "max_scale": 30.0]}}.
+    # The head's entropy-bonus scale becomes ent_head_scale x m_h, m_h adapted between rounds (start 1, fixed within
+    # a round, kept in the trainer state): if the round's entropy_head[head] (mean normalised entropy over steps with
+    # > 1 legal option) < f, m_h *= up (at most max_scale); if > 2 f, m_h /= down (at least 1). For heads that collapse
+    # and never come back: 4v4 'vertical' fell to ~0.001 (1v1 ~0.02) and a fixed 10x scale did nothing in 7 rounds.
+    ent_floor: dict = field(default_factory=dict)
+    # Teacher imitation, "kickstart" (opt-in; None = off, docs/kickstart_spec.md): {"coef": 0.5, "decay_rounds": 40,
+    # "start_round": None}. The actor loss gains coef_t x the mean over labelled steps of -log pi(label) (env.config
+    # teacher labels, only where the label is legal under the stored masks); coef_t falls linearly from coef to 0 over
+    # decay_rounds rounds from start_round (None: the first round with it configured, kept in the trainer state).
+    # Opt-in inside it: "tiers" [[coef, share], ...] instead of "coef" (each actor minibatch draws its tier), "adapt"
+    # {"skip_target", "step", "min_scale", "max_scale"} (a scale on the tier coefs and the shares follow the KL skips).
+    kickstart: Any = None
     kl_beta: float = 0.05
     kl_beta_hold: float = 2.0e5
     kl_beta_end: float = 2.0e6
@@ -183,6 +207,19 @@ class Config:
             raise ValueError("env.config must be a dict, got %r (a --set value is parsed with ast.literal_eval: "
                              "write None / True / False, not null / true / false, or use a JSON config file)"
                              % (e.config,))
+        ids = held_out_ids(e.held_out)          # ValueError on a malformed value
+        if ids:
+            clash = sorted({m.get("aircraft") if isinstance(m, dict) else m
+                            for t in e.config.get("teams") or () for m in t} & set(ids))
+            if clash:
+                raise ValueError("env.held_out: env.config.teams fly held-out aircraft %s" % clash)
+            pool = e.config.get("aircraft_pool")
+            if pool is None:
+                raise ValueError("env.held_out is set but env.config has no aircraft_pool: resolve it with "
+                                 "rl.config.resolve_held_out (rl.train does when it loads the config)")
+            if set(pool) & set(ids):
+                raise ValueError("env.config.aircraft_pool contains held-out aircraft %s"
+                                 % sorted(set(pool) & set(ids)))
         for key in ("self_play_prob", "history_prob"):
             p_all = e.config.get(key, 0)
             if isinstance(p_all, (int, float)) and p_all > 0:
@@ -211,7 +248,129 @@ class Config:
                     not 0 < v.get("coef_min", 0.01) <= v.get("coef_max", 100.0):
                 raise ValueError("ppo.head_kl[%r] must look like {'target': t > 0, 'coef': c >= 0[, 'coef_min', "
                                  "'coef_max']}, got %r" % (h, v))
+        ent_floor_spec(self.ppo.ent_floor)
+        kickstart_spec(self.ppo.kickstart)
         check_core_budget(self)
+
+
+def ent_floor_spec(d) -> Dict[str, tuple]:
+    """ppo.ent_floor -> {head: (floor, up, down, max_scale)}. ValueError for an unknown head or a bad entry: floor in
+    (0, 1), up and down > 1, max_scale >= 1 (defaults 1.5, 1.5, 30)."""
+    if not isinstance(d, dict):
+        raise ValueError("ppo.ent_floor must be a dict {head: {'floor': f, ...}}, got %r" % (d,))
+    unknown = set(d) - set(HEAD_NAMES)
+    if unknown:
+        raise ValueError("ppo.ent_floor has unknown heads: %s" % sorted(unknown))
+    out = {}
+    for h, v in d.items():
+        ok = isinstance(v, dict) and "floor" in v and not set(v) - {"floor", "up", "down", "max_scale"}
+        if ok:
+            try:
+                f, up, down, mx = (float(v["floor"]), float(v.get("up", 1.5)), float(v.get("down", 1.5)),
+                                   float(v.get("max_scale", 30.0)))
+                ok = 0.0 < f < 1.0 and up > 1.0 and down > 1.0 and mx >= 1.0
+            except (TypeError, ValueError):
+                ok = False
+        if not ok:
+            raise ValueError("ppo.ent_floor[%r] must look like {'floor': 0 < f < 1[, 'up': > 1, 'down': > 1, "
+                             "'max_scale': >= 1]}, got %r" % (h, v))
+        out[h] = (f, up, down, mx)
+    return out
+
+
+KICKSTART_DEFAULTS = {"coef": 0.5, "decay_rounds": 40, "start_round": None}
+KICKSTART_ADAPT_DEFAULTS = {"skip_target": 0.1, "step": 0.8, "min_scale": 0.2, "max_scale": 1.0}
+
+
+def _num(x):
+    return not isinstance(x, bool) and isinstance(x, (int, float)) and x == x and abs(x) < float("inf")
+
+
+def kickstart_spec(d):
+    """ppo.kickstart -> {"coef", "decay_rounds", "start_round", "tiers", "adapt"} with the defaults filled in; None when
+    off. ValueError for an unknown key or a bad value.
+
+    coef: float >= 0 (None with tiers); decay_rounds: int >= 1; start_round: None or int >= 0.
+    tiers (opt-in, replaces coef, which must then be left out): [[coef >= 0, share >= 0], ...], shares summing to 1
+    (+-1e-6) -> a list of (coef, share) tuples; None when absent.
+    adapt (opt-in; {} = KICKSTART_ADAPT_DEFAULTS): {"skip_target": in (0, 1), "step": in (0, 1), "min_scale" > 0,
+    "max_scale" >= min_scale}; None when absent."""
+    if d is None:
+        return None
+    keys = set(KICKSTART_DEFAULTS) | {"tiers", "adapt"}
+    ok = isinstance(d, dict) and not set(d) - keys and not (d.get("tiers") is not None and "coef" in d)
+    tiers = adapt = None
+    if ok:
+        v = dict(KICKSTART_DEFAULTS, **d)
+        c, n, s0 = v["coef"], v["decay_rounds"], v["start_round"]
+        ok = _num(c) and c >= 0.0 and type(n) is int and n >= 1 and (s0 is None or (type(s0) is int and s0 >= 0))
+    if ok and d.get("tiers") is not None:
+        t = d["tiers"]
+        ok = isinstance(t, (list, tuple)) and len(t) > 0 and all(
+            isinstance(x, (list, tuple)) and len(x) == 2 and _num(x[0]) and _num(x[1]) and x[0] >= 0 and x[1] >= 0
+            for x in t)
+        if ok:
+            tiers = [(float(x[0]), float(x[1])) for x in t]
+            ok = abs(sum(sh for _, sh in tiers) - 1.0) <= 1e-6
+    if ok and d.get("adapt") is not None:
+        a = d["adapt"]
+        ok = isinstance(a, dict) and not set(a) - set(KICKSTART_ADAPT_DEFAULTS)
+        if ok:
+            adapt = dict(KICKSTART_ADAPT_DEFAULTS, **a)
+            ok = all(_num(x) for x in adapt.values())
+            if ok:
+                adapt = {k: float(x) for k, x in adapt.items()}
+                ok = (0.0 < adapt["skip_target"] < 1.0 and 0.0 < adapt["step"] < 1.0 and adapt["min_scale"] > 0.0
+                      and adapt["max_scale"] >= adapt["min_scale"])
+    if not ok:
+        raise ValueError("ppo.kickstart must be None or look like {'coef': c >= 0 | 'tiers': [[coef >= 0, share >= 0], "
+                         "...] with shares summing to 1 (not both), 'decay_rounds': n >= 1, 'start_round': None or a "
+                         "round >= 0[, 'adapt': {'skip_target': (0, 1), 'step': (0, 1), 'min_scale': > 0, "
+                         "'max_scale': >= min_scale}]}, got %r" % (d,))
+    return {"coef": None if tiers is not None else float(c), "decay_rounds": n, "start_round": s0, "tiers": tiers,
+            "adapt": adapt}
+
+
+def held_out_ids(value) -> List[str]:
+    """The aircraft ids an env.held_out value holds out: True -> HELD_OUT_AIRCRAFT, a list / tuple -> its ids,
+    False / None / [] -> none."""
+    if value is None or value is False:
+        return []
+    if value is True:
+        return list(HELD_OUT_AIRCRAFT)
+    if isinstance(value, (list, tuple)) and all(isinstance(a, str) for a in value):
+        return list(value)
+    raise ValueError("env.held_out must be True / False or a list of aircraft ids, got %r" % (value,))
+
+
+def model_pool(env_config) -> List[str]:
+    """Aircraft of the match model an env config uses (inline "model", else model_path / the default file), in the
+    model's order. Imports wt_overlay.match only when there is no inline model."""
+    model = env_config.get("model")
+    if model is None:
+        from wt_overlay import match
+        model = match.load_model(env_config.get("model_path"))
+    return list(model["aircraft_frequency"]["weights"])
+
+
+def resolve_held_out(cfg: "Config", pool=None) -> "Config":
+    """env.held_out -> env.config aircraft_pool: the aircraft_pool already in the config, else the match model's
+    aircraft (``pool``, default model_pool), without the held-out ids. Idempotent (a resumed run's config.json
+    already holds the pool); nothing changes when no aircraft is held out. ValueError for a held-out id the model does
+    not know (a typo would otherwise hold out nothing) and when no aircraft would be left."""
+    ids = held_out_ids(cfg.env.held_out)
+    if not ids or not isinstance(cfg.env.config, dict):
+        return cfg
+    pool = list(pool) if pool is not None else model_pool(cfg.env.config)
+    unknown = sorted(set(ids) - set(pool))
+    if unknown:
+        raise ValueError("env.held_out: aircraft %s are not in the match model" % unknown)
+    base = cfg.env.config.get("aircraft_pool")
+    kept = [a for a in (pool if base is None else base) if a not in ids]
+    if not kept:
+        raise ValueError("env.held_out leaves no aircraft in the pool")
+    cfg.env.config = dict(cfg.env.config, aircraft_pool=kept)
+    return cfg
 
 
 def history_on(cfg) -> bool:
