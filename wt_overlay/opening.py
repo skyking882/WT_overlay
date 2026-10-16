@@ -48,6 +48,7 @@ DEVIATION_PATH_DEG = 3.
 DEVIATION_TAS_MPS = 20.
 DEVIATION_HOLD_S = 2.
 END_AFTER_WINDOW_S = 5.
+SLOW_MPS = 50.            # below this the arrow waits (parked, taking off)
 ARROW_GAIN = 5.           # small direction errors are drawn this much larger (the arrow stays readable)
 FALLBACK_MISSILE_MASS_KG = 160.
 
@@ -111,7 +112,7 @@ class Spawn:
     heading_deg: float | None   # = the bearing of the enemy spawn (replays: median 3 deg off); None = no heading
     altitude_m: float
     tas_mps: float
-    aircraft_id: str
+    aircraft_id: str | None     # None while 8111 gives no type (the user picks the aircraft in settings)
     manual: bool = False
 
 
@@ -133,8 +134,9 @@ def heading_of(state) -> float | None:
 class SpawnLatch:
     """Detects an air spawn. After a telemetry gap of SPAWN_GAP_S (or an aircraft change) the first sample within
     SPAWN_WINDOW_S that looks like a spawn (altitude, TAS, nearly level) is taken; a heading is not required (it is
-    filled in from the first heading reading in the next HEADING_FILL_S). ``latch`` takes the current state instead
-    (manual restart, e.g. when the overlay started mid-flight)."""
+    filled in from the first heading reading in the next HEADING_FILL_S), nor is the aircraft type: a type that
+    appears later (picked in settings) is not a respawn. ``latch`` takes the current state instead (manual
+    restart, e.g. when the overlay started mid-flight)."""
 
     def __init__(self):
         self.reset()
@@ -148,13 +150,12 @@ class SpawnLatch:
 
     @staticmethod
     def _usable(state):
-        return (state.valid and valid_number(state.altitude_m) and valid_number(state.tas_mps)
-                and bool(state.aircraft_id))
+        return state.valid and valid_number(state.altitude_m) and valid_number(state.tas_mps)
 
     def latch(self, state, manual=True) -> Spawn | None:
         if not self._usable(state):
             self.note = ("8111 没有飞行数据，无法当作出生" if not state.valid else
-                         "8111 缺少高度、真空速或机型，无法当作出生")
+                         "8111 缺少高度或真空速，无法当作出生")
             return None
         self.spawn = Spawn(state.time_s, heading_of(state), float(state.altitude_m), float(state.tas_mps),
                            state.aircraft_id, manual)
@@ -173,13 +174,14 @@ class SpawnLatch:
         """Returns the new Spawn on the sample where one is detected, else None."""
         if not self._usable(state):
             if state.valid:
-                self.note = "等待空中出生：8111 缺少高度、真空速或机型"
+                self.note = "等待空中出生：8111 缺少高度或真空速"
             return None
         from .fm.catalog import aircraft_key
-        identity = aircraft_key(state.aircraft_id)
-        fresh = (self._last_valid_s is None or state.time_s-self._last_valid_s > SPAWN_GAP_S
-                 or identity != self._identity)
-        self._last_valid_s, self._identity = state.time_s, identity
+        identity = aircraft_key(state.aircraft_id) if state.aircraft_id else None
+        changed = identity is not None and self._identity is not None and identity != self._identity
+        fresh = self._last_valid_s is None or state.time_s-self._last_valid_s > SPAWN_GAP_S or changed
+        self._last_valid_s = state.time_s
+        self._identity = identity or self._identity
         if fresh:
             self.spawn = None
             self._window_until = state.time_s+SPAWN_WINDOW_S
@@ -596,8 +598,9 @@ def cue(plan: OpeningPlan | None, spawn: Spawn | None, state, note="") -> Openin
             and state.altitude_m >= max(CLIMB_CAP_M, spawn.altitude_m)-200.):
         wanted = 0.
     path = path_angle_deg(state) if state.valid else None
-    if path is None:
-        return OpeningCue(phase, t, wanted, lines=(*lines, "缺少垂直速度"), plan=plan,
+    if path is None or state.tas_mps < SLOW_MPS:
+        missing = "速度太低（在地面？）：等起飞" if valid_number(state.tas_mps) and state.tas_mps < SLOW_MPS else "缺少垂直速度"
+        return OpeningCue(phase, t, wanted, lines=(*lines, missing), plan=plan,
                           launch_range_m=plan.launch_range_m if plan else None)
     heading = heading_of(state) if state.valid else None
     if heading is None or spawn.heading_deg is None:

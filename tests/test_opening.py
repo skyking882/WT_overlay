@@ -86,6 +86,14 @@ class SpawnTests(unittest.TestCase):
         spawn = latch.update(state(10.5))
         self.assertEqual((spawn.time_s, spawn.altitude_m), (10.5, 2500.))
 
+    def test_no_type_is_not_a_blocker_and_a_type_arriving_is_not_a_respawn(self):
+        latch = SpawnLatch()
+        spawn = latch.update(state(1., aircraft=None))
+        self.assertIsNone(spawn.aircraft_id)
+        self.assertIsNone(latch.update(state(2., aircraft="j_16")))
+        self.assertIs(latch.spawn, spawn)
+        self.assertIsNotNone(latch.update(state(2.5, aircraft="f_16c_block_52_aesa")))   # a real type change
+
     def test_no_heading_reading_is_not_a_blocker(self):
         latch = SpawnLatch()
         spawn = latch.update(state(1., heading=None))
@@ -345,12 +353,34 @@ class ControllerTests(unittest.TestCase):
             self.wait_plan(30.1)
             self.assertEqual(len(self.requests), 2)
 
-    def test_reasons_instead_of_a_plan(self):
+    def test_missing_input_keeps_the_default_climb_and_says_what_to_set(self):
         self.controller.submit({"action": "opening", "settings": asdict(OpeningSettings(True, ""))})
         self.tick(0.)
         snapshot = self.tick(.1)
-        self.assertEqual(snapshot.opening.phase, "无方案")
-        self.assertIn("选择导弹", snapshot.opening.lines[0])
+        self.assertEqual((snapshot.opening.phase, snapshot.opening.target_path_deg), ("计算中", 15.))
+        self.assertIn("还不能计算", snapshot.opening.lines[0])
+        self.assertIn("选择导弹", snapshot.opening.lines[1])
+
+    def test_no_type_from_8111_then_the_aircraft_is_picked(self):
+        from wt_overlay.telemetry import INDICATORS_MISSING
+        self.enable()
+        with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
+            self.client.state = state(0., aircraft=None, heading=None, mass_kg=11000., notes=(INDICATORS_MISSING,))
+            self.controller.tick(0.)
+            self.client.state = replace(self.client.state, time_s=.1)
+            snapshot = self.controller.tick(.1)
+            self.assertEqual(snapshot.opening.phase, "计算中")
+            self.assertIn("8111 没给机型", snapshot.opening.lines[1])
+            self.assertIsNotNone(self.controller._latch.spawn)   # the spawn does not wait for the type
+            self.controller.submit({"action": "aircraft", "id": "f_16c_block_52_aesa"})
+            self.client.state = replace(self.client.state, time_s=.2)
+            self.controller.tick(.2)
+            for _ in range(100):
+                if self.requests:
+                    break
+                time.sleep(.01)
+            self.assertEqual(self.requests[0].aircraft_id, "f_16c_block_52_aesa")
+            self.assertEqual(self.controller._latch.spawn.time_s, 0.)   # picking the type is not a respawn
 
     def test_manual_restart_latches_now(self):
         self.enable()

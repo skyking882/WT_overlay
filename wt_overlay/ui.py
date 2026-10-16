@@ -1206,8 +1206,9 @@ class SettingsWindow(QWidget):
 
     def select_aircraft(self, index):
         identity = self.aircraft_box.itemData(index)
-        if identity and identity != "file":
-            self.owner.command({"action": "aircraft", "id": identity})
+        if identity and identity != "file" and self.owner.command({"action": "aircraft", "id": identity}):
+            # Kept across restarts: some aircraft give no type through 8111 (/indicators invalid).
+            self.owner.preferences.setValue("model/aircraft", identity)
 
     def apply_pose_calibration(self):
         sign = self.pose_sign.currentData()
@@ -1409,6 +1410,9 @@ class OverlayApp:
             self.set_turn_settings(self.turn_settings)
         if self.opening_settings.enabled:
             self.set_opening_settings(self.opening_settings)
+        saved_aircraft = self.preferences.value("model/aircraft", "auto", type=str)
+        if saved_aircraft != "auto" and find_aircraft(saved_aircraft) is not None:
+            self.command({"action": "aircraft", "id": saved_aircraft})
         self.can_reopen_settings = self.tray.isVisible() or self.settings_hotkey_available
         self.app.screenAdded.connect(self._screens_changed)
         self.app.screenRemoved.connect(self._screens_changed)

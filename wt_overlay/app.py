@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 import math
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -22,7 +23,8 @@ from .planning import scan_sep
 from .telemetry import INDICATORS_MISSING, TelemetryClient
 from .turn import TurnSession, validate_settings
 from .attitude import AttitudeEstimator
-from .opening import (DEVIATION_HOLD_S, FREEZE_BEFORE_PULL_S, MIN_REPLAN_S, REPLAN_S, Cancelled, DeadReckoning, OpeningCue,
+from .identify import AircraftGuess
+from .opening import (DEFAULT_CLIMB_DEG, DEVIATION_HOLD_S, FREEZE_BEFORE_PULL_S, MIN_REPLAN_S, REPLAN_S, Cancelled, DeadReckoning, OpeningCue,
                       OpeningPlan, OpeningSettings, PlanRequest, SpawnLatch, cue as opening_cue, deviates,
                       path_angle_deg, plan_opening, validate_settings as validate_opening, worker_init)
 
@@ -120,6 +122,8 @@ class OverlayController:
         self._opening_pool_workers = 0
         self._deviation_since = None
         self._opening_restart = False
+        self._opening_blocker = ""
+        self._guess = AircraftGuess()
         self._snapshot = OverlaySnapshot(mode, "等待首个数据样本", mass_override_kg=self.mass_kg,
                                          payload_kg=self.payload_kg,
                                          afterburner=afterburner, model_selection=self.model_selection,
@@ -262,13 +266,21 @@ class OverlayController:
                         self._settings_error = f"FM 未加载：{exc}"
 
     def _fill_identity(self, state: FlightState) -> FlightState:
-        """Only when 8111's whole /indicators payload is invalid (no type to check against) does a manually selected
-        aircraft stand in for the type; an unknown type in a valid payload still keeps the model off."""
-        if (state.valid and not state.aircraft_id and INDICATORS_MISSING in state.notes and self.model is not None
-                and self.model_selection != "auto" and self.mode == "live"):
+        """When 8111's whole /indicators payload is invalid (no type): a manually selected aircraft, else the type
+        identified from /state (identify.AircraftGuess: maximum fuel, engine count, thrust). An unknown type in a
+        valid payload still keeps the model off."""
+        if not (state.valid and not state.aircraft_id and INDICATORS_MISSING in state.notes and self.mode == "live"):
+            return state
+        if self.model is not None and self.model_selection != "auto":
             return replace(state, aircraft_id=self.model.info.aircraft_id,
                            notes=(*state.notes, f"8111 没有机型，按设置里选的 {self.model.info.name} 计算"))
-        return state
+        guessed = self._guess.update(state)
+        if guessed:
+            profile = find_aircraft(guessed)
+            note = f"8111 没有机型，按最大油量和推力识别为 {profile.name if profile else guessed}"
+            return replace(state, aircraft_id=guessed,
+                           notes=(*state.notes, note, *((self._guess.note,) if self._guess.note else ())))
+        return replace(state, notes=(*state.notes, self._guess.note or "正在按最大油量和推力识别机型"))
 
     def _select_live_aircraft(self, state: FlightState) -> None:
         if self.model_selection != "auto" or self.mode != "live":
@@ -450,6 +462,7 @@ class OverlayController:
         self._opening_future = self._opening_cancel = None
         self._opening_plan = None
         self._deviation_since = None
+        self._opening_blocker = ""
         if spawn:
             self._latch.reset()
             self._reckoning = None
@@ -464,7 +477,11 @@ class OverlayController:
         if self._opening_pool is None:
             self._opening_pool = ProcessPoolExecutor(max_workers=self.opening.workers, initializer=worker_init)
             self._opening_pool_workers = self.opening.workers
-        return list(self._opening_pool.map(function, jobs))
+        try:
+            return list(self._opening_pool.map(function, jobs))
+        except BrokenProcessPool:
+            self._close_opening_pool()  # a dead worker: the next plan starts a fresh pool
+            raise
 
     def _opening_cue(self, state) -> OpeningCue | None:
         if not self.opening.enabled:
@@ -494,7 +511,12 @@ class OverlayController:
                                                  base_s=state.time_s-spawn.time_s)
             self._deviation_since = None
         self._opening_schedule(state, spawn)
-        return opening_cue(self._opening_plan, spawn, state)
+        result = opening_cue(self._opening_plan, spawn, state)
+        if self._opening_blocker and self._opening_plan is None:
+            # Missing input (aircraft, missile, mass): the default climb arrow stays, the text says what to set.
+            result = replace(result, lines=(f"全加力 爬升 {DEFAULT_CLIMB_DEG:.0f}° · 还不能计算", self._opening_blocker,
+                                            *result.lines[1:]))
+        return result
 
     def _opening_schedule(self, state, spawn):
         """Start a plan: the first one, every REPLAN_S, or when the flown state has left the plan for
@@ -503,8 +525,16 @@ class OverlayController:
             return
         t = state.time_s-spawn.time_s
         plan = self._opening_plan
+        profile = find_aircraft(state.aircraft_id) if state.aircraft_id else None
+        mass, _ = self._reference_mass(state)
+        # Missing input is re-checked every sample (planning starts as soon as it is set), never stored as a plan.
+        self._opening_blocker = (
+            "请在“进攻辅助”里选择导弹" if not self.opening.missile else
+            f"8111 没给机型：{self._guess.note or '正在按最大油量和推力识别'}，也可在设置“机型”里选" if not state.aircraft_id else
+            f"没有 {state.aircraft_id} 的 FM" if profile is None else
+            "缺少总质量：在设置里填总质量或挂载" if not valid_number(mass) or mass <= 0 else "")
         path = path_angle_deg(state)
-        if path is None:
+        if self._opening_blocker or path is None:
             return
         if plan is not None:
             if not plan.available:
@@ -522,14 +552,6 @@ class OverlayController:
                        and t-plan.base_s >= MIN_REPLAN_S)
                 if not (late or off):
                     return
-        profile = find_aircraft(state.aircraft_id)
-        mass, _ = self._reference_mass(state)
-        reason = ("请在设置里选择导弹" if not self.opening.missile else
-                  f"没有 {state.aircraft_id} 的 FM" if profile is None else
-                  "缺少总质量：请等待遥测或在设置里填写" if not valid_number(mass) or mass <= 0 else "")
-        if reason:
-            self._opening_plan = OpeningPlan(False, reason, base_s=t)
-            return
         hint = (plan.climb_deg, plan.pull_s) if plan is not None and plan.available else None
         request = PlanRequest(profile.id, float(mass), self.opening.missile, self.opening, spawn.altitude_m,
                               spawn.tas_mps, t, self._reckoning.x, state.altitude_m, state.tas_mps, path, hint)
@@ -576,7 +598,8 @@ class OverlayController:
         if self.mode == "demo":
             status = "合成演示 · 未连接游戏"
         elif state.valid and not state.aircraft_id and INDICATORS_MISSING in state.notes:
-            status = "8111 已连接，但没有机型（/indicators 无效）· 请在设置里手动选择机型"
+            status = (f"8111 已连接，没有机型（/indicators 无效）· {self._guess.note or '正在按最大油量和推力识别'}"
+                      "；也可在设置里手动选择")
         elif state.valid:
             status = "8111 已连接 · 能量速率为滚动窗口估计"
         else:

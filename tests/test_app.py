@@ -114,7 +114,19 @@ class AppIntegrationTests(unittest.TestCase):
         self.client.state = replace(self.client.state, **missing)
         snapshot = auto.tick(auto._started_at)
         self.assertIsNone(snapshot.state.aircraft_id)
-        self.assertIn("手动选择机型", snapshot.status)
+        self.assertIn("手动选择", snapshot.status)
+
+    def test_without_indicators_the_type_is_identified_from_the_state(self):
+        from wt_overlay.telemetry import INDICATORS_MISSING
+        raw = {"Mfuel0, kg": 9400, "thrust 1, kgs": 6561, "thrust 2, kgs": 6561, "throttle 1, %": 100}
+        controller = self.controller()
+        start = controller._started_at
+        for k in range(6):
+            self.client.state = replace(self.client.state, aircraft_id=None, notes=(INDICATORS_MISSING,),
+                                        raw_state=raw, altitude_m=2888., tas_mps=1013/3.6, fuel_kg=7271.)
+            snapshot = controller.tick(start+.6*k)
+        self.assertEqual(snapshot.state.aircraft_id, "j_16")
+        self.assertIn("歼-16", snapshot.model_name)
 
     def test_prediction_needs_total_mass_and_mass_change_invalidates_cache(self):
         controller = self.controller(model_path=SAMPLE)

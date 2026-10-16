@@ -128,6 +128,22 @@ class OverlayTests(unittest.TestCase):
         self.ui.restart_opening()
         self.assertEqual(self.commands[-1], {"action": "opening_restart"})
 
+    def test_manual_aircraft_choice_is_kept_across_restarts(self):
+        box = self.ui.settings_window.aircraft_box
+        box.setCurrentIndex(box.findData("su_27sm"))
+        self.ui.settings_window.select_aircraft(box.currentIndex())
+        self.assertEqual(self.commands[-1], {"action": "aircraft", "id": "su_27sm"})
+        self.ui.close()
+        self.commands.clear()
+        self.ui = self.make_ui()
+        self.assertIn({"action": "aircraft", "id": "su_27sm"}, self.commands)
+        box = self.ui.settings_window.aircraft_box
+        self.ui.settings_window.select_aircraft(box.findData("auto"))
+        self.ui.close()
+        self.commands.clear()
+        self.ui = self.make_ui()
+        self.assertFalse(any(c["action"] == "aircraft" for c in self.commands))
+
     def test_opening_arrow_draws_each_phase(self):
         self.ui.set_opening_enabled(True)
         group = self.ui.groups["opening"]
