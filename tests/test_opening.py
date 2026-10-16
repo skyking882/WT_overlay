@@ -17,7 +17,7 @@ from wt_overlay.opening import (DeadReckoning, OpeningPlan, OpeningSettings, Pla
                                 SpawnLatch, cue, loft_rule, plan_opening, validate_settings, velocity_frame_direction,
                                 worker_init)
 
-MISSILE_SIM = Path(__file__).resolve().parents[2]/"missle_sim"
+from wt_overlay.engagement import DEFAULT_MISSILE_SIM as MISSILE_SIM   # the submodule, else ../missle_sim
 HAVE_MISSILE_SIM = (MISSILE_SIM/"src"/"aim120_model").exists()
 
 

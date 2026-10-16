@@ -13,7 +13,8 @@ from wt_overlay.sandbox import SandboxServer, SandboxSession, set_order
 from wt_overlay.sandbox_replay import MAX_GAP_S, REFLY_MAX_AGE_S, ReplayTrack, build_fork, fork_t0
 
 ROOT = Path(__file__).resolve().parents[1]
-HAVE_MODELS = (ROOT.parent/"missle_sim"/"src"/"aim120_model").exists()
+from wt_overlay.engagement import DEFAULT_MISSILE_SIM  # submodule, else ../missle_sim
+HAVE_MODELS = (DEFAULT_MISSILE_SIM/"src"/"aim120_model").exists()
 WT_REAL = ROOT/"outputs"/"engagements"/"wt_real"
 
 PLANE_COLUMNS = ["id", "x", "y", "z", "vx", "vy", "vz", "heading_deg", "missiles", "chaff", "phase"]

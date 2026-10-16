@@ -13,7 +13,8 @@ from wt_overlay.flight import SUBSTEP_S
 from wt_overlay.rl_env import ScriptController
 from wt_overlay.sim import build_simulation, load_scenario, main, result_document, validate_scenario
 
-HAVE_MISSILE_SIM = (Path(__file__).resolve().parents[2]/"missle_sim"/"src"/"aim120_model").exists()
+from wt_overlay.engagement import DEFAULT_MISSILE_SIM  # submodule, else ../missle_sim
+HAVE_MISSILE_SIM = (DEFAULT_MISSILE_SIM/"src"/"aim120_model").exists()
 
 
 class ScenarioTests(unittest.TestCase):

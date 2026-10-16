@@ -266,13 +266,14 @@ MISSILE_SIM_ENV = "WT_MISSILE_SIM"
 
 
 def missile_sim_root():
-    """Where missile_sim is: $WT_MISSILE_SIM, else next to WT_overlay as missle_sim (the local folder name) or
-    missile_sim (the GitHub repository name). It must be a version whose public API exports the stepping runtime
-    (create_surface_missile); the GitHub branches as of 2026-10-16 do not."""
+    """Where missile_sim is: $WT_MISSILE_SIM, else the in-repo submodule missile_sim/ (git submodule update
+    --init), else next to WT_overlay as missle_sim (the local folder name) or missile_sim (the GitHub repository
+    name). It must be a version whose public API exports the stepping runtime (create_surface_missile): the
+    submodule's branch wt-overlay-runtime does, the older GitHub branches main and dev do not."""
     from pathlib import Path
-    parent = Path(__file__).resolve().parents[2]
+    here = Path(__file__).resolve()
     candidates = [Path(os.environ[MISSILE_SIM_ENV])] if os.environ.get(MISSILE_SIM_ENV) else []
-    candidates += [parent/"missle_sim", parent/"missile_sim"]
+    candidates += [here.parents[1]/"missile_sim", here.parents[2]/"missle_sim", here.parents[2]/"missile_sim"]
     old = []
     for root in candidates:
         api = root/"src"/"aim120_model"/"public_api.py"
@@ -281,10 +282,11 @@ def missile_sim_root():
                 return root
             old.append(root)
     if old:
-        raise FileNotFoundError(f"{old[0]} 里的 missile_sim 版本太旧（没有步进接口 create_surface_missile），"
-                                "需要开发版（Mac 上的 missle_sim）")
-    raise FileNotFoundError("没找到 missile_sim：应放在 WT_overlay 旁边，文件夹名 missle_sim 或 missile_sim，"
-                            f"或用环境变量 {MISSILE_SIM_ENV} 指定（找过：{'、'.join(str(c) for c in candidates)}）")
+        raise FileNotFoundError(f"{old[0]} 里的 missile_sim 版本太旧（没有步进接口 create_surface_missile）；"
+                                "在 WT_overlay 目录运行 git submodule update --init 用仓库内的版本")
+    raise FileNotFoundError("没找到 missile_sim：在 WT_overlay 目录运行 git submodule update --init"
+                            f"（start_windows.cmd 会自动做），或用环境变量 {MISSILE_SIM_ENV} 指定"
+                            f"（找过：{'、'.join(str(c) for c in candidates)}）")
 
 
 def _library():

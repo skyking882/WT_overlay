@@ -77,7 +77,10 @@ FRAME_TICKS = 12               # 0.25 s replay frames
 TRIM_ROWS_TICKS = 96           # missile_sim keeps every sample; drop old ones so concurrent missiles stay small
 CHAFF_LIFETIME_S = 15.         # missile_sim chaff.ChaffSpec.lifetime_s
 STT_TRACK = -1                 # Action.fire value meaning "the STT target"
-DEFAULT_MISSILE_SIM = Path(__file__).resolve().parents[2]/"missle_sim"
+# missile_sim: the in-repo submodule (git submodule update --init), else a sibling checkout named missle_sim.
+_IN_REPO_MISSILE_SIM = Path(__file__).resolve().parents[1]/"missile_sim"
+DEFAULT_MISSILE_SIM = (_IN_REPO_MISSILE_SIM if (_IN_REPO_MISSILE_SIM/"src"/"aim120_model").exists()
+                       else Path(__file__).resolve().parents[2]/"missle_sim")
 LAUNCH_OPTIONS = dict(observation_mode="sensor_track", loft=True, clutter_model="look_down_angle",
                       clutter_min_depression_deg=2., cw_on_clear_beam=True, require_seeker_lock=True)
 KILL_EVENTS = ("fuse",)

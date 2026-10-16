@@ -19,6 +19,12 @@ echo Installing the transparent HUD interface. First run requires internet acces
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto failed
 
+rem missile_sim is a git submodule (the opening-shot planner and the sandbox need it).
+if exist ".gitmodules" (
+    where git >nul 2>nul
+    if not errorlevel 1 git submodule update --init
+)
+
 :launch
 for %%A in (%*) do (
     if /i "%%~A"=="--headless" goto console

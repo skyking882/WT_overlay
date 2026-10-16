@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-MISSILE_SIM = ROOT.parent/"missle_sim"
+from wt_overlay.engagement import DEFAULT_MISSILE_SIM as MISSILE_SIM  # submodule, else ../missle_sim
 HAVE_MISSILE_SIM = (MISSILE_SIM/"src"/"aim120_model"/"surface_runtime.py").exists()
 
 from wt_overlay import archetypes, match  # noqa: E402

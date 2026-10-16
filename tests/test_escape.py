@@ -9,7 +9,7 @@ from wt_overlay.escape import EvasionPilot, FMEvader, Perception, fm_evader_fact
 from wt_overlay.fm import load_aircraft
 from wt_overlay.turn import ManeuverModel, norm
 
-MISSILE_SIM = Path(__file__).resolve().parents[2]/"missle_sim"
+from wt_overlay.engagement import DEFAULT_MISSILE_SIM as MISSILE_SIM  # submodule, else ../missle_sim
 
 
 class HeadOn:

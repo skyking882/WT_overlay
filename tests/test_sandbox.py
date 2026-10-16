@@ -16,7 +16,8 @@ from wt_overlay.sandbox import (SandboxServer, SandboxSession, analysis_snapshot
                                 preset, set_order, validate_sandbox)
 from wt_overlay.sim import build_simulation, validate_scenario
 
-HAVE_MODELS = (Path(__file__).resolve().parents[2]/"missle_sim"/"src"/"aim120_model").exists()
+from wt_overlay.engagement import DEFAULT_MISSILE_SIM  # submodule, else ../missle_sim
+HAVE_MODELS = (DEFAULT_MISSILE_SIM/"src"/"aim120_model").exists()
 
 
 class ScenarioTests(unittest.TestCase):
