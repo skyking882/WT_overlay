@@ -1899,6 +1899,8 @@ class OverlayApp:
             state = snapshot.state
             if snapshot.mode == "demo":
                 model_text = "演示模式：请手动选择机型"
+            elif state is not None and state.valid and not state.aircraft_id and any("/indicators" in n for n in state.notes):
+                model_text = "自动识别：8111 没有提供机型（/indicators 无效），请在上面手动选择机型"
             elif state is None or not state.valid or not state.aircraft_id:
                 model_text = "自动识别：等待游戏机型"
             elif snapshot.model_name == "未加载 FM":

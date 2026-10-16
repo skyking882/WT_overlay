@@ -19,7 +19,7 @@ from .energy import EnergyEstimator
 from .fm import load_aircraft, load_model
 from .fm.catalog import aircraft_key, find_aircraft
 from .planning import scan_sep
-from .telemetry import TelemetryClient
+from .telemetry import INDICATORS_MISSING, TelemetryClient
 from .turn import TurnSession, validate_settings
 from .attitude import AttitudeEstimator
 from .opening import (DEVIATION_HOLD_S, FREEZE_BEFORE_PULL_S, MIN_REPLAN_S, REPLAN_S, Cancelled, DeadReckoning, OpeningCue,
@@ -260,6 +260,15 @@ class OverlayController:
                         self.model_selection = self.model.info.aircraft_id
                     except (OSError, ValueError) as exc:
                         self._settings_error = f"FM 未加载：{exc}"
+
+    def _fill_identity(self, state: FlightState) -> FlightState:
+        """Only when 8111's whole /indicators payload is invalid (no type to check against) does a manually selected
+        aircraft stand in for the type; an unknown type in a valid payload still keeps the model off."""
+        if (state.valid and not state.aircraft_id and INDICATORS_MISSING in state.notes and self.model is not None
+                and self.model_selection != "auto" and self.mode == "live"):
+            return replace(state, aircraft_id=self.model.info.aircraft_id,
+                           notes=(*state.notes, f"8111 没有机型，按设置里选的 {self.model.info.name} 计算"))
+        return state
 
     def _select_live_aircraft(self, state: FlightState) -> None:
         if self.model_selection != "auto" or self.mode != "live":
@@ -535,7 +544,7 @@ class OverlayController:
         self._apply_commands()
         now = time.monotonic() if now is None else now
         state = (make_demo_sample(now-self._started_at) if self.mode == "demo"
-                 else self.client.poll(time_s=now))
+                 else self._fill_identity(self.client.poll(time_s=now)))
         turn_state = self._attitude.update(state, calibrate_sign=self._pose_calibration_sign)
         self._pose_calibration_sign = None
         self._select_live_aircraft(state)
@@ -566,6 +575,8 @@ class OverlayController:
             turn = replace(turn, phase="需要校准", reason=self._attitude.reason)
         if self.mode == "demo":
             status = "合成演示 · 未连接游戏"
+        elif state.valid and not state.aircraft_id and INDICATORS_MISSING in state.notes:
+            status = "8111 已连接，但没有机型（/indicators 无效）· 请在设置里手动选择机型"
         elif state.valid:
             status = "8111 已连接 · 能量速率为滚动窗口估计"
         else:

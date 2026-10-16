@@ -101,6 +101,21 @@ class AppIntegrationTests(unittest.TestCase):
             self.assertIsNone(snapshot.advice.current)
             self.assertIsNone(snapshot.advice.best)
 
+    def test_without_indicators_a_manually_chosen_aircraft_stands_in(self):
+        from wt_overlay.telemetry import INDICATORS_MISSING
+        missing = dict(aircraft_id=None, notes=(INDICATORS_MISSING,), fuel_kg=5000.)
+        controller = self.controller(aircraft="su_27sm", mass_kg=23000)
+        start = controller._started_at
+        self.client.state = replace(self.client.state, **missing)
+        snapshot = controller.tick(start)
+        self.assertEqual(snapshot.state.aircraft_id, controller.model.info.aircraft_id)
+        self.assertTrue(snapshot.advice.available)
+        auto = self.controller()
+        self.client.state = replace(self.client.state, **missing)
+        snapshot = auto.tick(auto._started_at)
+        self.assertIsNone(snapshot.state.aircraft_id)
+        self.assertIn("手动选择机型", snapshot.status)
+
     def test_prediction_needs_total_mass_and_mass_change_invalidates_cache(self):
         controller = self.controller(model_path=SAMPLE)
         start = controller._started_at

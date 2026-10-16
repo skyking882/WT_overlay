@@ -305,7 +305,8 @@ def _own_track(aircraft, mass, t0, x0, h0, v0, path0, climb_deg, t_end):
     g = math.radians(path0)
     plane = Aircraft(aircraft_model(aircraft, mass_kg=mass), (x0, 0., h0), (v0*math.cos(g), 0., v0*math.sin(g)),
                      t0=t0, keep_history=True)
-    command = FlightCommand(heading_deg=90., altitude_m=CLIMB_CAP_M, max_climb_deg=climb_deg, floor_m=100.)
+    # Never a descent: from above the cap (a manual 'now' high up) the climb holds the current altitude.
+    command = FlightCommand(heading_deg=90., altitude_m=max(CLIMB_CAP_M, h0), max_climb_deg=climb_deg, floor_m=100.)
     while plane.time < t_end:
         plane.step(command)
     return tuple((s.position, s.velocity, s.normal) for s in plane.states)
@@ -591,7 +592,8 @@ def cue(plan: OpeningPlan | None, spawn: Spawn | None, state, note="") -> Openin
         wanted = plan.pitch_deg if plan.pitch_deg is not None else plan.climb_deg
         lines = ("发射！", f"窗口到 T+{plan.window_s[1]:.0f} s · 目标约 {plan.launch_range_m/1000:.0f} km"
                            f" · 预计 T+{plan.hit_s:.0f} s 命中")
-    if state.valid and state.altitude_m is not None and state.altitude_m >= CLIMB_CAP_M-200. and phase == "爬升":
+    if (state.valid and state.altitude_m is not None and phase == "爬升"
+            and state.altitude_m >= max(CLIMB_CAP_M, spawn.altitude_m)-200.):
         wanted = 0.
     path = path_angle_deg(state) if state.valid else None
     if path is None:

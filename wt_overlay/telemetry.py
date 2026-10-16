@@ -43,6 +43,9 @@ def _bad_numbers(value: object) -> bool:
     return False
 
 
+INDICATORS_MISSING = '8111 /indicators 无效：没有机型、罗盘和地平仪读数，只用 /state'
+
+
 def parse_telemetry(state: Mapping, indicators: Mapping, time_s: float) -> FlightState:
     """Parse SI state; missing optional data remain None, missing core data invalidate."""
     timestamp = _number({'t': time_s}, 't')
@@ -50,8 +53,13 @@ def parse_telemetry(state: Mapping, indicators: Mapping, time_s: float) -> Fligh
         return FlightState(0.0, False, notes=('Invalid telemetry timestamp',))
     if not isinstance(state, Mapping) or not isinstance(indicators, Mapping):
         return FlightState(timestamp, False, notes=('Invalid telemetry payload',))
-    if state.get('valid') is not True or indicators.get('valid') is not True:
+    if state.get('valid') is not True:
         return FlightState(timestamp, False, notes=('No active flight telemetry',))
+    # /indicators can stay {"valid": false} while /state is live (seen 2026-10-16 in a test flight, a twin-engine
+    # jet with 9400 kg of fuel): keep the flight state; type, compass and horizon are then missing.
+    indicators_valid = indicators.get('valid') is True
+    if not indicators_valid:
+        indicators = {}
     if indicators.get('army') in ('tank', 'ship', 'boat'):
         return FlightState(timestamp, False, notes=('Telemetry is not an aircraft',))
     if _bad_numbers(state) or _bad_numbers(indicators):
@@ -84,6 +92,8 @@ def parse_telemetry(state: Mapping, indicators: Mapping, time_s: float) -> Fligh
     aircraft = indicators.get('type')
     aircraft = aircraft.strip() if isinstance(aircraft, str) else None
     notes = ('Body Ny is retained as raw telemetry, not interpreted as L/W.',) if 'Ny' in state else ()
+    if not indicators_valid:
+        notes += (INDICATORS_MISSING,)
     return FlightState(
         timestamp, True, altitude_m=altitude, tas_mps=tas / 3.6,
         ias_mps=ias / 3.6 if ias is not None and ias >= 0 else None,

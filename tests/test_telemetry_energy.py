@@ -43,6 +43,19 @@ class TelemetryTests(unittest.TestCase):
         self.assertFalse(parse_telemetry({'valid': True, 'H, m': 1, 'TAS, km/h': 1},
                                          {'valid': True, 'army': 'tank'}, 0).valid)
 
+    def test_state_without_indicators_stays_valid(self):
+        # Seen in game 2026-10-16: /indicators {"valid": false} while /state is live.
+        from wt_overlay.telemetry import INDICATORS_MISSING
+        state = {'valid': True, 'H, m': 2888, 'TAS, km/h': 1013, 'Vy, m/s': 0.1, 'Mfuel, kg': 7271,
+                 'thrust 1, kgs': 6561, 'thrust 2, kgs': 6561}
+        parsed = parse_telemetry(state, {'valid': False}, 1.0)
+        self.assertTrue(parsed.valid)
+        self.assertEqual((parsed.altitude_m, parsed.fuel_kg), (2888, 7271))
+        self.assertIsNone(parsed.aircraft_id)
+        self.assertIsNone(parsed.heading_deg)
+        self.assertIn(INDICATORS_MISSING, parsed.notes)
+        self.assertNotIn(INDICATORS_MISSING, parse_telemetry(state, {'valid': True, 'type': 'j_16'}, 1.0).notes)
+
     def test_local_endpoint_restrictions(self):
         for url in ('http://example.com:8111', 'https://127.0.0.1:8111',
                     'http://127.0.0.1:8111/path', 'http://u:p@127.0.0.1:8111',
