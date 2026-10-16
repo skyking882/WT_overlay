@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import math
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -22,6 +22,9 @@ from .planning import scan_sep
 from .telemetry import TelemetryClient
 from .turn import TurnSession, validate_settings
 from .attitude import AttitudeEstimator
+from .opening import (DEVIATION_HOLD_S, FREEZE_BEFORE_PULL_S, MIN_REPLAN_S, REPLAN_S, Cancelled, DeadReckoning, OpeningCue,
+                      OpeningPlan, OpeningSettings, PlanRequest, SpawnLatch, cue as opening_cue, deviates,
+                      path_angle_deg, plan_opening, validate_settings as validate_opening, worker_init)
 
 
 def positive(value: object, label: str) -> float:
@@ -106,6 +109,17 @@ class OverlayController:
         self._turn_session = TurnSession()
         self._attitude = AttitudeEstimator()
         self._pose_calibration_sign = None
+        self.opening = OpeningSettings()
+        self._latch = SpawnLatch()
+        self._reckoning = None
+        self._opening_plan = None
+        self._opening_future = None
+        self._opening_cancel = None
+        self._opening_thread = None
+        self._opening_pool = None
+        self._opening_pool_workers = 0
+        self._deviation_since = None
+        self._opening_restart = False
         self._snapshot = OverlaySnapshot(mode, "等待首个数据样本", mass_override_kg=self.mass_kg,
                                          payload_kg=self.payload_kg,
                                          afterburner=afterburner, model_selection=self.model_selection,
@@ -157,6 +171,13 @@ class OverlayController:
         elif action == "pose_calibrate":
             if type(command.get("roll_sign")) is not int or command["roll_sign"] not in (-1, 1):
                 raise ValueError("请选择滚转率方向")
+        elif action == "opening":
+            try:
+                validate_opening(OpeningSettings(**command["settings"]))
+            except (TypeError, KeyError) as exc:
+                raise ValueError("开局抽奖设置无效") from exc
+        elif action == "opening_restart":
+            pass
         else:
             raise ValueError("未知设置命令")
         try:
@@ -174,6 +195,9 @@ class OverlayController:
             action = command["action"]
             if command["action"] in ("mode", "mass", "payload", "afterburner", "sweep", "model", "aircraft"):
                 self._turn_session.invalidate()
+            if action.startswith("opening"):
+                self._apply_opening(command)
+                continue
             if (not action.startswith("turn_") and action != "pose_calibrate"
                     or action == "turn_enabled" and command["enabled"]):
                 self._reset_climb()
@@ -393,6 +417,117 @@ class OverlayController:
         return self._turn_session.update(state, self.model, mass, self.afterburner,
                                          self.sweep_fraction, self.turn_settings)
 
+    # -- opening shot (docs/opening_shot_spec.md) ---------------------------------------------------------------
+
+    def _apply_opening(self, command):
+        if command["action"] == "opening_restart":
+            self._opening_restart = True
+            return
+        settings = OpeningSettings(**command["settings"])
+        old, self.opening = self.opening, settings
+        if not settings.enabled:
+            self._reset_opening(spawn=True)
+            self._close_opening_pool()
+        elif replace(old, enabled=True) != settings:
+            self._reset_opening()  # a new scenario: plan again from the next sample
+            if settings.workers != self._opening_pool_workers:
+                self._close_opening_pool()
+
+    def _reset_opening(self, spawn=False):
+        if self._opening_cancel is not None:
+            self._opening_cancel.set()
+        self._opening_future = self._opening_cancel = None
+        self._opening_plan = None
+        self._deviation_since = None
+        if spawn:
+            self._latch.reset()
+            self._reckoning = None
+
+    def _close_opening_pool(self):
+        if self._opening_pool is not None:
+            self._opening_pool.shutdown(wait=False, cancel_futures=True)
+            self._opening_pool = None
+            self._opening_pool_workers = 0
+
+    def _opening_run(self, function, jobs):
+        if self._opening_pool is None:
+            self._opening_pool = ProcessPoolExecutor(max_workers=self.opening.workers, initializer=worker_init)
+            self._opening_pool_workers = self.opening.workers
+        return list(self._opening_pool.map(function, jobs))
+
+    def _opening_cue(self, state) -> OpeningCue | None:
+        if not self.opening.enabled:
+            return None
+        if self._opening_restart:
+            self._opening_restart = False
+            spawn = self._latch.latch(state)
+        else:
+            spawn = self._latch.update(state)
+        if spawn is not None:
+            self._reset_opening()
+            self._reckoning = DeadReckoning(spawn)
+        spawn = self._latch.spawn
+        if spawn is None:
+            return opening_cue(None, None, state, self._latch.note)
+        if not state.valid:
+            return OpeningCue("无数据", lines=("开局抽奖 · 等待飞行数据",))
+        self._reckoning.update(state)
+        if self._opening_future is not None and self._opening_future.done():
+            future, self._opening_future = self._opening_future, None
+            try:
+                self._opening_plan = future.result()
+            except Cancelled:
+                pass
+            except Exception as exc:  # A worker failure (no missile_sim, no FM, ...) is shown, never raised.
+                self._opening_plan = OpeningPlan(False, f"计算失败：{type(exc).__name__}: {exc}",
+                                                 base_s=state.time_s-spawn.time_s)
+            self._deviation_since = None
+        self._opening_schedule(state, spawn)
+        return opening_cue(self._opening_plan, spawn, state)
+
+    def _opening_schedule(self, state, spawn):
+        """Start a plan: the first one, every REPLAN_S, or when the flown state has left the plan for
+        DEVIATION_HOLD_S (at most every MIN_REPLAN_S); never in the last FREEZE_BEFORE_PULL_S before the pull-up."""
+        if self._opening_future is not None:
+            return
+        t = state.time_s-spawn.time_s
+        plan = self._opening_plan
+        path = path_angle_deg(state)
+        if path is None:
+            return
+        if plan is not None:
+            if not plan.available:
+                if t-plan.base_s < REPLAN_S:
+                    return
+            elif t >= plan.pull_s-FREEZE_BEFORE_PULL_S:
+                return
+            else:
+                if deviates(plan, state, t):
+                    self._deviation_since = t if self._deviation_since is None else self._deviation_since
+                else:
+                    self._deviation_since = None
+                late = t-plan.base_s >= REPLAN_S
+                off = (self._deviation_since is not None and t-self._deviation_since >= DEVIATION_HOLD_S
+                       and t-plan.base_s >= MIN_REPLAN_S)
+                if not (late or off):
+                    return
+        profile = find_aircraft(state.aircraft_id)
+        mass, _ = self._reference_mass(state)
+        reason = ("请在设置里选择导弹" if not self.opening.missile else
+                  f"没有 {state.aircraft_id} 的 FM" if profile is None else
+                  "缺少总质量：请等待遥测或在设置里填写" if not valid_number(mass) or mass <= 0 else "")
+        if reason:
+            self._opening_plan = OpeningPlan(False, reason, base_s=t)
+            return
+        hint = (plan.climb_deg, plan.pull_s) if plan is not None and plan.available else None
+        request = PlanRequest(profile.id, float(mass), self.opening.missile, self.opening, spawn.altitude_m,
+                              spawn.tas_mps, t, self._reckoning.x, state.altitude_m, state.tas_mps, path, hint)
+        if self._opening_thread is None:
+            self._opening_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wt-opening")
+        self._opening_cancel = Event()
+        self._opening_future = self._opening_thread.submit(plan_opening, request, self._opening_run,
+                                                           self._opening_cancel)
+
     def tick(self, now: float | None = None) -> OverlaySnapshot:
         """Perform one sampling cycle, on the worker (or synchronously in tests)."""
         self._apply_commands()
@@ -419,6 +554,7 @@ class OverlayController:
             self._advice = self._predict(state)
             self._last_prediction = now
         climb = self._climb_guidance(state, energy)
+        opening = self._opening_cue(state)
         turn = self._turn_guidance(turn_state)
         if turn is not None and self._attitude.estimated:
             turn = replace(turn, estimated_pitch_deg=turn_state.pitch_deg,
@@ -450,7 +586,7 @@ class OverlayController:
             self.climb_enabled, self.climb_request, climb, self.model_selection,
             self.sweep_fraction, bool(self.model and getattr(self.model, "wings", ())),
             self.turn_enabled, self.turn_settings, turn, self._attitude.reason,
-            mass, source, self.payload_kg)
+            mass, source, self.payload_kg, opening=opening)
         with self._lock:
             self._snapshot = snapshot
             self._published_at = time.monotonic()
@@ -467,7 +603,9 @@ class OverlayController:
                            climb=ClimbGuidance(phase="等待数据") if snapshot.climb_enabled else None,
                            turn=replace(snapshot.turn, available=False, phase="等待数据", action="",
                                         duration_s=None, next_action="", step_remaining_s=None,
-                                        progress_stale=True) if snapshot.turn else None)
+                                        progress_stale=True) if snapshot.turn else None,
+                           opening=OpeningCue("无数据", lines=("开局抽奖 · 等待飞行数据",))
+                           if snapshot.opening is not None else None)
         return snapshot
 
     def _run(self) -> None:
@@ -506,6 +644,11 @@ class OverlayController:
         if self._thread:
             self._thread.join(timeout=2.0)
         self._reset_climb()
+        self._reset_opening()
+        self._close_opening_pool()
+        if self._opening_thread is not None:
+            self._opening_thread.shutdown(wait=False, cancel_futures=True)
+            self._opening_thread = None
         self._turn_session.close()
         if self._planner is not None:
             self._planner.shutdown(wait=False, cancel_futures=True)

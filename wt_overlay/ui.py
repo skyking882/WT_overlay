@@ -13,6 +13,7 @@ import math
 import json
 from dataclasses import asdict, replace
 import sys
+import time
 from typing import Callable
 
 try:
@@ -31,19 +32,22 @@ from . import pk
 from .fm.catalog import aircraft_catalog, find_aircraft
 from .hud import INDICATORS, HudContent, contents, details
 from .lowalt import LowAltLibrary
+from .opening import OpeningSettings, validate_settings as validate_opening
 from .offense import MODES, REACH_P, SKILLS, OffenseAdvisor, available, course_for_blip_direction
 from .windows import GameWindow, WindowsDesktop
 from .turn import validate_settings
 
 
 GROUPS = {"flight": "飞行状态", "energy": "实际能量", "engine": "动力与燃油", "reference": "静态参考",
-          "climb": "爬升引导", "turn": "转向引导", "rose": "进攻动向图", "scope": "B 显发射区", "side": "高度侧视图"}
+          "climb": "爬升引导", "turn": "转向引导", "rose": "进攻动向图", "scope": "B 显发射区", "side": "高度侧视图",
+          "opening": "开局抽奖"}
 DEFAULT_POSITIONS = {"flight": (0.03, 0.22), "energy": (0.03, 0.60),
                      "engine": (0.73, 0.30), "reference": (0.73, 0.60), "climb": (0.42, 0.65),
-                     "turn": (0.42, 0.65), "rose": (0.80, 0.78), "scope": (0.80, 0.40), "side": (0.80, 0.15)}
+                     "turn": (0.42, 0.65), "rose": (0.80, 0.78), "scope": (0.80, 0.40), "side": (0.80, 0.15),
+                     "opening": (0.50, 0.28)}
 HOTKEYS = {"O": "显示 / 隐藏 HUD", "L": "进入 / 退出布局", "S": "打开设置", "C": "开关爬升引导",
            "T": "开关转向引导", "R": "重新开始转向", "A": "平翼校准", "K": "开关进攻动向图",
-           "B": "开关 B 显发射区", "V": "开关高度侧视图"}
+           "B": "开关 B 显发射区", "V": "开关高度侧视图", "P": "开关开局抽奖", "N": "开局抽奖：以现在为出生"}
 # Hit probability if fired now: from 50 % red, from 25 % amber, else grey; dark when the missile cannot reach.
 ROSE_BANDS = ((0.5, QColor(226, 75, 74, 190)), (0.25, QColor(239, 159, 39, 170)))
 ROSE_SLOW = QColor(95, 94, 90, 140)
@@ -59,6 +63,10 @@ LOWALT_STYLES = {"band_reference": "带 + 最差距离 + 20 m 参考", "band_wor
 ENEMY_AIRCRAFT = ("f_16c_block_50", "su_27sm", "j_11b", "su_30sm", "mig_29_9_13", "f_15c_msip2", "j_10c",
                   "ef_2000_typhoon_aesa", "rafale_c_f3", "saab_jas39c", "fa_18c_late", "mirage_2000_5f")
 TARGET_SPEEDS_KMH = (800, 900, 1000, 1100, 1200, 1300)
+# Opening-shot arrow: colour per phase, the B-scope launch-range line.
+OPENING_COLORS = {"计算中": "#9aa7b0", "爬升": "#f1f5f8", "拉起": "#EF9F27", "发射": "#E24B4A"}
+OPENING_LINE_COLOR = "#B58CFF"
+OPENING_LINE_PHASES = ("爬升", "拉起", "发射")
 SCOPE_RANGES_KM = (10, 20, 40, 80, 160)
 SCOPE_AZIMUTHS_DEG = (30, 45, 60, 70)
 MISSILE_NAMES = {"cn_pl12": "PL-12", "cn_pl12a": "PL-12A", "su_r_77": "R-77", "su_r_77_1": "R-77-1",
@@ -377,7 +385,14 @@ class ScopeGroup(HudGroup):
         self.box = (260, 260)
         self._resize = None
         self.lowalt, self.lowalt_style, self.lowalt_note = None, "band_reference", ""
+        self.opening_range_m = None
         super().__init__(key, font, color)
+
+    def set_opening(self, range_m):
+        """Opening-shot aid: the planned launch range as a line (None = none)."""
+        if range_m != self.opening_range_m:
+            self.opening_range_m = range_m
+            self.update()
 
     def set_envelope(self, envelope, scale_m, half_azimuth_deg):
         if (envelope, scale_m, half_azimuth_deg) != (self.envelope, self.scale_m, self.half_azimuth_deg):
@@ -396,7 +411,8 @@ class ScopeGroup(HudGroup):
         self.update()
 
     def has_data(self):
-        return self.envelope is not None or self.lowalt is not None or bool(self.lowalt_note)
+        return (self.envelope is not None or self.lowalt is not None or bool(self.lowalt_note)
+                or self.opening_range_m is not None)
 
     def _measure(self):
         super()._measure()
@@ -444,6 +460,16 @@ class ScopeGroup(HudGroup):
                     value = ">45" if self.envelope.is_capped(name) else f"{center / 1000:.0f}"
                     labels.append((("↑ " if above else "") + f"{label} {value}", color,
                                    self.small_metrics.ascent() + 2 if above else self._point(0.0, center).y() - 3))
+        if self.opening_range_m is not None:
+            y = self._point(0.0, self.opening_range_m).y()
+            above = self.opening_range_m > self.scale_m
+            if not above:
+                painter.setPen(QPen(QColor(0, 0, 0, 200), 4))
+                painter.drawLine(QPoint(0, y), QPoint(self.width(), y))
+                painter.setPen(QPen(QColor(OPENING_LINE_COLOR), 2, Qt.PenStyle.DashDotLine))
+                painter.drawLine(QPoint(0, y), QPoint(self.width(), y))
+            labels.append((("↑ " if above else "") + f"抽奖发射 {self.opening_range_m / 1000:.0f}", OPENING_LINE_COLOR,
+                           self.small_metrics.ascent() + 2 if above else y - 3))
         self._draw_labels(painter, labels)
         text = self._lowalt_text()
         if text:
@@ -673,6 +699,124 @@ class SideGroup(HudGroup):
             self._text(painter, box.x(), baseline, text, self.small_font, color)
 
 
+class ArrowGroup(HudGroup):
+    """Opening-shot flight-vector arrow (docs/opening_shot_spec.md 4.1) at a fixed screen spot, never projected
+    into the world: horizon-stabilised (screen up = world up), forward = own velocity. ``cue.direction`` is the
+    wanted direction in that frame (right, up, forward), small errors already enlarged (opening.ARROW_GAIN); it is
+    drawn as a 3D arrow seen from slightly above and behind (TILT_DEG), so 'straight on' points into the screen.
+    Text lines below come from the cue.
+    """
+    TILT_DEG = 20.
+
+    def __init__(self, key: str, font: QFont, color: str):
+        self.cue = None
+        super().__init__(key, font, color)
+
+    def set_cue(self, cue):
+        if cue != self.cue:
+            lines = (self.cue.lines if self.cue else (), cue.lines if cue else ())
+            self.cue = cue
+            if lines[0] != lines[1]:
+                self._measure()
+            self.update()
+
+    def has_data(self):
+        return self.cue is not None and self.cue.phase != "结束"
+
+    def _measure(self):
+        super()._measure()
+        self.side = max(120, round(self.metrics.height() * 7))
+        lines = self.cue.lines if self.cue else ()
+        width = max([self.side + 24, *(self.metrics.horizontalAdvance(t) + 24 for t in lines)])
+        height = 8 + self.header_height + (self.side if self.cue is not None and self.cue.active else 0)
+        height += len(lines) * self.row_height + 8
+        self.resize(min(width, max(100, self.viewport.width())), height)
+
+    def _color(self):
+        cue = self.cue
+        color = OPENING_COLORS.get(cue.phase, "#d2dee5")
+        if cue.urgent and int(time.monotonic() * 4) % 2:
+            color = "#ffffff"
+        return color
+
+    def _arrow(self, painter, center, length, color):
+        cue = self.cue
+        x, y, z = cue.direction
+        t = math.radians(self.TILT_DEG)
+        sx, sy = x, y * math.cos(t) + z * math.sin(t)
+        depth = z * math.cos(t) - y * math.sin(t)
+        norm = math.hypot(sx, sy)
+        if cue.on_course or norm < 0.12:
+            # Straight on (or within the dead band): a ring to hold the nose in; the firing cue keeps its colour.
+            ring = QColor(color) if cue.urgent or not cue.on_course else QColor("#71e3a0")
+            width = 5 if cue.urgent else 3
+            painter.setPen(QPen(QColor(0, 0, 0, 220), width + 3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(center, length * 0.22, length * 0.22)
+            painter.setPen(QPen(ring, width))
+            painter.drawEllipse(center, length * 0.22, length * 0.22)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(ring)
+            painter.drawEllipse(center, 3.5, 3.5)
+            return
+        ux, uy = sx / norm, -sy / norm             # screen direction (y down)
+        nx, ny = -uy, ux                           # its normal
+        shown = length * min(1., 0.35 + 0.65 * norm)
+        tail = QPointF(center.x() - ux * shown * 0.45, center.y() - uy * shown * 0.45)
+        tip = QPointF(center.x() + ux * shown * 0.55, center.y() + uy * shown * 0.55)
+        near, far = 1. - 0.3 * max(-1., min(1., depth)), 1. + 0.3 * max(-1., min(1., depth))
+        w_tail, w_head = length * 0.07 * (near if depth < 0 else 1.), length * 0.07 / far
+        neck = QPointF(tip.x() - ux * length * 0.22 / far, tip.y() - uy * length * 0.22 / far)
+        head = length * 0.17 / far
+        body = QPolygonF([QPointF(tail.x() + nx * w_tail, tail.y() + ny * w_tail),
+                          QPointF(neck.x() + nx * w_head, neck.y() + ny * w_head),
+                          QPointF(neck.x() + nx * head, neck.y() + ny * head), tip,
+                          QPointF(neck.x() - nx * head, neck.y() - ny * head),
+                          QPointF(neck.x() - nx * w_head, neck.y() - ny * w_head),
+                          QPointF(tail.x() - nx * w_tail, tail.y() - ny * w_tail)])
+        painter.setPen(QPen(QColor(0, 0, 0, 230), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                            Qt.PenJoinStyle.RoundJoin))
+        fill = QColor(color)
+        fill.setAlpha(235)
+        painter.setBrush(fill)
+        painter.drawPolygon(body)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if self.editing:
+            painter.fillRect(self.rect(), QColor(12, 22, 30, 110))
+            painter.setPen(QPen(QColor(self.accent), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 5, 5)
+        header = self._header()
+        if header:
+            self._text(painter, 12, 8 + self.small_metrics.ascent(), header, self.small_font, self.accent)
+        cue = self.cue
+        y = 8 + self.header_height
+        if cue is None:
+            painter.end()
+            return
+        color = self._color()
+        if cue.active:
+            center = QPointF(self.width() / 2, y + self.side / 2)
+            painter.setPen(QPen(QColor(255, 255, 255, 70), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(center.x() - self.side * 0.45, center.y()),
+                             QPointF(center.x() + self.side * 0.45, center.y()))
+            if cue.direction is not None:
+                self._arrow(painter, center, self.side * 0.9, color)
+            y += self.side
+        for index, line in enumerate(cue.lines):
+            width = self.metrics.horizontalAdvance(line)
+            self._text(painter, round((self.width() - width) / 2), y + self.metrics.ascent(), line, self.font(),
+                       color if index == 0 else "#f1f5f8")
+            y += self.row_height
+        painter.end()
+
+
 class SettingsWindow(QWidget):
     def __init__(self, owner):
         super().__init__()
@@ -711,7 +855,7 @@ class SettingsWindow(QWidget):
         self.group_boxes = {}
         group_row = QHBoxLayout()
         for key, caption in GROUPS.items():
-            if key in ("climb", "turn", "rose", "scope", "side"):
+            if key in ("climb", "turn", "rose", "scope", "side", "opening"):
                 continue
             check = QCheckBox(caption)
             check.setChecked(owner.group_enabled[key])
@@ -887,6 +1031,64 @@ class SettingsWindow(QWidget):
         restart_turn = QPushButton("重新开始转向 · Ctrl+Alt+R")
         restart_turn.clicked.connect(owner.restart_turn)
         form.addRow(restart_turn)
+        opening = QGroupBox("开局抽奖（最快命中）")
+        form = QFormLayout(opening)
+        layout.addWidget(opening)
+        settings = owner.opening_settings
+        self.opening_box = QCheckBox("启用开局抽奖 · Ctrl+Alt+P")
+        self.opening_box.setChecked(settings.enabled)
+        self.opening_box.toggled.connect(owner.set_opening_enabled)
+        form.addRow(self.opening_box)
+        self.opening_distance = QSpinBox()
+        self.opening_distance.setRange(30, 200)
+        self.opening_distance.setSuffix(" km")
+        self.opening_distance.setValue(round(settings.distance_m / 1000))
+        form.addRow("对头出生间距", self.opening_distance)
+        self.opening_enemy = QComboBox()
+        self.opening_enemy.setEditable(True)
+        self.opening_enemy.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        for aircraft in aircraft_catalog():
+            self.opening_enemy.addItem(aircraft.label, aircraft.id)
+        self.opening_enemy.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        self.opening_enemy.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.opening_enemy.setCurrentIndex(max(0, self.opening_enemy.findData(settings.enemy_aircraft)))
+        form.addRow("敌机（按 FM 飞）", self.opening_enemy)
+        self.opening_fuel = QSpinBox()
+        self.opening_fuel.setRange(5, 100)
+        self.opening_fuel.setSuffix(" % 内油")
+        self.opening_fuel.setValue(round(settings.enemy_fuel_fraction * 100))
+        form.addRow("敌机油量", self.opening_fuel)
+        self.opening_climb = QDoubleSpinBox()
+        self.opening_climb.setRange(3, 45)
+        self.opening_climb.setSuffix(" °")
+        self.opening_climb.setValue(settings.enemy_climb_deg)
+        form.addRow("敌机爬升角", self.opening_climb)
+        self.opening_level = QSpinBox()
+        self.opening_level.setRange(3000, 14000)
+        self.opening_level.setSingleStep(500)
+        self.opening_level.setSuffix(" m")
+        self.opening_level.setValue(round(settings.enemy_level_m))
+        form.addRow("敌机改平高度", self.opening_level)
+        self.opening_workers = QSpinBox()
+        self.opening_workers.setRange(1, 8)
+        self.opening_workers.setValue(settings.workers)
+        form.addRow("计算进程数", self.opening_workers)
+        row = QHBoxLayout()
+        apply_opening = QPushButton("应用")
+        apply_opening.clicked.connect(self.apply_opening_settings)
+        row.addWidget(apply_opening)
+        restart_opening = QPushButton("以现在为出生 · Ctrl+Alt+N")
+        restart_opening.clicked.connect(owner.restart_opening)
+        row.addWidget(restart_opening)
+        form.addRow(row)
+        opening_help = QLabel("对头出生、双方直线爬升后发射，只算第一发：按本机 FM 和 8111 实测质量、"
+                              "导弹（用下面“进攻辅助”选的型号）找最早命中的飞法。敌机按所选 FM 全加力等角爬升到改平高度、"
+                              "一直直飞朝你、不做反应。出生时的机头方向当作敌方方位。箭头在屏幕固定位置，"
+                              "以速度方向为前方、地平线为水平：白色 = 爬升，琥珀 = 拉起，红色闪 = 发射，绿圈 = 保持。"
+                              "B 显上的紫色点划线 = 方案发射时目标应在的距离，光点不在那附近说明敌机没按假设飞。"
+                              "数据链按全程不断计算。")
+        opening_help.setWordWrap(True)
+        form.addRow(opening_help)
         offense = QGroupBox("进攻辅助")
         form = QFormLayout(offense)
         layout.addWidget(offense)
@@ -1035,6 +1237,22 @@ class SettingsWindow(QWidget):
             return False
         return self.owner.set_climb_target(request)
 
+    def apply_opening_settings(self):
+        enemy = self.opening_enemy.currentData()
+        if enemy is None:
+            profile = find_aircraft(self.opening_enemy.currentText())
+            enemy = profile.id if profile else ""
+        settings = replace(self.owner.opening_settings, distance_m=self.opening_distance.value() * 1000.,
+                           enemy_aircraft=enemy, enemy_fuel_fraction=self.opening_fuel.value() / 100.,
+                           enemy_climb_deg=float(self.opening_climb.value()),
+                           enemy_level_m=float(self.opening_level.value()), workers=self.opening_workers.value())
+        try:
+            validate_opening(settings)
+        except ValueError as exc:
+            self.error.setText(str(exc))
+            return False
+        return self.owner.set_opening_settings(settings)
+
     def apply_turn_settings(self):
         settings = KeyboardTurnSettings(angle_deg=self.turn_angle.currentData(),
             **{key: widget.value()/factor for key, (widget, factor) in self.turn_fields.items()})
@@ -1155,9 +1373,18 @@ class OverlayApp:
         self.scope_half_azimuth_deg = self.preferences.value("offense/scope_half_azimuth_deg", 60, type=int)
         if self.scope_half_azimuth_deg not in SCOPE_AZIMUTHS_DEG:
             self.scope_half_azimuth_deg = 60
+        self.opening_settings = OpeningSettings()
+        try:
+            saved_opening = json.loads(self.preferences.value("opening/settings", "{}", type=str))
+            saved_opening = replace(OpeningSettings(**saved_opening), missile=self.offense_missile)
+            validate_opening(saved_opening)
+            self.opening_settings = saved_opening
+        except (ValueError, TypeError):
+            self.opening_settings = replace(OpeningSettings(), missile=self.offense_missile)
         self.groups, self.group_enabled = {}, {}
         for key in GROUPS:
-            group = {"rose": RoseGroup, "scope": ScopeGroup, "side": SideGroup}.get(key, HudGroup)(key, self.hud_font, self.color)
+            group = {"rose": RoseGroup, "scope": ScopeGroup, "side": SideGroup,
+                     "opening": ArrowGroup}.get(key, HudGroup)(key, self.hud_font, self.color)
             if key == "scope":
                 group.set_box(self.preferences.value("groups/scope/w", 260, type=int),
                               self.preferences.value("groups/scope/h", 260, type=int))
@@ -1180,6 +1407,8 @@ class OverlayApp:
             self.set_climb_target(self.climb_request)
         if turn_settings is None and self.preferences.contains("turn/settings"):
             self.set_turn_settings(self.turn_settings)
+        if self.opening_settings.enabled:
+            self.set_opening_settings(self.opening_settings)
         self.can_reopen_settings = self.tray.isVisible() or self.settings_hotkey_available
         self.app.screenAdded.connect(self._screens_changed)
         self.app.screenRemoved.connect(self._screens_changed)
@@ -1233,6 +1462,11 @@ class OverlayApp:
         self.lowalt_action = QAction("B 显贴地模式", self.tray_menu, checkable=True, checked=self.lowalt_enabled)
         self.lowalt_action.toggled.connect(self.set_lowalt_enabled)
         self.tray_menu.addAction(self.lowalt_action)
+        self.opening_action = QAction("开局抽奖", self.tray_menu, checkable=True,
+                                      checked=self.opening_settings.enabled)
+        self.opening_action.toggled.connect(self.set_opening_enabled)
+        self.tray_menu.addAction(self.opening_action)
+        self.tray_menu.addAction("开局抽奖：以现在为出生", self.restart_opening)
         self.tray_menu.addAction("重新开始转向", self.restart_turn)
         self.tray_menu.addAction("设置…", self.show_settings)
         self.tray_menu.addSeparator()
@@ -1251,7 +1485,9 @@ class OverlayApp:
                      "A": self.settings_window.apply_pose_calibration,
                      "K": lambda: self.set_rose_enabled(not self.rose_enabled),
                      "B": lambda: self.set_scope_enabled(not self.scope_enabled),
-                     "V": lambda: self.set_side_enabled(not self.side_enabled)}
+                     "V": lambda: self.set_side_enabled(not self.side_enabled),
+                     "P": lambda: self.set_opening_enabled(not self.opening_settings.enabled),
+                     "N": self.restart_opening}
         active, failures = {}, []
         self.settings_hotkey_available = False
         if self.desktop:
@@ -1351,6 +1587,33 @@ class OverlayApp:
         if self.turn_enabled:
             self.command({"action": "turn_restart"})
 
+    def set_opening_settings(self, settings):
+        """Send the opening-shot scenario (the missile follows the offensive-aids choice) and save it."""
+        settings = replace(settings, missile=self.offense_missile)
+        if not self.command({"action": "opening", "settings": asdict(settings)}):
+            return False
+        self.opening_settings = settings
+        saved = asdict(settings)
+        saved.pop("missile")
+        self.preferences.setValue("opening/settings", json.dumps(saved))
+        self._checked(self.settings_window.opening_box, settings.enabled)
+        self._checked(self.opening_action, settings.enabled)
+        self._sync_surface()
+        return True
+
+    def set_opening_enabled(self, enabled):
+        if enabled and not self.settings_window.apply_opening_settings():
+            self._checked(self.settings_window.opening_box, self.opening_settings.enabled)
+            self._checked(self.opening_action, self.opening_settings.enabled)
+            return
+        if not self.set_opening_settings(replace(self.opening_settings, enabled=enabled)):
+            self._checked(self.settings_window.opening_box, self.opening_settings.enabled)
+            self._checked(self.opening_action, self.opening_settings.enabled)
+
+    def restart_opening(self):
+        if self.opening_settings.enabled:
+            self.command({"action": "opening_restart"})
+
     def set_rose_enabled(self, enabled):
         self.rose_enabled = enabled
         self.preferences.setValue("offense/enabled", enabled)
@@ -1394,6 +1657,8 @@ class OverlayApp:
         """Missile, assumed enemy aircraft and speed, opponent skill and launch mode for the offensive aids."""
         setattr(self, f"offense_{key}", value)
         self.preferences.setValue(f"offense/{key}", value)
+        if key == "missile" and self.opening_settings.enabled:
+            self.set_opening_settings(self.opening_settings)
         self._load_advisor()
         self.refresh()
 
@@ -1473,6 +1738,13 @@ class OverlayApp:
         envelope = self._envelope_for(state)
         group.set_envelope(envelope, scale_m, float(self.scope_half_azimuth_deg))
         side.set_envelope(envelope, scale_m)
+
+    def _update_opening(self, snapshot):
+        group, cue = self.groups["opening"], snapshot.opening
+        group.set_content(HudContent(GROUPS["opening"], (), demo=snapshot.mode == "demo"))
+        group.set_cue(cue)
+        self.groups["scope"].set_opening(cue.launch_range_m if cue is not None and cue.phase in OPENING_LINE_PHASES
+                                         else None)
 
     def _update_rose(self, snapshot):
         group, library, state = self.groups["rose"], self.advisor, snapshot.state
@@ -1580,8 +1852,10 @@ class OverlayApp:
             enabled = (self.climb_enabled if key == "climb" else self.turn_enabled if key == "turn"
                        else self.rose_enabled if key == "rose" else self.scope_enabled if key == "scope"
                        else self.side_enabled if key == "side"
+                       else self.opening_settings.enabled if key == "opening"
                        else self.group_enabled[key])
-            has_data = group.has_data() if key in ("rose", "scope", "side") else bool(group.content.rows)
+            has_data = (group.has_data() if key in ("rose", "scope", "side", "opening")
+                        else bool(group.content.rows))
             visible = allowed and enabled and (has_data or self.editing)
             if group.isVisible() != visible:
                 group.setVisible(visible)
@@ -1617,6 +1891,7 @@ class OverlayApp:
             self.groups[key].set_content(content)
         self._update_rose(snapshot)
         self._update_scope(snapshot)
+        self._update_opening(snapshot)
         window = self.settings_window
         window.status.setText(snapshot.status)
         window.pose_status.setText(snapshot.attitude_status or "等待姿态数据")

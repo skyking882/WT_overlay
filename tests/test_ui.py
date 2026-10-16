@@ -103,6 +103,70 @@ class OverlayTests(unittest.TestCase):
         self.assertFalse(group.has_data())
         self.assertFalse(group.isVisible())
 
+    def opening_cue(self, phase="爬升", direction=(0.3, 0.5, 0.81), on_course=False, urgent=False):
+        from wt_overlay.opening import OpeningCue
+        return OpeningCue(phase, 20., 15., 3., 6., direction, on_course=on_course, urgent=urgent,
+                          lines=("全加力 爬升 15° · 25 s 后拉起到 24°", "发射时目标约 66 km · 预计 T+95 s 命中"),
+                          launch_range_m=65500.)
+
+    def test_opening_switch_sends_the_scenario_and_persists(self):
+        self.assertFalse(self.ui.groups["opening"].isVisible())
+        self.ui.set_opening_enabled(True)
+        sent = [c for c in self.commands if c["action"] == "opening"][-1]
+        self.assertTrue(sent["settings"]["enabled"])
+        self.assertEqual(sent["settings"]["missile"], self.ui.offense_missile)
+        self.assertEqual((sent["settings"]["enemy_aircraft"], sent["settings"]["distance_m"]), ("ef_2000_aesa", 100000.))
+        self.ui.settings_window.opening_distance.setValue(90)
+        self.assertTrue(self.ui.settings_window.apply_opening_settings())
+        self.assertEqual(self.commands[-1]["settings"]["distance_m"], 90000.)
+        self.ui.close()
+        self.commands.clear()
+        self.ui = self.make_ui()
+        self.assertTrue(self.ui.opening_settings.enabled)
+        self.assertEqual(self.ui.opening_settings.distance_m, 90000.)
+        self.assertTrue(any(c["action"] == "opening" and c["settings"]["enabled"] for c in self.commands))
+        self.ui.restart_opening()
+        self.assertEqual(self.commands[-1], {"action": "opening_restart"})
+
+    def test_opening_arrow_draws_each_phase(self):
+        self.ui.set_opening_enabled(True)
+        group = self.ui.groups["opening"]
+        for cue, colour in ((self.opening_cue(), lambda c: c.red() > 200 and c.green() > 200 and c.blue() > 200),
+                            (self.opening_cue("拉起", (0., 0.9, 0.44)), lambda c: c.red() > 200 and 120 < c.green() < 180),
+                            (self.opening_cue(on_course=True, direction=(0., 0., 1.)),
+                             lambda c: c.green() > 200 and c.red() < 150)):
+            with self.subTest(phase=cue.phase, on_course=cue.on_course):
+                self.snapshot = replace(self.snapshot, opening=cue)
+                self.ui.refresh()
+                self.assertTrue(group.isVisible())
+                image = group.grab().toImage()
+                arrow = sum(1 for y in range(0, group.side, 2) for x in range(0, image.width(), 2)
+                            if image.pixelColor(x, y + 8).alpha() > 200 and colour(image.pixelColor(x, y + 8)))
+                self.assertGreater(arrow, 15)
+        from wt_overlay.opening import OpeningCue
+        self.snapshot = replace(self.snapshot, opening=OpeningCue("结束"))
+        self.ui.refresh()
+        self.assertFalse(group.isVisible())
+
+    def test_opening_launch_range_line_on_the_scope(self):
+        group = self.make_rose_ui(True)
+        self.ui.set_opening_enabled(True)
+        self.ui.set_scope_geometry(80, 60)
+        scope = self.ui.groups["scope"]
+        self.snapshot = replace(self.snapshot, opening=self.opening_cue())
+        self.ui.refresh()
+        self.assertEqual(scope.opening_range_m, 65500.)
+        image = scope.grab().toImage()
+        purple = {y for y in range(image.height()) for x in range(0, image.width(), 3)
+                  if (lambda c: c.alpha() > 200 and 150 < c.red() < 210 and c.green() < 170 and c.blue() > 220)(
+                      image.pixelColor(x, y))}
+        expected = round(scope.height() - 65500. / 80000. * scope.height())
+        self.assertTrue(any(abs(row - expected) <= 2 for row in purple))
+        self.snapshot = replace(self.snapshot, opening=self.opening_cue("结束"))
+        self.ui.refresh()
+        self.assertIsNone(scope.opening_range_m)
+        self.assertTrue(group is self.ui.groups["rose"])
+
     def test_rose_hotkey_and_choice_persist(self):
         group = self.make_rose_ui(False)
         self.assertFalse(group.isVisible())
@@ -318,12 +382,12 @@ class OverlayTests(unittest.TestCase):
         game = GameWindow(True, False, (0, 0, 1280, 720), (0, 0), self.app.primaryScreen().name())
         self.ui.game = game
         self.ui._sync_surface()
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose", "scope", "side")))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose", "scope", "side", "opening")))
         self.ui.game = replace(game, foreground=False)
         self.ui._sync_surface()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_editing(True)
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose", "scope", "side")))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose", "scope", "side", "opening")))
         self.ui.set_visible(False)
         self.assertFalse(self.ui.editing)
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
@@ -331,7 +395,7 @@ class OverlayTests(unittest.TestCase):
         self.ui.refresh()
         self.assertFalse(any(g.isVisible() for g in self.ui.groups.values()))
         self.ui.set_visible(True)
-        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose", "scope", "side")))
+        self.assertTrue(all(g.isVisible() for key, g in self.ui.groups.items() if key not in ("climb", "turn", "rose", "scope", "side", "opening")))
 
     def test_turn_toggle_restart_hotkeys_and_mutual_exclusion(self):
         self.assertFalse(self.ui.groups["turn"].isVisible())

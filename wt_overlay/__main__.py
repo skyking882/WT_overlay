@@ -11,6 +11,7 @@ import time
 
 from .app import OverlayController
 from .contracts import ClimbRequest, KeyboardTurnSettings
+from .opening import OpeningSettings
 
 
 def _positive(text: str) -> float:
@@ -21,6 +22,17 @@ def _positive(text: str) -> float:
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError("数值必须为有限正数")
     return value
+
+
+def opening_json(cue) -> dict | None:
+    if cue is None:
+        return None
+    plan = asdict(cue.plan) if cue.plan is not None else None
+    if plan is not None:
+        plan.pop("profile")
+    return {"phase": cue.phase, "t_s": cue.t_s, "target_path_deg": cue.target_path_deg,
+            "yaw_error_deg": cue.yaw_error_deg, "path_error_deg": cue.path_error_deg, "on_course": cue.on_course,
+            "lines": list(cue.lines), "plan": plan}
 
 
 def snapshot_json(snapshot) -> dict:
@@ -56,6 +68,7 @@ def snapshot_json(snapshot) -> dict:
         "turn_enabled": snapshot.turn_enabled,
         "turn_settings": asdict(snapshot.turn_settings),
         "turn_guidance": asdict(snapshot.turn) if snapshot.turn else None,
+        "opening": opening_json(snapshot.opening),
         "notes": list(dict.fromkeys((*snapshot.notes, *(advice.notes if advice else ())))),
     }
 
@@ -76,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--climb-altitude", type=_positive, help="开启爬升引导，目标高度（m）")
     parser.add_argument("--arrival-speed-kmh", type=_positive, help="到达最低 TAS（km/h）；留空自动选择")
     parser.add_argument("--turn-angle", type=int, choices=(30, 45, 90, 120), help="开启键盘转向引导，目标速度方向转角")
+    parser.add_argument("--opening-missile", help="开启开局抽奖，导弹型号（如 us_aim_120c_5）；其余按默认场景")
     args = parser.parse_args(argv)
     if sys.version_info < (3, 11):
         parser.error("需要 Python 3.11 或更新版本")
@@ -95,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.turn_angle is not None:
             controller.submit({"action": "turn_target", "settings": asdict(KeyboardTurnSettings(angle_deg=args.turn_angle))})
             controller.submit({"action": "turn_enabled", "enabled": True})
+        if args.opening_missile:
+            controller.submit({"action": "opening",
+                               "settings": asdict(OpeningSettings(True, args.opening_missile))})
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     try:

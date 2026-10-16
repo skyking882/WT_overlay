@@ -210,3 +210,4 @@ class OverlaySnapshot:
     reference_mass_kg: float | None = None  # Mass used by the model this sample.
     mass_source: str = ""  # 手动 / 遥测 / 估算
     payload_kg: float = 0.0
+    opening: Any = None  # opening.OpeningCue while the opening-shot aid is on (docs/opening_shot_spec.md)
