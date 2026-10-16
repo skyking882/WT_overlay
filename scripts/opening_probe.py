@@ -24,11 +24,10 @@ from wt_overlay.opening import OpeningSettings, PlanRequest, plan_opening, valid
 
 
 def own_mass(aircraft, fuel_fraction, missiles, missile):
-    from wt_overlay.engagement import default_library
     from wt_overlay.flight import fuel_data
-    from wt_overlay.opening import _missile_mass
+    from wt_overlay.opening import _library, _missile_mass
     fuel = fuel_data(aircraft)
-    return fuel.empty_kg+fuel_fraction*fuel.internal_kg+missiles*_missile_mass(default_library(), missile)
+    return fuel.empty_kg+fuel_fraction*fuel.internal_kg+missiles*_missile_mass(_library(), missile)
 
 
 def main(argv=None):

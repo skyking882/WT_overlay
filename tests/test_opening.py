@@ -264,6 +264,33 @@ class FakeClient:
         return replace(self.state, time_s=time_s)
 
 
+class MissileSimLocationTests(unittest.TestCase):
+    def make(self, root, current=True):
+        api = root/"src"/"aim120_model"/"public_api.py"
+        api.parent.mkdir(parents=True)
+        api.write_text("from .surface_runtime import create_surface_missile\n" if current else "x = 1\n")
+        return root
+
+    def test_both_spellings_the_env_var_and_old_versions(self):
+        import tempfile
+        from wt_overlay import opening
+        with tempfile.TemporaryDirectory() as folder:
+            parent = Path(folder)
+            fake_module = str(parent/"WT_overlay"/"wt_overlay"/"opening.py")
+            with patch.object(opening, "__file__", fake_module), patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(opening.MISSILE_SIM_ENV, None)
+                with self.assertRaisesRegex(FileNotFoundError, "没找到 missile_sim"):
+                    opening.missile_sim_root()
+                self.make(parent/"missile_sim", current=False)
+                with self.assertRaisesRegex(FileNotFoundError, "太旧"):
+                    opening.missile_sim_root()
+                good = self.make(parent/"missle_sim")
+                self.assertEqual(opening.missile_sim_root().resolve(), good.resolve())
+                elsewhere = self.make(parent/"elsewhere")
+                os.environ[opening.MISSILE_SIM_ENV] = str(elsewhere)
+                self.assertEqual(opening.missile_sim_root().resolve(), elsewhere.resolve())
+
+
 class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.client = FakeClient()

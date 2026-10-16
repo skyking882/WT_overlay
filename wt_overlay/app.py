@@ -523,7 +523,9 @@ class OverlayController:
             plan = job["future"].result()
         except Cancelled:
             return
-        except Exception as exc:  # A worker failure (no missile_sim, no FM, ...) is shown, never raised.
+        except FileNotFoundError as exc:   # missile_sim missing or too old: the message says what to do
+            plan = OpeningPlan(False, str(exc), base_s=t)
+        except Exception as exc:  # Any other worker failure is shown, never raised.
             plan = OpeningPlan(False, f"计算失败：{type(exc).__name__}: {exc}", base_s=t)
         if job["request"].t_s == 0.:
             self._opening_cache.put(job["request"], plan)

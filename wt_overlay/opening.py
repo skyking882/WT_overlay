@@ -262,6 +262,36 @@ class OpeningPlan:
     notes: tuple = ()
 
 
+MISSILE_SIM_ENV = "WT_MISSILE_SIM"
+
+
+def missile_sim_root():
+    """Where missile_sim is: $WT_MISSILE_SIM, else next to WT_overlay as missle_sim (the local folder name) or
+    missile_sim (the GitHub repository name). It must be a version whose public API exports the stepping runtime
+    (create_surface_missile); the GitHub branches as of 2026-10-16 do not."""
+    from pathlib import Path
+    parent = Path(__file__).resolve().parents[2]
+    candidates = [Path(os.environ[MISSILE_SIM_ENV])] if os.environ.get(MISSILE_SIM_ENV) else []
+    candidates += [parent/"missle_sim", parent/"missile_sim"]
+    old = []
+    for root in candidates:
+        api = root/"src"/"aim120_model"/"public_api.py"
+        if api.is_file():
+            if "create_surface_missile" in api.read_text(encoding="utf-8", errors="ignore"):
+                return root
+            old.append(root)
+    if old:
+        raise FileNotFoundError(f"{old[0]} 里的 missile_sim 版本太旧（没有步进接口 create_surface_missile），"
+                                "需要开发版（Mac 上的 missle_sim）")
+    raise FileNotFoundError("没找到 missile_sim：应放在 WT_overlay 旁边，文件夹名 missle_sim 或 missile_sim，"
+                            f"或用环境变量 {MISSILE_SIM_ENV} 指定（找过：{'、'.join(str(c) for c in candidates)}）")
+
+
+def _library():
+    from .engagement import default_library
+    return default_library(missile_sim_root())
+
+
 def _r(x, step):
     return round(x/step)*step
 
@@ -277,10 +307,9 @@ def _missile_mass(library, missile):
 @lru_cache(maxsize=4)
 def _enemy_track(aircraft, fuel_fraction, n_missiles, missile, climb_deg, level_m, distance_m, altitude_m, tas_mps):
     """Per-tick (position, velocity) of the enemy from its spawn: (D, 0, h0) flying -x, full power."""
-    from .engagement import default_library
     from .flight import Aircraft, FlightCommand, aircraft_model, fuel_data
     fuel = fuel_data(aircraft)
-    mass = fuel.empty_kg+fuel_fraction*fuel.internal_kg+n_missiles*_missile_mass(default_library(), missile)
+    mass = fuel.empty_kg+fuel_fraction*fuel.internal_kg+n_missiles*_missile_mass(_library(), missile)
     plane = Aircraft(aircraft_model(aircraft, mass_kg=mass), (distance_m, 0., altitude_m), (-tas_mps, 0., 0.),
                      keep_history=True)
     command = FlightCommand(heading_deg=270., altitude_m=level_m, max_climb_deg=climb_deg, floor_m=100.)
@@ -371,7 +400,7 @@ def _pull_up(aircraft, mass, state, pitch):
 def shot(job):
     """One candidate: (request, climb_deg, pull_s, pitch). pitch 'auto' = loft_rule at the pull-up range.
     Runs in a worker process."""
-    from .engagement import LAUNCH_OPTIONS, default_library
+    from .engagement import LAUNCH_OPTIONS
     from .escape import from_enu
     request, climb_deg, pull_s, pitch = job
     own = _own(request, climb_deg)
@@ -384,7 +413,7 @@ def shot(job):
     t_l = pull_s+pull_time
     speed = math.sqrt(sum(v*v for v in velocity))
     launch_path = math.degrees(math.asin(max(-1., min(1., velocity[2]/speed))))
-    library = default_library()
+    library = _library()
     target = _EnemyTarget(enemy, t_l)
     runtime = library.create(library.profile(request.missile), launch_position_m=from_enu(position),
                              launch_velocity_mps=from_enu(velocity), launch_heading_deg=0.,
