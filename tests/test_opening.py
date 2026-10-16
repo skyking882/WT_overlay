@@ -186,26 +186,60 @@ class MapDirectionTests(unittest.TestCase):
         self.assertIsNone(player_track_deg({"icon": "Player"}))
         self.assertIsNone(player_track_deg([{"icon": "Player", "dx": 0., "dy": 0.}]))
 
-    def test_client_reads_the_map_only_without_a_compass(self):
+    def test_client_reads_the_map_only_when_asked_and_without_a_compass(self):
         from wt_overlay.telemetry import TelemetryClient
         payloads = {"/state": {"valid": True, "H, m": 2500, "TAS, km/h": 1044, "Vy, m/s": 0},
                     "/indicators": {"valid": True, "type": "f_16c_block_52_aesa"},
                     "/map_obj.json": [{"type": "aircraft", "icon": "Player", "x": .5, "y": .5, "dx": 1., "dy": 0.}]}
         client = TelemetryClient()
         calls = []
-        client._load = lambda endpoint: calls.append(endpoint) or payloads[endpoint]
-        first = client.poll(time_s=1.)
+        client._load = lambda endpoint, opener=None: calls.append(endpoint) or payloads[endpoint]
+
+        def settle():
+            if client._map_thread is not None:
+                client._map_thread.join(1.)
+
+        self.assertIsNone(client.poll(time_s=1.).track_deg)   # nobody asked for the map
+        self.assertNotIn("/map_obj.json", calls)
+        client.want_track = True
+        client.poll(time_s=2.)
+        settle()
+        first = client.poll(time_s=2.1)
         self.assertEqual((first.heading_deg, first.track_deg), (None, 90.))
-        client.poll(time_s=1.1)
         self.assertEqual(calls.count("/map_obj.json"), 1)   # at most every MAP_INTERVAL_S
         payloads["/indicators"]["compass"] = 45.
-        with_compass = client.poll(time_s=2.)
+        with_compass = client.poll(time_s=3.)
         self.assertEqual((with_compass.heading_deg, with_compass.track_deg), (45., None))
         self.assertEqual(calls.count("/map_obj.json"), 1)
         payloads["/indicators"].pop("compass")
         payloads["/map_obj.json"] = "not a list"
-        self.assertIsNone(client.poll(time_s=3.).track_deg)
-        self.assertTrue(client.poll(time_s=3.1).valid)
+        client.poll(time_s=4.)
+        settle()
+        self.assertIsNone(client.poll(time_s=4.1).track_deg)
+        self.assertTrue(client.poll(time_s=4.2).valid)
+
+    def test_a_slow_or_failing_map_never_delays_or_breaks_the_state(self):
+        import threading
+        from wt_overlay.telemetry import TelemetryClient
+        release = threading.Event()
+        payloads = {"/state": {"valid": True, "H, m": 2500, "TAS, km/h": 1044, "Vy, m/s": 0},
+                    "/indicators": {"valid": True, "type": "f_16c_block_52_aesa"}}
+
+        def load(endpoint, opener=None):
+            if endpoint == "/map_obj.json":
+                release.wait(2.)
+                raise KeyError("odd map payload")
+            return payloads[endpoint]
+        client = TelemetryClient()
+        client._load = load
+        client.want_track = True
+        started = time.monotonic()
+        states = [client.poll(time_s=float(t)) for t in range(5)]
+        self.assertLess(time.monotonic()-started, 1.)
+        self.assertTrue(all(s.valid for s in states))
+        release.set()
+        client._map_thread.join(1.)
+        self.assertTrue(client.poll(time_s=10.).valid)
 
 
 class FakeClient:

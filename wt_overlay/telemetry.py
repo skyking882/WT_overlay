@@ -10,6 +10,7 @@ import ipaddress
 import json
 import math
 import re
+from threading import Thread
 import time
 from collections.abc import Mapping
 from dataclasses import replace
@@ -143,11 +144,16 @@ class TelemetryClient:
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self._opener = build_opener(ProxyHandler({}), _NoRedirect())
+        self._map_opener = build_opener(ProxyHandler({}), _NoRedirect())
+        # Own direction from /map_obj.json: only when a feature asks for it (want_track, the opening-shot aid) and
+        # the indicators have no compass; fetched on its own thread so the map can never delay /state.
+        self.want_track = False
         self._map_at = -math.inf
+        self._map_thread = None
         self._track = None
 
-    def _load(self, endpoint: str):
-        with self._opener.open(self.base_url + endpoint, timeout=self.timeout) as response:
+    def _load(self, endpoint: str, opener=None):
+        with (opener or self._opener).open(self.base_url + endpoint, timeout=self.timeout) as response:
             payload = response.read(_MAX_BYTES + 1)
         if len(payload) > _MAX_BYTES:
             raise ValueError('Telemetry response exceeds size limit')
@@ -159,18 +165,23 @@ class TelemetryClient:
             raise ValueError('Telemetry response must be a JSON object')
         return data
 
+    def _fetch_track(self):
+        try:
+            self._track = player_track_deg(self._load('/map_obj.json', self._map_opener))
+        except Exception:  # The map is optional: any failure only means no map direction.
+            self._track = None
+
     def _map_track(self, timestamp: float, indicators: Mapping) -> float | None:
-        """Own direction from /map_obj.json, polled at most every MAP_INTERVAL_S and only while the indicators
-        have no compass; a failed map poll never invalidates the flight state."""
-        if _number(indicators, 'compass') is not None:
+        """Latest own direction from /map_obj.json, refreshed in the background at most every MAP_INTERVAL_S;
+        None unless want_track is set and the indicators have no compass."""
+        if not self.want_track or _number(indicators, 'compass') is not None:
             self._track = None
             return None
-        if timestamp-self._map_at >= MAP_INTERVAL_S:
+        running = self._map_thread is not None and self._map_thread.is_alive()
+        if not running and timestamp-self._map_at >= MAP_INTERVAL_S:
             self._map_at = timestamp
-            try:
-                self._track = player_track_deg(self._load('/map_obj.json'))
-            except (OSError, HTTPException, ValueError, TypeError, RecursionError):
-                self._track = None
+            self._map_thread = Thread(target=self._fetch_track, name="wt-map-track", daemon=True)
+            self._map_thread.start()
         return self._track
 
     def poll(self, time_s: float | None = None) -> FlightState:
@@ -179,8 +190,11 @@ class TelemetryClient:
             state = self._read('/state')
             indicators = self._read('/indicators')
             parsed = parse_telemetry(state, indicators, timestamp)
-            if parsed.valid and parsed.heading_deg is None:
-                parsed = replace(parsed, track_deg=self._map_track(timestamp, indicators))
+            if parsed.valid and parsed.heading_deg is None and self.want_track:
+                try:
+                    parsed = replace(parsed, track_deg=self._map_track(timestamp, indicators))
+                except Exception:
+                    pass
             return parsed
         except (OSError, HTTPException, ValueError, TypeError, OverflowError, RecursionError) as error:
             timestamp = _number({'t': timestamp}, 't')

@@ -425,6 +425,8 @@ class OverlayController:
             return
         settings = OpeningSettings(**command["settings"])
         old, self.opening = self.opening, settings
+        if hasattr(self.client, "want_track"):
+            self.client.want_track = settings.enabled  # map direction only for this aid (no-compass aircraft)
         if not settings.enabled:
             self._reset_opening(spawn=True)
             self._close_opening_pool()
