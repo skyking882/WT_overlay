@@ -27,6 +27,8 @@ SPAWN_ALTITUDE_M = (1000., 6000.)
 SPAWN_TAS_MPS = (150., 400.)
 SPAWN_MAX_VY_MPS = 20.
 SPAWN_GAP_S = 3.          # a shorter telemetry gap is a lost poll, not a respawn
+SPAWN_WINDOW_S = 5.       # after a gap, the first spawn-like sample within this long is the spawn
+HEADING_FILL_S = 5.       # a spawn without a heading takes the first heading reading within this long
 CLIMB_CAP_M = 12000.      # the climb command's altitude; launches come before it
 DEFAULT_CLIMB_DEG = 15.   # shown until the first plan arrives
 CLIMBS_DEG = (10., 35.)   # searched climb angles
@@ -105,8 +107,8 @@ def validate_settings(s: OpeningSettings) -> None:
 
 @dataclass(frozen=True)
 class Spawn:
-    time_s: float           # telemetry clock at the spawn sample
-    heading_deg: float      # = the bearing of the enemy spawn (replays: median 3 deg off)
+    time_s: float               # telemetry clock at the spawn sample
+    heading_deg: float | None   # = the bearing of the enemy spawn (replays: median 3 deg off); None = no heading
     altitude_m: float
     tas_mps: float
     aircraft_id: str
@@ -119,9 +121,19 @@ def path_angle_deg(state) -> float | None:
     return math.degrees(math.asin(max(-1., min(1., state.vertical_speed_mps/state.tas_mps))))
 
 
+def heading_of(state) -> float | None:
+    """Compass from /indicators, else the own-aircraft direction from /map_obj.json (aircraft without a compass
+    gauge), else None."""
+    for value in (state.heading_deg, getattr(state, "track_deg", None)):
+        if valid_number(value):
+            return float(value) % 360.
+    return None
+
+
 class SpawnLatch:
-    """Detects an air spawn: the first valid sample after a telemetry gap of SPAWN_GAP_S (or an aircraft change),
-    if it looks like a spawn (altitude, TAS, nearly level, a heading). ``latch`` takes the current state instead
+    """Detects an air spawn. After a telemetry gap of SPAWN_GAP_S (or an aircraft change) the first sample within
+    SPAWN_WINDOW_S that looks like a spawn (altitude, TAS, nearly level) is taken; a heading is not required (it is
+    filled in from the first heading reading in the next HEADING_FILL_S). ``latch`` takes the current state instead
     (manual restart, e.g. when the overlay started mid-flight)."""
 
     def __init__(self):
@@ -132,53 +144,73 @@ class SpawnLatch:
         self.note = "等待空中出生"
         self._last_valid_s = None
         self._identity = None
+        self._window_until = None
 
     @staticmethod
     def _usable(state):
         return (state.valid and valid_number(state.altitude_m) and valid_number(state.tas_mps)
-                and valid_number(state.heading_deg) and bool(state.aircraft_id))
+                and bool(state.aircraft_id))
 
     def latch(self, state, manual=True) -> Spawn | None:
         if not self._usable(state):
-            self.note = "没有可用的飞行数据，无法当作出生"
+            self.note = ("8111 没有飞行数据，无法当作出生" if not state.valid else
+                         "8111 缺少高度、真空速或机型，无法当作出生")
             return None
-        self.spawn = Spawn(state.time_s, float(state.heading_deg) % 360., float(state.altitude_m),
-                           float(state.tas_mps), state.aircraft_id, manual)
+        self.spawn = Spawn(state.time_s, heading_of(state), float(state.altitude_m), float(state.tas_mps),
+                           state.aircraft_id, manual)
         self.note = ""
+        self._window_until = None
         return self.spawn
+
+    @staticmethod
+    def _spawn_like(state):
+        vy = state.vertical_speed_mps
+        return (SPAWN_ALTITUDE_M[0] <= state.altitude_m <= SPAWN_ALTITUDE_M[1]
+                and SPAWN_TAS_MPS[0] <= state.tas_mps <= SPAWN_TAS_MPS[1]
+                and (vy is None or abs(vy) <= SPAWN_MAX_VY_MPS))
 
     def update(self, state) -> Spawn | None:
         """Returns the new Spawn on the sample where one is detected, else None."""
         if not self._usable(state):
+            if state.valid:
+                self.note = "等待空中出生：8111 缺少高度、真空速或机型"
             return None
         from .fm.catalog import aircraft_key
         identity = aircraft_key(state.aircraft_id)
         fresh = (self._last_valid_s is None or state.time_s-self._last_valid_s > SPAWN_GAP_S
                  or identity != self._identity)
         self._last_valid_s, self._identity = state.time_s, identity
-        if not fresh:
+        if fresh:
+            self.spawn = None
+            self._window_until = state.time_s+SPAWN_WINDOW_S
+        spawn = self.spawn
+        if spawn is not None and spawn.heading_deg is None and state.time_s-spawn.time_s <= HEADING_FILL_S:
+            heading = heading_of(state)
+            if heading is not None:
+                self.spawn = replace(spawn, heading_deg=heading)
+        if self._window_until is None:
             return None
-        vy = state.vertical_speed_mps
-        if (SPAWN_ALTITUDE_M[0] <= state.altitude_m <= SPAWN_ALTITUDE_M[1]
-                and SPAWN_TAS_MPS[0] <= state.tas_mps <= SPAWN_TAS_MPS[1]
-                and (vy is None or abs(vy) <= SPAWN_MAX_VY_MPS)):
+        if self._spawn_like(state):
             return self.latch(state, manual=False)
-        self.spawn = None
-        self.note = (f"不像空中出生（{state.altitude_m:.0f} m，{state.tas_mps*3.6:.0f} km/h）；"
-                     "可在设置里“以现在为出生”")
+        if state.time_s > self._window_until:
+            self._window_until = None
+            self.note = (f"不像空中出生（{state.altitude_m:.0f} m，{state.tas_mps*3.6:.0f} km/h）；"
+                         "可按 Ctrl+Alt+N 以现在为出生")
         return None
 
 
 class DeadReckoning:
-    """Own position along (x) and across (y) the spawn line, integrated from TAS, Vy and compass."""
+    """Own position along (x) and across (y) the spawn line, integrated from TAS, Vy and the heading (without any
+    heading reading: all of it along the line)."""
 
     def __init__(self, spawn: Spawn):
-        self.heading = spawn.heading_deg
+        self.spawn = spawn
         self.x = self.y = 0.
         self.last_s = spawn.time_s
 
-    def update(self, state):
-        if not (state.valid and valid_number(state.tas_mps) and valid_number(state.heading_deg)):
+    def update(self, state, spawn: Spawn | None = None):
+        self.spawn = spawn or self.spawn
+        if not (state.valid and valid_number(state.tas_mps)):
             return
         dt = state.time_s-self.last_s
         self.last_s = state.time_s
@@ -186,7 +218,8 @@ class DeadReckoning:
             return
         path = path_angle_deg(state) or 0.
         horizontal = state.tas_mps*math.cos(math.radians(path))
-        off = math.radians(wrap(state.heading_deg-self.heading))
+        heading, reference = heading_of(state), self.spawn.heading_deg
+        off = 0. if heading is None or reference is None else math.radians(wrap(heading-reference))
         self.x += horizontal*math.cos(off)*dt
         self.y += horizontal*math.sin(off)*dt
 
@@ -561,14 +594,21 @@ def cue(plan: OpeningPlan | None, spawn: Spawn | None, state, note="") -> Openin
     if state.valid and state.altitude_m is not None and state.altitude_m >= CLIMB_CAP_M-200. and phase == "爬升":
         wanted = 0.
     path = path_angle_deg(state) if state.valid else None
-    heading = state.heading_deg if state.valid and valid_number(state.heading_deg) else None
-    if path is None or heading is None:
-        return OpeningCue(phase, t, wanted, lines=(*lines, "缺少航向或垂直速度"), plan=plan,
+    if path is None:
+        return OpeningCue(phase, t, wanted, lines=(*lines, "缺少垂直速度"), plan=plan,
                           launch_range_m=plan.launch_range_m if plan else None)
-    yaw, pitch_error = wrap(spawn.heading_deg-heading), wanted-path
-    direction = velocity_frame_direction(heading, path, spawn.heading_deg, wanted)
-    return OpeningCue(phase, t, wanted, yaw, pitch_error, direction,
-                      on_course=math.hypot(yaw*math.cos(math.radians(path)), pitch_error) < CUE_DEADBAND_DEG,
+    heading = heading_of(state) if state.valid else None
+    if heading is None or spawn.heading_deg is None:
+        # No heading reading: up / down only; the pilot keeps the spawn heading.
+        yaw, heading, reference = None, 0., 0.
+        lines = (*lines, "无航向读数：保持出生时的机头方向")
+    else:
+        reference = spawn.heading_deg
+        yaw = wrap(reference-heading)
+    pitch_error = wanted-path
+    direction = velocity_frame_direction(heading, path, reference, wanted)
+    error = math.hypot((yaw or 0.)*math.cos(math.radians(path)), pitch_error)
+    return OpeningCue(phase, t, wanted, yaw, pitch_error, direction, on_course=error < CUE_DEADBAND_DEG,
                       urgent=phase == "发射", lines=lines, plan=plan,
                       launch_range_m=plan.launch_range_m if plan else None)
 

@@ -12,6 +12,7 @@ import math
 import re
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
@@ -99,6 +100,24 @@ def parse_telemetry(state: Mapping, indicators: Mapping, time_s: float) -> Fligh
     )
 
 
+MAP_INTERVAL_S = 0.5
+
+
+def player_track_deg(objects) -> float | None:
+    """Compass direction of the Player icon in /map_obj.json: x/y are map fractions with y downward and dx/dy its
+    direction in the same axes (grade D, not yet checked in game). None without a usable Player entry."""
+    if not isinstance(objects, list):
+        return None
+    for item in objects:
+        if not isinstance(item, Mapping) or str(item.get('icon', '')).casefold() != 'player':
+            continue
+        dx, dy = _number(item, 'dx'), _number(item, 'dy')
+        if dx is None or dy is None or math.hypot(dx, dy) < 1e-6:
+            return None
+        return math.degrees(math.atan2(dx, -dy)) % 360.
+    return None
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ValueError('8111 redirects are not permitted')
@@ -124,23 +143,45 @@ class TelemetryClient:
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self._opener = build_opener(ProxyHandler({}), _NoRedirect())
+        self._map_at = -math.inf
+        self._track = None
 
-    def _read(self, endpoint: str) -> Mapping:
+    def _load(self, endpoint: str):
         with self._opener.open(self.base_url + endpoint, timeout=self.timeout) as response:
             payload = response.read(_MAX_BYTES + 1)
         if len(payload) > _MAX_BYTES:
             raise ValueError('Telemetry response exceeds size limit')
-        data = json.loads(payload)
+        return json.loads(payload)
+
+    def _read(self, endpoint: str) -> Mapping:
+        data = self._load(endpoint)
         if not isinstance(data, dict):
             raise ValueError('Telemetry response must be a JSON object')
         return data
+
+    def _map_track(self, timestamp: float, indicators: Mapping) -> float | None:
+        """Own direction from /map_obj.json, polled at most every MAP_INTERVAL_S and only while the indicators
+        have no compass; a failed map poll never invalidates the flight state."""
+        if _number(indicators, 'compass') is not None:
+            self._track = None
+            return None
+        if timestamp-self._map_at >= MAP_INTERVAL_S:
+            self._map_at = timestamp
+            try:
+                self._track = player_track_deg(self._load('/map_obj.json'))
+            except (OSError, HTTPException, ValueError, TypeError, RecursionError):
+                self._track = None
+        return self._track
 
     def poll(self, time_s: float | None = None) -> FlightState:
         timestamp = time.monotonic() if time_s is None else time_s
         try:
             state = self._read('/state')
             indicators = self._read('/indicators')
-            return parse_telemetry(state, indicators, timestamp)
+            parsed = parse_telemetry(state, indicators, timestamp)
+            if parsed.valid and parsed.heading_deg is None:
+                parsed = replace(parsed, track_deg=self._map_track(timestamp, indicators))
+            return parsed
         except (OSError, HTTPException, ValueError, TypeError, OverflowError, RecursionError) as error:
             timestamp = _number({'t': timestamp}, 't')
             return FlightState(timestamp if timestamp is not None else 0.0, False,

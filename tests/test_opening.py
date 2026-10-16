@@ -71,16 +71,35 @@ class SpawnTests(unittest.TestCase):
 
     def test_airfield_or_mid_flight_start_is_not_a_spawn_until_latched(self):
         latch = SpawnLatch()
-        self.assertIsNone(latch.update(state(10., altitude=200., tas=60.)))
+        for t in (10., 12., 14., 15.5):
+            self.assertIsNone(latch.update(state(t, altitude=200., tas=60.)))
         self.assertIsNone(latch.spawn)
         self.assertIn("不像空中出生", latch.note)
-        self.assertIsNone(latch.update(state(20., altitude=8000., tas=450., vy=50.)))
+        self.assertIsNone(latch.update(state(16.5, altitude=2500., tas=290.)))   # the window has closed
         manual = latch.latch(state(21., altitude=8000., tas=450.))
         self.assertTrue(manual.manual)
         self.assertEqual(latch.spawn.altitude_m, 8000.)
 
-    def test_needs_a_heading(self):
-        self.assertIsNone(SpawnLatch().update(state(1., heading=None)))
+    def test_loading_samples_before_the_spawn_do_not_hide_it(self):
+        latch = SpawnLatch()
+        self.assertIsNone(latch.update(state(10., altitude=0., tas=0.)))
+        spawn = latch.update(state(10.5))
+        self.assertEqual((spawn.time_s, spawn.altitude_m), (10.5, 2500.))
+
+    def test_no_heading_reading_is_not_a_blocker(self):
+        latch = SpawnLatch()
+        spawn = latch.update(state(1., heading=None))
+        self.assertIsNotNone(spawn)
+        self.assertIsNone(spawn.heading_deg)
+        latch.update(state(2., heading=None, track_deg=31.))   # the map direction arrives later
+        self.assertEqual(latch.spawn.heading_deg, 31.)
+        self.assertIsNotNone(SpawnLatch().latch(state(1., heading=None)))
+
+    def test_heading_falls_back_to_the_map_direction(self):
+        from wt_overlay.opening import heading_of
+        self.assertEqual(heading_of(state(1., heading=10., track_deg=40.)), 10.)
+        self.assertEqual(heading_of(state(1., heading=None, track_deg=400.)), 40.)
+        self.assertIsNone(heading_of(state(1., heading=None)))
 
     def test_dead_reckoning_along_and_across_the_spawn_line(self):
         reckoning = DeadReckoning(SPAWN)
@@ -127,6 +146,13 @@ class CueTests(unittest.TestCase):
         self.assertAlmostEqual(left_of_line.yaw_error_deg, 10.)
         self.assertGreater(left_of_line.direction[0], 0.)
 
+    def test_without_any_heading_the_arrow_is_up_down_only(self):
+        no_heading = cue(PLAN, replace(SPAWN, heading_deg=None), state(120., heading=None, vy=0.))
+        self.assertIsNone(no_heading.yaw_error_deg)
+        self.assertAlmostEqual(no_heading.direction[0], 0.)
+        self.assertGreater(no_heading.direction[1], 0.)
+        self.assertIn("无航向读数", no_heading.lines[-1])
+
     def test_without_a_plan_the_default_climb_is_shown(self):
         waiting = cue(None, SPAWN, state(101.))
         self.assertEqual((waiting.phase, waiting.target_path_deg), ("计算中", 15.))
@@ -147,6 +173,39 @@ class CueTests(unittest.TestCase):
         self.assertFalse(deviates(PLAN, on, 10.))
         self.assertTrue(deviates(PLAN, replace(on, vertical_speed_mps=320.*math.sin(math.radians(20.))), 10.))
         self.assertTrue(deviates(PLAN, replace(on, tas_mps=360.), 10.))
+
+
+class MapDirectionTests(unittest.TestCase):
+    def test_player_icon_direction(self):
+        from wt_overlay.telemetry import player_track_deg
+        other = {"type": "aircraft", "icon": "Fighter", "dx": 1., "dy": 0.}
+        self.assertAlmostEqual(player_track_deg([other, {"icon": "Player", "dx": 0., "dy": -1.}]), 0.)
+        self.assertAlmostEqual(player_track_deg([{"icon": "player", "dx": 1., "dy": 0.}]), 90.)
+        self.assertAlmostEqual(player_track_deg([{"icon": "Player", "dx": -.7071, "dy": .7071}]), 225., places=3)
+        self.assertIsNone(player_track_deg([other]))
+        self.assertIsNone(player_track_deg({"icon": "Player"}))
+        self.assertIsNone(player_track_deg([{"icon": "Player", "dx": 0., "dy": 0.}]))
+
+    def test_client_reads_the_map_only_without_a_compass(self):
+        from wt_overlay.telemetry import TelemetryClient
+        payloads = {"/state": {"valid": True, "H, m": 2500, "TAS, km/h": 1044, "Vy, m/s": 0},
+                    "/indicators": {"valid": True, "type": "f_16c_block_52_aesa"},
+                    "/map_obj.json": [{"type": "aircraft", "icon": "Player", "x": .5, "y": .5, "dx": 1., "dy": 0.}]}
+        client = TelemetryClient()
+        calls = []
+        client._load = lambda endpoint: calls.append(endpoint) or payloads[endpoint]
+        first = client.poll(time_s=1.)
+        self.assertEqual((first.heading_deg, first.track_deg), (None, 90.))
+        client.poll(time_s=1.1)
+        self.assertEqual(calls.count("/map_obj.json"), 1)   # at most every MAP_INTERVAL_S
+        payloads["/indicators"]["compass"] = 45.
+        with_compass = client.poll(time_s=2.)
+        self.assertEqual((with_compass.heading_deg, with_compass.track_deg), (45., None))
+        self.assertEqual(calls.count("/map_obj.json"), 1)
+        payloads["/indicators"].pop("compass")
+        payloads["/map_obj.json"] = "not a list"
+        self.assertIsNone(client.poll(time_s=3.).track_deg)
+        self.assertTrue(client.poll(time_s=3.1).valid)
 
 
 class FakeClient:

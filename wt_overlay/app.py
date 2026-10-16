@@ -471,7 +471,7 @@ class OverlayController:
             return opening_cue(None, None, state, self._latch.note)
         if not state.valid:
             return OpeningCue("无数据", lines=("开局抽奖 · 等待飞行数据",))
-        self._reckoning.update(state)
+        self._reckoning.update(state, spawn)
         if self._opening_future is not None and self._opening_future.done():
             future, self._opening_future = self._opening_future, None
             try:

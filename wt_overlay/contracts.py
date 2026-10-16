@@ -33,6 +33,7 @@ class FlightState:
     raw_state: Mapping[str, Any] = field(default_factory=dict, repr=False)
     raw_indicators: Mapping[str, Any] = field(default_factory=dict, repr=False)
     normal_load_g: float | None = None  # Telemetry body Ny; independent of model L/W.
+    track_deg: float | None = None  # Own direction from /map_obj.json (the Player icon); used only without a compass.
 
 
 @dataclass(frozen=True)
