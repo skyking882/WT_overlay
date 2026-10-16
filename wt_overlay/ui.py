@@ -723,11 +723,15 @@ class ArrowGroup(HudGroup):
     def has_data(self):
         return self.cue is not None and self.cue.phase != "结束"
 
+    # The box is sized for the longest line it will show, so the countdown never resizes the window.
+    TEMPLATES = ("全加力 爬升 15°（现在 -10°）", "60 s 后拉起到 45° 发射 · 目标约 100 km",
+                 "目标约 100 km · 预计 T+100 s 命中", "8111 没给机型：按油量和推力识别机型中（7 类候选），也可在设置“机型”里选")
+
     def _measure(self):
         super()._measure()
         self.side = max(120, round(self.metrics.height() * 7))
         lines = self.cue.lines if self.cue else ()
-        width = max([self.side + 24, *(self.metrics.horizontalAdvance(t) + 24 for t in lines)])
+        width = max([self.side + 24, *(self.metrics.horizontalAdvance(t) + 24 for t in (*lines, *self.TEMPLATES[:3]))])
         height = 8 + self.header_height + (self.side if self.cue is not None and self.cue.active else 0)
         height += len(lines) * self.row_height + 8
         self.resize(min(width, max(100, self.viewport.width())), height)
@@ -1083,10 +1087,10 @@ class SettingsWindow(QWidget):
         form.addRow(row)
         opening_help = QLabel("对头出生、双方直线爬升后发射，只算第一发：按本机 FM 和 8111 实测质量、"
                               "导弹（用下面“进攻辅助”选的型号）找最早命中的飞法。敌机按所选 FM 全加力等角爬升到改平高度、"
-                              "一直直飞朝你、不做反应。出生时的机头方向当作敌方方位。箭头在屏幕固定位置，"
-                              "以速度方向为前方、地平线为水平：白色 = 爬升，琥珀 = 拉起，红色闪 = 发射，绿圈 = 保持。"
-                              "B 显上的紫色点划线 = 方案发射时目标应在的距离，光点不在那附近说明敌机没按假设飞。"
-                              "数据链按全程不断计算。")
+                              "一直直飞朝你、不做反应。出生后一加速或爬升就开始计时（也可 Ctrl+Alt+N）。"
+                              "箭头只管上下：白色 = 爬升，琥珀 = 拉起，红色闪 = 发射，绿圈 = 角度对了；航向保持出生方向。"
+                              "每种机型、导弹和出生状态只算一次并存盘，之后直接用。"
+                              "B 显上的紫色点划线 = 方案发射时目标应在的距离。数据链按全程不断计算。")
         opening_help.setWordWrap(True)
         form.addRow(opening_help)
         offense = QGroupBox("进攻辅助")

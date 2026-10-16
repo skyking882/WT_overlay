@@ -101,7 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         controller = OverlayController(mode="demo" if args.demo else "live", base_url=args.url,
                                        model_path=args.model, mass_kg=args.mass_kg,
                                        afterburner=not args.military, aircraft=args.aircraft,
-                                       sweep_fraction=args.sweep/100, payload_kg=args.payload_kg)
+                                       sweep_fraction=args.sweep/100, payload_kg=args.payload_kg,
+                                       opening_cache=True)
         if args.climb_altitude is not None:
             controller.submit({"action": "climb_target", "altitude_m": args.climb_altitude,
                                "minimum_tas_mps": args.arrival_speed_kmh/3.6 if args.arrival_speed_kmh else None})

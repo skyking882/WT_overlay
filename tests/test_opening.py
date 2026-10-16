@@ -1,5 +1,6 @@
-"""Opening-shot aid (docs/opening_shot_spec.md): spawn detection, dead reckoning, cue geometry and phases, the
-controller wiring with a stubbed planner, and (missile_sim present) one planner run against spec section 7.1."""
+"""Opening-shot aid (docs/opening_shot_spec.md): start detection, dead reckoning, the pitch cue and its phases, the
+plan cache, the controller wiring with a stubbed planner, and (missile_sim present) one planner run against spec
+section 7.1."""
 
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
@@ -12,8 +13,8 @@ from unittest.mock import patch
 
 from wt_overlay.app import OverlayController
 from wt_overlay.contracts import FlightState
-from wt_overlay.opening import (DeadReckoning, OpeningPlan, OpeningSettings, PlanRequest, Spawn, SpawnLatch, cue,
-                                deviates, loft_rule, plan_opening, validate_settings, velocity_frame_direction,
+from wt_overlay.opening import (DeadReckoning, OpeningPlan, OpeningSettings, PlanCache, PlanRequest, Spawn,
+                                SpawnLatch, cue, loft_rule, plan_opening, validate_settings, velocity_frame_direction,
                                 worker_init)
 
 MISSILE_SIM = Path(__file__).resolve().parents[2]/"missle_sim"
@@ -48,75 +49,65 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual([loft_rule(r) for r in (50000., 60000., 75000., 90000.)], [None, 25., 45., 55.])
 
 
-class SpawnTests(unittest.TestCase):
-    def test_first_valid_air_sample_is_a_spawn(self):
-        latch = SpawnLatch()
-        spawn = latch.update(state(10.))
-        self.assertEqual((spawn.time_s, spawn.heading_deg, spawn.altitude_m, spawn.manual), (10., 30., 2500., False))
-        self.assertIsNone(latch.update(state(10.1, altitude=2510., vy=30.)))
-        self.assertIs(latch.spawn, spawn)
+def climb(t, rate=30., **kw):
+    return state(t, vy=rate, **kw)
 
-    def test_a_lost_poll_is_not_a_respawn_but_a_long_gap_is(self):
-        latch = SpawnLatch()
-        latch.update(state(10.))
-        latch.update(FlightState(11., False))
-        self.assertIsNone(latch.update(state(12., altitude=2600.)))
-        self.assertIsNotNone(latch.update(state(30., heading=200.)))
-        self.assertEqual(latch.spawn.heading_deg, 200.)
 
-    def test_aircraft_change_is_a_respawn(self):
+class StartTests(unittest.TestCase):
+    def test_starts_on_the_first_clear_climb(self):
         latch = SpawnLatch()
-        latch.update(state(10.))
-        self.assertEqual(latch.update(state(10.5, aircraft="j_16")).aircraft_id, "j_16")
+        self.assertIsNone(latch.update(state(10.)))          # level at spawn speed: armed, not started
+        self.assertIn("加速或爬升", latch.note)
+        start = latch.update(climb(10.5, altitude=2510.))
+        self.assertEqual((start.time_s, start.altitude_m, start.manual), (10.5, 2510., False))
+        self.assertIsNone(latch.update(climb(11.)))            # once per life
+        self.assertIs(latch.spawn, start)
 
-    def test_airfield_or_mid_flight_start_is_not_a_spawn_until_latched(self):
+    def test_starts_on_clear_acceleration(self):
         latch = SpawnLatch()
-        for t in (10., 12., 14., 15.5):
-            self.assertIsNone(latch.update(state(t, altitude=200., tas=60.)))
-        self.assertIsNone(latch.spawn)
-        self.assertIn("不像空中出生", latch.note)
-        self.assertIsNone(latch.update(state(16.5, altitude=2500., tas=290.)))   # the window has closed
-        manual = latch.latch(state(21., altitude=8000., tas=450.))
+        self.assertIsNone(latch.update(state(0., tas=270.)))
+        self.assertIsNone(latch.update(state(1., tas=273.)))
+        self.assertIsNotNone(latch.update(state(2., tas=277.)))
+
+    def test_any_speed_or_altitude_in_the_air_counts(self):
+        # Spawns are 0.8 Mach and up (user): no speed or altitude window.
+        self.assertIsNotNone(SpawnLatch().update(climb(0., altitude=5200., tas=420.)))
+        self.assertIsNone(SpawnLatch().update(climb(0., altitude=100., tas=60.)))    # on the runway
+
+    def test_new_life_rearms(self):
+        for event in (dict(t=20.),                                   # telemetry gap
+                      dict(t=11., fuel_kg=4000.),                     # fuel went up: respawned
+                      dict(t=11., altitude=4000.),                    # teleported
+                      dict(t=11., aircraft="j_16")):                  # another aircraft
+            with self.subTest(event=event):
+                latch = SpawnLatch()
+                latch.update(state(9.5, fuel_kg=1500.))
+                first = latch.update(climb(10., fuel_kg=1499.))
+                self.assertIsNotNone(first)
+                t = event.pop("t")
+                second = latch.update(climb(t, **{"fuel_kg": 1498., **event}))
+                self.assertIsNotNone(second)
+                self.assertIsNot(second, first)
+
+    def test_a_lost_poll_or_a_type_appearing_is_not_a_new_life(self):
+        latch = SpawnLatch()
+        first = latch.update(climb(0., aircraft=None))
+        self.assertIsNone(latch.update(climb(2., aircraft="j_16")))       # type identified later
+        self.assertIsNone(latch.update(climb(4.5, aircraft="j_16")))      # 2.5 s gap
+        self.assertIs(latch.spawn, first)
+
+    def test_manual_start(self):
+        latch = SpawnLatch()
+        self.assertIsNone(latch.update(state(0., altitude=8000., tas=450.)))
+        manual = latch.latch(state(1., altitude=8000., tas=450.))
         self.assertTrue(manual.manual)
-        self.assertEqual(latch.spawn.altitude_m, 8000.)
+        self.assertIsNone(latch.latch(FlightState(2., False)))
 
-    def test_loading_samples_before_the_spawn_do_not_hide_it(self):
-        latch = SpawnLatch()
-        self.assertIsNone(latch.update(state(10., altitude=0., tas=0.)))
-        spawn = latch.update(state(10.5))
-        self.assertEqual((spawn.time_s, spawn.altitude_m), (10.5, 2500.))
-
-    def test_no_type_is_not_a_blocker_and_a_type_arriving_is_not_a_respawn(self):
-        latch = SpawnLatch()
-        spawn = latch.update(state(1., aircraft=None))
-        self.assertIsNone(spawn.aircraft_id)
-        self.assertIsNone(latch.update(state(2., aircraft="j_16")))
-        self.assertIs(latch.spawn, spawn)
-        self.assertIsNotNone(latch.update(state(2.5, aircraft="f_16c_block_52_aesa")))   # a real type change
-
-    def test_no_heading_reading_is_not_a_blocker(self):
-        latch = SpawnLatch()
-        spawn = latch.update(state(1., heading=None))
-        self.assertIsNotNone(spawn)
-        self.assertIsNone(spawn.heading_deg)
-        latch.update(state(2., heading=None, track_deg=31.))   # the map direction arrives later
-        self.assertEqual(latch.spawn.heading_deg, 31.)
-        self.assertIsNotNone(SpawnLatch().latch(state(1., heading=None)))
-
-    def test_heading_falls_back_to_the_map_direction(self):
-        from wt_overlay.opening import heading_of
-        self.assertEqual(heading_of(state(1., heading=10., track_deg=40.)), 10.)
-        self.assertEqual(heading_of(state(1., heading=None, track_deg=400.)), 40.)
-        self.assertIsNone(heading_of(state(1., heading=None)))
-
-    def test_dead_reckoning_along_and_across_the_spawn_line(self):
+    def test_dead_reckoning_along_the_line(self):
         reckoning = DeadReckoning(SPAWN)
         for k in range(1, 101):
-            reckoning.update(state(100.+.1*k, tas=300., heading=30.))
+            reckoning.update(state(100.+.1*k, tas=300.))
         self.assertAlmostEqual(reckoning.x, 3000., delta=1.)
-        self.assertAlmostEqual(reckoning.y, 0., delta=1e-6)
-        reckoning.update(state(110.1, tas=300., heading=120.))
-        self.assertAlmostEqual(reckoning.y, 30., delta=.1)
         reckoning.update(state(130., tas=300.))   # a 20 s gap is not integrated
         self.assertAlmostEqual(reckoning.x, 3000., delta=1.)
 
@@ -124,63 +115,78 @@ class SpawnTests(unittest.TestCase):
 class CueTests(unittest.TestCase):
     def test_direction_in_the_velocity_frame(self):
         self.assertEqual(tuple(round(v, 6) for v in velocity_frame_direction(30., 10., 30., 10.)), (0., 0., 1.))
-        right = velocity_frame_direction(30., 0., 40., 0., gain=1.)
-        self.assertAlmostEqual(right[0], math.sin(math.radians(10.)), places=6)
         up = velocity_frame_direction(30., 0., 30., 10., gain=1.)
         self.assertAlmostEqual(up[1], math.sin(math.radians(10.)), places=6)
         self.assertGreater(velocity_frame_direction(30., 0., 30., 5.)[1], 3*math.sin(math.radians(5.)))
-        behind = velocity_frame_direction(0., 0., 180., 0.)
-        self.assertLess(behind[2], -.99)
-        # Across north: wanted 350 deg from 10 deg is a left turn.
-        self.assertLess(velocity_frame_direction(10., 0., 350., 0.)[0], 0.)
 
     def test_phases_follow_the_plan(self):
         at = lambda t, **kw: cue(PLAN, SPAWN, state(100.+t, **kw))
-        climb = at(20., vy=290.*math.sin(math.radians(15.)))
-        self.assertEqual((climb.phase, climb.target_path_deg), ("爬升", 15.))
-        self.assertTrue(climb.on_course)
-        self.assertIn("25 s 后拉起到 24°", climb.lines[0])
-        self.assertIn("66 km", climb.lines[1])
+        level = at(20.)
+        self.assertEqual((level.phase, level.target_path_deg, level.yaw_error_deg), ("爬升", 15., None))
+        self.assertEqual(level.lines[0], "全加力 爬升 15°（现在 0°）")
+        self.assertIn("25 s 后拉起到 24° 发射", level.lines[1])
+        self.assertIn("66 km", level.lines[1])
+        self.assertAlmostEqual(level.direction[0], 0.)
+        self.assertGreater(level.direction[1], 0.)
+        on = at(20., vy=290.*math.sin(math.radians(15.)))
+        self.assertTrue(on.on_course)
         pull = at(45.5)
         self.assertEqual((pull.phase, pull.target_path_deg, pull.urgent), ("拉起", 24., False))
-        self.assertAlmostEqual(pull.path_error_deg, 24.)
+        self.assertEqual(pull.lines[1], "1 s 后发射")
         fire = at(47.)
         self.assertEqual((fire.phase, fire.urgent, fire.launch_range_m), ("发射", True, 65500.))
         self.assertEqual(at(60.).phase, "结束")
         self.assertFalse(at(60.).active)
 
-    def test_yaw_error_sign(self):
-        left_of_line = cue(PLAN, SPAWN, state(110., heading=20.))
-        self.assertAlmostEqual(left_of_line.yaw_error_deg, 10.)
-        self.assertGreater(left_of_line.direction[0], 0.)
+    def test_countdown_changes_once_a_second(self):
+        lines = {cue(PLAN, SPAWN, state(100.+20.+.1*k)).lines for k in range(10)}
+        self.assertLessEqual(len(lines), 2)
 
-    def test_without_any_heading_the_arrow_is_up_down_only(self):
-        no_heading = cue(PLAN, replace(SPAWN, heading_deg=None), state(120., heading=None, vy=0.))
-        self.assertIsNone(no_heading.yaw_error_deg)
-        self.assertAlmostEqual(no_heading.direction[0], 0.)
-        self.assertGreater(no_heading.direction[1], 0.)
-        self.assertIn("无航向读数", no_heading.lines[-1])
-
-    def test_without_a_plan_the_default_climb_is_shown(self):
-        waiting = cue(None, SPAWN, state(101.))
-        self.assertEqual((waiting.phase, waiting.target_path_deg), ("计算中", 15.))
+    def test_before_a_plan_the_default_climb_without_any_computing_text(self):
+        waiting = cue(None, SPAWN, state(101., vy=10.))
+        self.assertEqual((waiting.phase, waiting.target_path_deg), ("爬升", 15.))
+        self.assertEqual(len(waiting.lines), 1)
+        self.assertNotIn("计算", waiting.lines[0])
         self.assertTrue(waiting.active)
-        self.assertEqual(cue(None, None, state(1.)).phase, "等待出生")
+        self.assertEqual(cue(None, None, state(1.)).phase, "等待开始")
         failed = cue(OpeningPlan(False, "打不到"), SPAWN, state(110.))
-        self.assertEqual(failed.phase, "无方案")
-        self.assertFalse(failed.active)
+        self.assertEqual((failed.phase, failed.target_path_deg), ("爬升", 15.))
+        self.assertIn("打不到", failed.lines[1])
 
     def test_fire_along_the_climb_without_pull_up(self):
         plan = replace(PLAN, pitch_deg=None, pull_s=46.5)
-        climb = cue(plan, SPAWN, state(130.))
-        self.assertIn("16 s 后发射", climb.lines[0])
+        climb_cue = cue(plan, SPAWN, state(130.))
+        self.assertIn("17 s 后发射", climb_cue.lines[1])
         self.assertEqual(cue(plan, SPAWN, state(147.)).target_path_deg, 15.)
 
-    def test_deviation_from_the_predicted_climb(self):
-        on = state(110., tas=320., vy=320.*math.sin(math.radians(15.)))
-        self.assertFalse(deviates(PLAN, on, 10.))
-        self.assertTrue(deviates(PLAN, replace(on, vertical_speed_mps=320.*math.sin(math.radians(20.))), 10.))
-        self.assertTrue(deviates(PLAN, replace(on, tas_mps=360.), 10.))
+    def test_slow_or_on_the_ground(self):
+        parked = cue(PLAN, SPAWN, state(110., tas=0.))
+        self.assertIsNone(parked.direction)
+        self.assertIn("速度太低", parked.lines[-1])
+
+
+class CacheTests(unittest.TestCase):
+    def request(self, altitude=2500., tas=290., mass=11000., aircraft="f_16c_block_52_aesa"):
+        return PlanRequest(aircraft, mass, "us_aim_120c_5", OpeningSettings(True, "us_aim_120c_5"), altitude, tas,
+                           0., 0., altitude, tas, 0.)
+
+    def test_exact_bins_nearest_and_disk(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "sub", "plans.json")
+            cache = PlanCache(path)
+            self.assertIsNone(cache.get(self.request()))
+            self.assertIsNone(cache.nearest(self.request()))
+            cache.put(self.request(), PLAN)
+            self.assertEqual(cache.get(self.request(altitude=2600., tas=295., mass=11300.)).hit_s, PLAN.hit_s)
+            self.assertIsNone(cache.get(self.request(altitude=3500.)))
+            self.assertEqual(cache.nearest(self.request(altitude=3500.)).hit_s, PLAN.hit_s)
+            self.assertIsNone(cache.nearest(self.request(aircraft="j_16")))
+            cache.put(self.request(altitude=4000.), OpeningPlan(False, "打不到"))   # failures are not kept
+            reloaded = PlanCache(path)
+            self.assertEqual(reloaded.get(self.request()).window_s, PLAN.window_s)
+            self.assertEqual(len(reloaded.plans), 1)
+            self.assertEqual(PlanCache(os.path.join(folder, "missing.json")).plans, {})
 
 
 class MapDirectionTests(unittest.TestCase):
@@ -282,118 +288,104 @@ class ControllerTests(unittest.TestCase):
             self.client.state = FlightState(t, False)
         return self.controller.tick(t)
 
-    def wait_plan(self, t):
-        for _ in range(100):
-            snapshot = self.tick(t)
-            if snapshot.opening.plan is not None:
-                return snapshot
-            time.sleep(.01)
+    def settle(self, t, count=1, **kw):
+        for _ in range(200):
+            snapshot = self.tick(t, **kw)
+            if len(self.requests) >= count and self.controller._opening_job is None:
+                return self.tick(t, **kw)
+            time.sleep(.005)
         self.fail("no plan")
 
     def test_off_by_default(self):
         self.assertIsNone(self.tick(1.).opening)
 
-    def test_early_replan_when_the_flown_climb_leaves_the_plan(self):
+    def test_computes_ahead_then_the_start_finds_the_plan(self):
         self.enable()
         with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
-            self.tick(0.)
-            self.wait_plan(.1)
-            for t in (1., 2., 3., 4., 5., 6.):   # level instead of 15 deg for more than DEVIATION_HOLD_S
-                self.tick(t, vy=0., tas=290.+3.*t)
-                time.sleep(.01)
-            for _ in range(100):
-                if len(self.requests) == 2:
-                    break
-                time.sleep(.01)
-            self.assertEqual(len(self.requests), 2)
-            self.assertEqual(self.requests[1].t_s, 5.)   # MIN_REPLAN_S after the first plan
-
-    def test_spawn_plan_and_cue(self):
-        self.enable()
-        with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
-            self.assertEqual(self.tick(1., valid=False).opening.phase, "等待出生")
-            self.assertEqual(self.tick(2.).opening.phase, "计算中")
-            snapshot = self.wait_plan(2.1)
+            self.assertEqual(self.tick(0.).opening.phase, "等待开始")
+            self.settle(.1)                                     # computed ahead from where the aircraft is
+            self.assertEqual(self.requests[0].t_s, 0.)
+            snapshot = self.tick(.2, vy=30.)                     # the climb starts the clock
             self.assertEqual(snapshot.opening.phase, "爬升")
-            request = self.requests[0]
-            self.assertEqual((request.aircraft_id, request.mass_kg, request.missile, request.hint),
-                             ("f_16c_block_52_aesa", 11000., "us_aim_120c_5", None))
-            self.assertEqual((request.spawn_altitude_m, request.spawn_tas_mps), (2500., 290.))
-            self.assertEqual(snapshot.opening.launch_range_m, 65500.)
-
-    def test_replans_on_schedule_with_a_hint_and_freezes_before_the_pull(self):
-        self.enable()
-        with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
-            self.tick(0.)
-            self.wait_plan(.1)
-            for t in range(1, 15):   # on the predicted climb: no early re-plan
-                self.tick(float(t), vy=(290.+3.*t)*math.sin(math.radians(15.)), tas=290.+3.*t)
-            time.sleep(.05)
-            self.tick(14.5, vy=332.*math.sin(math.radians(15.)), tas=333.5)
+            self.assertIsNotNone(snapshot.opening.plan)          # straight from the cache
             self.assertEqual(len(self.requests), 1)
-            self.tick(15.5, vy=336.*math.sin(math.radians(15.)), tas=336.5)
-            for _ in range(100):
-                if len(self.requests) == 2:
-                    break
-                time.sleep(.01)
-            self.assertEqual(self.requests[1].hint, (15., 45.))
-            self.assertAlmostEqual(self.requests[1].x_m, 4600., delta=300.)
-            for t in range(16, 51):
-                self.tick(float(t), vy=(290.+3.*t)*math.sin(math.radians(15.)), tas=290.+3.*t)
-                time.sleep(.002)
-            self.assertEqual([round(r.t_s) for r in self.requests], [0, 16, 31])   # nothing from 42 s on
+            self.assertIn("拉起到 24°", snapshot.opening.lines[1])
 
-    def test_respawn_resets_the_plan(self):
+    def test_plans_once_and_never_again(self):
         self.enable()
         with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
-            self.tick(0.)
-            self.wait_plan(.1)
-            self.tick(10., valid=False)
-            self.assertEqual(self.tick(30., heading=210.).opening.phase, "计算中")
-            self.wait_plan(30.1)
-            self.assertEqual(len(self.requests), 2)
+            snapshot = self.tick(0., vy=30.)                     # starts at once
+            self.assertEqual((snapshot.opening.phase, len(snapshot.opening.lines)), ("爬升", 1))
+            self.settle(.1)
+            for t in range(1, 60):
+                self.tick(float(t), vy=0. if t % 7 else 40., tas=290.+t)
+                time.sleep(.001)
+            self.assertEqual(len(self.requests), 1)
 
-    def test_missing_input_keeps_the_default_climb_and_says_what_to_set(self):
+    def test_nearest_cached_plan_at_once_then_the_exact_one(self):
+        self.enable()
+        other = PlanRequest("f_16c_block_52_aesa", 11000., "us_aim_120c_5", OpeningSettings(True, "us_aim_120c_5"),
+                            4000., 290., 0., 0., 4000., 290., 0.)
+        self.controller._opening_cache.put(other, replace(PLAN, hit_s=99.))
+        with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
+            snapshot = self.tick(0., vy=30.)
+            self.assertEqual(snapshot.opening.plan.hit_s, 99.)    # nearest, shown at once
+            snapshot = self.settle(.1)
+            self.assertEqual(snapshot.opening.plan.hit_s, PLAN.hit_s)
+
+    def test_missing_input_keeps_the_default_climb_and_plans_once_it_is_set(self):
         self.controller.submit({"action": "opening", "settings": asdict(OpeningSettings(True, ""))})
-        self.tick(0.)
-        snapshot = self.tick(.1)
-        self.assertEqual((snapshot.opening.phase, snapshot.opening.target_path_deg), ("计算中", 15.))
-        self.assertIn("还不能计算", snapshot.opening.lines[0])
-        self.assertIn("选择导弹", snapshot.opening.lines[1])
+        with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
+            snapshot = self.tick(0., vy=30.)
+            self.assertEqual((snapshot.opening.phase, snapshot.opening.target_path_deg), ("爬升", 15.))
+            self.assertIn("选择导弹", snapshot.opening.lines[1])
+            for t in (1., 2., 3., 4.):
+                self.tick(t)
+            self.enable()
+            self.settle(5.)
+            self.assertEqual(self.requests[0].t_s, 5.)          # from where the aircraft is now
+            self.assertEqual(len(self.requests), 1)
 
     def test_no_type_from_8111_then_the_aircraft_is_picked(self):
         from wt_overlay.telemetry import INDICATORS_MISSING
         self.enable()
         with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
-            self.client.state = state(0., aircraft=None, heading=None, mass_kg=11000., notes=(INDICATORS_MISSING,))
-            self.controller.tick(0.)
-            self.client.state = replace(self.client.state, time_s=.1)
-            snapshot = self.controller.tick(.1)
-            self.assertEqual(snapshot.opening.phase, "计算中")
+            self.client.state = state(0., vy=30., aircraft=None, heading=None, mass_kg=11000.,
+                                      notes=(INDICATORS_MISSING,))
+            snapshot = self.controller.tick(0.)
+            self.assertEqual(snapshot.opening.phase, "爬升")
             self.assertIn("8111 没给机型", snapshot.opening.lines[1])
-            self.assertIsNotNone(self.controller._latch.spawn)   # the spawn does not wait for the type
             self.controller.submit({"action": "aircraft", "id": "f_16c_block_52_aesa"})
-            self.client.state = replace(self.client.state, time_s=.2)
-            self.controller.tick(.2)
-            for _ in range(100):
+            for k in range(1, 100):
+                self.client.state = replace(self.client.state, time_s=.1*k)
+                self.controller.tick(.1*k)
                 if self.requests:
                     break
-                time.sleep(.01)
+                time.sleep(.005)
             self.assertEqual(self.requests[0].aircraft_id, "f_16c_block_52_aesa")
-            self.assertEqual(self.controller._latch.spawn.time_s, 0.)   # picking the type is not a respawn
+            self.assertEqual(self.controller._latch.spawn.time_s, 0.)
 
-    def test_manual_restart_latches_now(self):
+    def test_new_life_starts_again(self):
+        self.enable()
+        with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
+            first = self.tick(0., vy=30.).opening
+            self.tick(10., valid=False)
+            self.assertEqual(self.tick(30.).opening.phase, "等待开始")
+            again = self.tick(30.5, vy=30.).opening
+            self.assertEqual((again.phase, again.t_s), ("爬升", 0.))
+            self.assertIsNot(self.controller._latch.spawn, first)
+
+    def test_manual_start(self):
         self.enable()
         with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
             self.tick(0., altitude=8000., tas=450.)
-            self.assertEqual(self.tick(5., altitude=8000., tas=450.).opening.phase, "等待出生")
             self.controller.submit({"action": "opening_restart"})
-            self.assertEqual(self.tick(6., altitude=8000., tas=450.).opening.phase, "计算中")
+            self.assertEqual(self.tick(1., altitude=8000., tas=450.).opening.phase, "爬升")
 
-    def test_disabling_drops_the_spawn(self):
+    def test_disabling_drops_the_start(self):
         self.enable()
         with patch("wt_overlay.app.plan_opening", side_effect=self.fake_plan):
-            self.tick(0.)
+            self.tick(0., vy=30.)
             self.controller.submit({"action": "opening", "settings": asdict(OpeningSettings(False, "us_aim_120c_5"))})
             self.assertIsNone(self.tick(1.).opening)
             self.assertIsNone(self.controller._latch.spawn)

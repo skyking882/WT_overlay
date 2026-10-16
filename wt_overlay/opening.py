@@ -13,11 +13,12 @@ enemy spawn).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from collections import deque
+from dataclasses import asdict, dataclass, field, replace
 from functools import lru_cache
+import json
 import math
 import os
-import sys
 import time
 
 from .climb import CUE_DEADBAND_DEG, valid_number
@@ -27,8 +28,13 @@ SPAWN_ALTITUDE_M = (1000., 6000.)
 SPAWN_TAS_MPS = (150., 400.)
 SPAWN_MAX_VY_MPS = 20.
 SPAWN_GAP_S = 3.          # a shorter telemetry gap is a lost poll, not a respawn
-SPAWN_WINDOW_S = 5.       # after a gap, the first spawn-like sample within this long is the spawn
-HEADING_FILL_S = 5.       # a spawn without a heading takes the first heading reading within this long
+NEW_LIFE_FUEL_KG = 100.   # fuel going up this much between samples = a new aircraft (respawn)
+NEW_LIFE_ALTITUDE_M = 500.  # an altitude jump this large within 2 s = a new aircraft
+AIRBORNE_ALTITUDE_M = 300.
+AIRBORNE_TAS_MPS = 100.
+START_VY_MPS = 8.         # the clock starts on a clear climb ...
+START_DV_MPS = 6.         # ... or this much TAS gained within START_DV_S
+START_DV_S = 3.
 CLIMB_CAP_M = 12000.      # the climb command's altitude; launches come before it
 DEFAULT_CLIMB_DEG = 15.   # shown until the first plan arrives
 CLIMBS_DEG = (10., 35.)   # searched climb angles
@@ -80,7 +86,7 @@ class OpeningSettings:
     enemy_missile: str = "us_aim_120c_5"      # only its mass is used
     enemy_climb_deg: float = 15.
     enemy_level_m: float = 10000.
-    workers: int = 2
+    workers: int = 1
 
 
 def validate_settings(s: OpeningSettings) -> None:
@@ -132,21 +138,21 @@ def heading_of(state) -> float | None:
 
 
 class SpawnLatch:
-    """Detects an air spawn. After a telemetry gap of SPAWN_GAP_S (or an aircraft change) the first sample within
-    SPAWN_WINDOW_S that looks like a spawn (altitude, TAS, nearly level) is taken; a heading is not required (it is
-    filled in from the first heading reading in the next HEADING_FILL_S), nor is the aircraft type: a type that
-    appears later (picked in settings) is not a respawn. ``latch`` takes the current state instead (manual
-    restart, e.g. when the overlay started mid-flight)."""
+    """When to start the clock (user, 2026-10-16: "8111 看到明显变化（加速 / 爬升）就开始"). A new life (a telemetry
+    gap of SPAWN_GAP_S, fuel jumping up, an altitude jump, or a change of aircraft type) arms the latch; so does
+    switching the aid on. Armed, the first airborne sample with a clear climb (Vy >= START_VY_MPS) or acceleration
+    (TAS up START_DV_MPS within START_DV_S) starts it: that sample is the 'spawn' the plan counts from. No speed or
+    altitude window and no heading. ``latch`` starts it now (Ctrl+Alt+N)."""
 
     def __init__(self):
         self.reset()
 
     def reset(self):
         self.spawn: Spawn | None = None
-        self.note = "等待空中出生"
-        self._last_valid_s = None
-        self._identity = None
-        self._window_until = None
+        self.note = "开局抽奖 · 加速或爬升时开始"
+        self._armed = True
+        self._last = None          # previous usable sample: (time, altitude, fuel, identity)
+        self._speeds = deque()     # recent (time, TAS) while armed
 
     @staticmethod
     def _usable(state):
@@ -154,76 +160,66 @@ class SpawnLatch:
 
     def latch(self, state, manual=True) -> Spawn | None:
         if not self._usable(state):
-            self.note = ("8111 没有飞行数据，无法当作出生" if not state.valid else
-                         "8111 缺少高度或真空速，无法当作出生")
+            self.note = ("8111 没有飞行数据，无法开始" if not state.valid else "8111 缺少高度或真空速，无法开始")
             return None
-        self.spawn = Spawn(state.time_s, heading_of(state), float(state.altitude_m), float(state.tas_mps),
-                           state.aircraft_id, manual)
+        self.spawn = Spawn(state.time_s, None, float(state.altitude_m), float(state.tas_mps), state.aircraft_id,
+                           manual)
         self.note = ""
-        self._window_until = None
+        self._armed = False
+        self._speeds.clear()
         return self.spawn
 
-    @staticmethod
-    def _spawn_like(state):
-        vy = state.vertical_speed_mps
-        return (SPAWN_ALTITUDE_M[0] <= state.altitude_m <= SPAWN_ALTITUDE_M[1]
-                and SPAWN_TAS_MPS[0] <= state.tas_mps <= SPAWN_TAS_MPS[1]
-                and (vy is None or abs(vy) <= SPAWN_MAX_VY_MPS))
+    def _new_life(self, state, identity):
+        if self._last is None:
+            return False
+        t, altitude, fuel, previous = self._last
+        dt = state.time_s-t
+        return (dt > SPAWN_GAP_S
+                or (valid_number(fuel) and valid_number(state.fuel_kg) and state.fuel_kg-fuel > NEW_LIFE_FUEL_KG)
+                or (dt < 2. and abs(state.altitude_m-altitude) > NEW_LIFE_ALTITUDE_M)
+                or (identity is not None and previous is not None and identity != previous))
 
     def update(self, state) -> Spawn | None:
-        """Returns the new Spawn on the sample where one is detected, else None."""
+        """Returns the Spawn on the sample that starts the clock, else None."""
         if not self._usable(state):
-            if state.valid:
-                self.note = "等待空中出生：8111 缺少高度或真空速"
             return None
         from .fm.catalog import aircraft_key
         identity = aircraft_key(state.aircraft_id) if state.aircraft_id else None
-        changed = identity is not None and self._identity is not None and identity != self._identity
-        fresh = self._last_valid_s is None or state.time_s-self._last_valid_s > SPAWN_GAP_S or changed
-        self._last_valid_s = state.time_s
-        self._identity = identity or self._identity
-        if fresh:
+        if self._new_life(state, identity):
             self.spawn = None
-            self._window_until = state.time_s+SPAWN_WINDOW_S
-        spawn = self.spawn
-        if spawn is not None and spawn.heading_deg is None and state.time_s-spawn.time_s <= HEADING_FILL_S:
-            heading = heading_of(state)
-            if heading is not None:
-                self.spawn = replace(spawn, heading_deg=heading)
-        if self._window_until is None:
+            self._armed = True
+            self._speeds.clear()
+            self.note = "开局抽奖 · 加速或爬升时开始"
+        previous = self._last[3] if self._last else None
+        self._last = (state.time_s, state.altitude_m, state.fuel_kg, identity or previous)
+        if not self._armed:
             return None
-        if self._spawn_like(state):
+        self._speeds.append((state.time_s, state.tas_mps))
+        while self._speeds and state.time_s-self._speeds[0][0] > START_DV_S:
+            self._speeds.popleft()
+        airborne = state.altitude_m >= AIRBORNE_ALTITUDE_M and state.tas_mps >= AIRBORNE_TAS_MPS
+        vy = state.vertical_speed_mps
+        climbing = valid_number(vy) and vy >= START_VY_MPS
+        accelerating = state.tas_mps-min(v for _, v in self._speeds) >= START_DV_MPS
+        if airborne and (climbing or accelerating):
             return self.latch(state, manual=False)
-        if state.time_s > self._window_until:
-            self._window_until = None
-            self.note = (f"不像空中出生（{state.altitude_m:.0f} m，{state.tas_mps*3.6:.0f} km/h）；"
-                         "可按 Ctrl+Alt+N 以现在为出生")
         return None
 
 
 class DeadReckoning:
-    """Own position along (x) and across (y) the spawn line, integrated from TAS, Vy and the heading (without any
-    heading reading: all of it along the line)."""
+    """Own distance flown along the spawn line, integrated from TAS and Vy (no heading: all of it along the line)."""
 
     def __init__(self, spawn: Spawn):
-        self.spawn = spawn
-        self.x = self.y = 0.
+        self.x = 0.
         self.last_s = spawn.time_s
 
     def update(self, state, spawn: Spawn | None = None):
-        self.spawn = spawn or self.spawn
         if not (state.valid and valid_number(state.tas_mps)):
             return
         dt = state.time_s-self.last_s
         self.last_s = state.time_s
-        if not 0 < dt < 2.:
-            return
-        path = path_angle_deg(state) or 0.
-        horizontal = state.tas_mps*math.cos(math.radians(path))
-        heading, reference = heading_of(state), self.spawn.heading_deg
-        off = 0. if heading is None or reference is None else math.radians(wrap(heading-reference))
-        self.x += horizontal*math.cos(off)*dt
-        self.y += horizontal*math.sin(off)*dt
+        if 0 < dt < 2.:
+            self.x += state.tas_mps*math.cos(math.radians(path_angle_deg(state) or 0.))*dt
 
 
 # -- the search ----------------------------------------------------------------------------------------------------
@@ -420,15 +416,9 @@ def own_profile(job):
 
 
 def worker_init():
-    """Worker processes run below normal priority so they do not take frames from the game."""
-    try:
-        if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
-        else:
-            os.nice(10)
-    except (OSError, AttributeError):
-        pass
+    """One worker at normal priority: below normal it could be starved by the game and never finish (a plan is
+    computed once per new aircraft / start state and then cached)."""
+    return None
 
 
 class Cancelled(Exception):
@@ -567,55 +557,116 @@ def velocity_frame_direction(heading_deg, path_deg, wanted_heading_deg, wanted_p
 
 
 def cue(plan: OpeningPlan | None, spawn: Spawn | None, state, note="") -> OpeningCue:
-    """Arrow and text for the current sample. Without a plan yet the arrow shows the default climb."""
+    """Pitch arrow and two text lines for the current sample (no heading: the pilot keeps the spawn heading).
+    Before the plan arrives the climb is the default DEFAULT_CLIMB_DEG; the launch line only appears with a plan.
+    Countdowns are whole seconds so the text changes at most once a second."""
     if spawn is None:
-        return OpeningCue("等待出生", lines=(note or "开局抽奖 · 等待空中出生",))
+        return OpeningCue("等待开始", lines=(note or "开局抽奖 · 加速或爬升时开始",))
     t = state.time_s-spawn.time_s
-    if plan is not None and not plan.available:
-        return OpeningCue("无方案", t, lines=(f"开局抽奖：{plan.reason}",), plan=plan)
-    if plan is not None and t > plan.window_s[1]+END_AFTER_WINDOW_S:
+    usable = plan is not None and plan.available
+    if usable and t > plan.window_s[1]+END_AFTER_WINDOW_S:
         return OpeningCue("结束", t, plan=plan)
-    if plan is None:
-        phase, wanted = "计算中", DEFAULT_CLIMB_DEG
-        lines = (f"全加力 爬升 {DEFAULT_CLIMB_DEG:.0f}° · 计算中…",)
-    elif t < plan.pull_s:
-        phase, wanted = "爬升", plan.climb_deg
-        first = f"全加力 爬升 {plan.climb_deg:.0f}°"
-        first += (f" · {plan.pull_s-t:.0f} s 后拉起到 {plan.pitch_deg:.0f}°" if plan.pitch_deg is not None
-                  else f" · {plan.launch_s-t:.0f} s 后发射")
-        lines = (first, f"发射时目标约 {plan.launch_range_m/1000:.0f} km · 预计 T+{plan.hit_s:.0f} s 命中")
+    path = path_angle_deg(state) if state.valid else None
+    now = "" if path is None else f"（现在 {path:.0f}°）"
+    if not usable or t < plan.pull_s:
+        phase = "爬升"
+        wanted = plan.climb_deg if usable else DEFAULT_CLIMB_DEG
+        lines = [f"全加力 爬升 {wanted:.0f}°{now}"]
+        if usable:
+            wait = math.ceil(plan.pull_s-t)
+            launch = (f"{wait} s 后拉起到 {plan.pitch_deg:.0f}° 发射" if plan.pitch_deg is not None else
+                      f"{math.ceil(plan.launch_s-t)} s 后发射")
+            lines.append(f"{launch} · 目标约 {plan.launch_range_m/1000:.0f} km")
+        elif plan is not None:
+            lines.append(f"发射时机：{plan.reason}")
     elif t < plan.launch_s:
         phase = "拉起"
         wanted = plan.pitch_deg if plan.pitch_deg is not None else plan.climb_deg
-        lines = (f"拉起到 {wanted:.0f}° · {plan.launch_s-t:.1f} s 后发射",
-                 f"目标约 {plan.launch_range_m/1000:.0f} km")
+        lines = [f"拉起到 {wanted:.0f}°{now}", f"{math.ceil(plan.launch_s-t)} s 后发射"]
     else:
         phase = "发射"
         wanted = plan.pitch_deg if plan.pitch_deg is not None else plan.climb_deg
-        lines = ("发射！", f"窗口到 T+{plan.window_s[1]:.0f} s · 目标约 {plan.launch_range_m/1000:.0f} km"
-                           f" · 预计 T+{plan.hit_s:.0f} s 命中")
-    if (state.valid and state.altitude_m is not None and phase == "爬升"
+        lines = ["发射！", f"目标约 {plan.launch_range_m/1000:.0f} km · 预计 T+{plan.hit_s:.0f} s 命中"]
+    if (phase == "爬升" and state.valid and valid_number(state.altitude_m)
             and state.altitude_m >= max(CLIMB_CAP_M, spawn.altitude_m)-200.):
         wanted = 0.
-    path = path_angle_deg(state) if state.valid else None
-    if path is None or state.tas_mps < SLOW_MPS:
-        missing = "速度太低（在地面？）：等起飞" if valid_number(state.tas_mps) and state.tas_mps < SLOW_MPS else "缺少垂直速度"
-        return OpeningCue(phase, t, wanted, lines=(*lines, missing), plan=plan,
-                          launch_range_m=plan.launch_range_m if plan else None)
-    heading = heading_of(state) if state.valid else None
-    if heading is None or spawn.heading_deg is None:
-        # No heading reading: up / down only; the pilot keeps the spawn heading.
-        yaw, heading, reference = None, 0., 0.
-        lines = (*lines, "无航向读数：保持出生时的机头方向")
-    else:
-        reference = spawn.heading_deg
-        yaw = wrap(reference-heading)
+    if path is None or not valid_number(state.tas_mps) or state.tas_mps < SLOW_MPS:
+        lines.append("速度太低（在地面？）" if valid_number(state.tas_mps) and state.tas_mps < SLOW_MPS
+                     else "缺少垂直速度")
+        return OpeningCue(phase, t, wanted, lines=tuple(lines), plan=plan,
+                          launch_range_m=plan.launch_range_m if usable else None)
     pitch_error = wanted-path
-    direction = velocity_frame_direction(heading, path, reference, wanted)
-    error = math.hypot((yaw or 0.)*math.cos(math.radians(path)), pitch_error)
-    return OpeningCue(phase, t, wanted, yaw, pitch_error, direction, on_course=error < CUE_DEADBAND_DEG,
-                      urgent=phase == "发射", lines=lines, plan=plan,
-                      launch_range_m=plan.launch_range_m if plan else None)
+    return OpeningCue(phase, t, wanted, None, pitch_error, velocity_frame_direction(0., path, 0., wanted),
+                      on_course=abs(pitch_error) < CUE_DEADBAND_DEG, urgent=phase == "发射", lines=tuple(lines),
+                      plan=plan, launch_range_m=plan.launch_range_m if usable else None)
+
+
+class PlanCache:
+    """Plans already computed, kept on disk: the same aircraft, missile, scenario and a nearby start state
+    (altitude, TAS, mass bins) needs no new computation. ``nearest`` gives the closest plan of the same aircraft,
+    missile and scenario to fly at once while the exact one is computed."""
+    ALTITUDE_BIN_M, TAS_BIN_MPS, MASS_BIN_KG = 500., 20., 1000.
+
+    def __init__(self, path=None):
+        self.path = path
+        self.plans = {}
+        if path is not None:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    for key, value in json.load(f).items():
+                        value["window_s"] = tuple(value["window_s"]) if value.get("window_s") else None
+                        self.plans[key] = OpeningPlan(**value)
+            except (OSError, ValueError, TypeError):
+                self.plans = {}
+
+    @staticmethod
+    def scenario(request):
+        s = request.settings
+        return "|".join(str(x) for x in (request.aircraft_id, request.missile, s.distance_m, s.enemy_aircraft,
+                                         s.enemy_fuel_fraction, s.enemy_missiles, s.enemy_climb_deg, s.enemy_level_m))
+
+    def key(self, request):
+        bins = tuple(math.floor(value/size+.5) for value, size in (
+            (request.altitude_m, self.ALTITUDE_BIN_M), (request.tas_mps, self.TAS_BIN_MPS),
+            (request.mass_kg, self.MASS_BIN_KG)))
+        return self.scenario(request)+"|"+",".join(map(str, bins))
+
+    def get(self, request):
+        return self.plans.get(self.key(request))
+
+    def nearest(self, request):
+        prefix = self.scenario(request)+"|"
+        target = (request.altitude_m/self.ALTITUDE_BIN_M, request.tas_mps/self.TAS_BIN_MPS,
+                  request.mass_kg/self.MASS_BIN_KG)
+        best, distance = None, math.inf
+        for key, plan in self.plans.items():
+            if not key.startswith(prefix) or not plan.available:
+                continue
+            bins = tuple(float(x) for x in key[len(prefix):].split(","))
+            d = sum((a-b)**2 for a, b in zip(bins, target))
+            if d < distance:
+                best, distance = plan, d
+        return best
+
+    def put(self, request, plan):
+        if not plan.available:
+            return
+        self.plans[self.key(request)] = replace(plan, profile=())
+        if self.path is None:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            temporary = self.path+".tmp"
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump({k: asdict(v) for k, v in self.plans.items()}, f, ensure_ascii=False)
+            os.replace(temporary, self.path)
+        except OSError:
+            pass
+
+
+def default_cache_path():
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "WT Energy", "opening_plans.json")
 
 
 def deviates(plan: OpeningPlan, state, t_s) -> bool:

@@ -24,9 +24,9 @@ from .telemetry import INDICATORS_MISSING, TelemetryClient
 from .turn import TurnSession, validate_settings
 from .attitude import AttitudeEstimator
 from .identify import AircraftGuess
-from .opening import (DEFAULT_CLIMB_DEG, DEVIATION_HOLD_S, FREEZE_BEFORE_PULL_S, MIN_REPLAN_S, REPLAN_S, Cancelled, DeadReckoning, OpeningCue,
-                      OpeningPlan, OpeningSettings, PlanRequest, SpawnLatch, cue as opening_cue, deviates,
-                      path_angle_deg, plan_opening, validate_settings as validate_opening, worker_init)
+from .opening import (Cancelled, DeadReckoning, OpeningCue, OpeningPlan, OpeningSettings, PlanCache, PlanRequest,
+                      SpawnLatch, cue as opening_cue, default_cache_path, path_angle_deg, plan_opening,
+                      validate_settings as validate_opening, worker_init)
 
 
 def positive(value: object, label: str) -> float:
@@ -61,7 +61,8 @@ class OverlayController:
     def __init__(self, *, mode: str = "live", base_url: str = "http://127.0.0.1:8111",
                  model_path: str | None = None, mass_kg: float | None = None,
                  afterburner: bool = True, interval_s: float = 0.1, client=None,
-                 aircraft: str | None = None, sweep_fraction: float = 0., payload_kg: float = 0.):
+                 aircraft: str | None = None, sweep_fraction: float = 0., payload_kg: float = 0.,
+                 opening_cache=None):
         if mode not in ("live", "demo"):
             raise ValueError("模式必须为 live 或 demo")
         if type(afterburner) is not bool:
@@ -115,12 +116,13 @@ class OverlayController:
         self._latch = SpawnLatch()
         self._reckoning = None
         self._opening_plan = None
-        self._opening_future = None
-        self._opening_cancel = None
+        self._opening_job = None
+        self._opening_exact = False
+        self._opening_pending = False
+        self._opening_cache = PlanCache(default_cache_path() if opening_cache is True else opening_cache or None)
         self._opening_thread = None
         self._opening_pool = None
         self._opening_pool_workers = 0
-        self._deviation_since = None
         self._opening_restart = False
         self._opening_blocker = ""
         self._guess = AircraftGuess()
@@ -446,26 +448,29 @@ class OverlayController:
             return
         settings = OpeningSettings(**command["settings"])
         old, self.opening = self.opening, settings
-        if hasattr(self.client, "want_track"):
-            self.client.want_track = settings.enabled  # map direction only for this aid (no-compass aircraft)
         if not settings.enabled:
             self._reset_opening(spawn=True)
             self._close_opening_pool()
         elif replace(old, enabled=True) != settings:
-            self._reset_opening()  # a new scenario: plan again from the next sample
+            self._reset_opening()  # a new scenario: plan again
             if settings.workers != self._opening_pool_workers:
                 self._close_opening_pool()
 
+    def _cancel_opening_job(self):
+        if self._opening_job is not None:
+            self._opening_job["cancel"].set()
+        self._opening_job = None
+
     def _reset_opening(self, spawn=False):
-        if self._opening_cancel is not None:
-            self._opening_cancel.set()
-        self._opening_future = self._opening_cancel = None
+        self._cancel_opening_job()
         self._opening_plan = None
-        self._deviation_since = None
+        self._opening_exact = False      # the plan on show is the exact one for this start
         self._opening_blocker = ""
         if spawn:
             self._latch.reset()
             self._reckoning = None
+        # A start whose plan still has to be computed (input missing at the start, or the scenario changed since).
+        self._opening_pending = not spawn and self._latch.spawn is not None
 
     def _close_opening_pool(self):
         if self._opening_pool is not None:
@@ -483,83 +488,99 @@ class OverlayController:
             self._close_opening_pool()  # a dead worker: the next plan starts a fresh pool
             raise
 
+    def _opening_request(self, state, t, x, start):
+        """The planner input from this sample (start = the sample the clock started on, or this one), or None
+        with _opening_blocker saying what is missing."""
+        profile = find_aircraft(state.aircraft_id) if state.aircraft_id else None
+        mass, _ = self._reference_mass(state)
+        self._opening_blocker = (
+            "请在“进攻辅助”里选择导弹" if not self.opening.missile else
+            f"8111 没给机型：{self._guess.note or '正在按最大油量和推力识别'}，也可在设置“机型”里选"
+            if not state.aircraft_id else
+            f"没有 {state.aircraft_id} 的 FM" if profile is None else
+            "缺少总质量：在设置里填总质量或挂载" if not valid_number(mass) or mass <= 0 else "")
+        path = path_angle_deg(state)
+        if self._opening_blocker or path is None or not state.tas_mps or state.tas_mps < 100:
+            return None
+        return PlanRequest(profile.id, float(mass), self.opening.missile, self.opening, start.altitude_m,
+                           start.tas_mps, t, x, state.altitude_m, state.tas_mps, path)
+
+    def _submit_opening(self, request, for_start):
+        """One plan at a time (one worker process); a running job that is not needed any more is cancelled."""
+        self._cancel_opening_job()
+        if self._opening_thread is None:
+            self._opening_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wt-opening")
+        cancel = Event()
+        self._opening_job = dict(request=request, for_start=for_start, cancel=cancel,
+                                 future=self._opening_thread.submit(plan_opening, request, self._opening_run, cancel))
+
+    def _collect_opening(self, t):
+        job = self._opening_job
+        if job is None or not job["future"].done():
+            return
+        self._opening_job = None
+        try:
+            plan = job["future"].result()
+        except Cancelled:
+            return
+        except Exception as exc:  # A worker failure (no missile_sim, no FM, ...) is shown, never raised.
+            plan = OpeningPlan(False, f"计算失败：{type(exc).__name__}: {exc}", base_s=t)
+        if job["request"].t_s == 0.:
+            self._opening_cache.put(job["request"], plan)
+        if job["for_start"]:
+            self._opening_plan, self._opening_exact = plan, True
+
+    def _start_opening(self, state, spawn):
+        """The clock starts: the cached plan for this start state if there is one; else the nearest cached plan
+        at once and the exact one computed (once)."""
+        self._reset_opening()
+        self._opening_pending = False
+        self._reckoning = DeadReckoning(spawn)
+        request = self._opening_request(state, 0., 0., spawn)
+        if request is None:
+            self._opening_pending = True
+            return
+        cached = self._opening_cache.get(request)
+        if cached is not None:
+            self._opening_plan, self._opening_exact = cached, True
+            return
+        self._opening_plan = self._opening_cache.nearest(request)
+        self._submit_opening(request, for_start=True)
+
     def _opening_cue(self, state) -> OpeningCue | None:
         if not self.opening.enabled:
             return None
         if self._opening_restart:
             self._opening_restart = False
-            spawn = self._latch.latch(state)
+            started = self._latch.latch(state)
         else:
-            spawn = self._latch.update(state)
-        if spawn is not None:
-            self._reset_opening()
-            self._reckoning = DeadReckoning(spawn)
+            started = self._latch.update(state)
         spawn = self._latch.spawn
+        t = state.time_s-spawn.time_s if spawn is not None else 0.
+        self._collect_opening(t)
+        if started is not None:
+            self._start_opening(state, started)
         if spawn is None:
+            # Not started: compute ahead from where the aircraft is now, so the start finds the plan cached.
+            if self._opening_job is None and state.valid:
+                request = self._opening_request(state, 0., 0., state)
+                if request is not None and self._opening_cache.get(request) is None:
+                    self._submit_opening(request, for_start=False)
             return opening_cue(None, None, state, self._latch.note)
         if not state.valid:
             return OpeningCue("无数据", lines=("开局抽奖 · 等待飞行数据",))
         self._reckoning.update(state, spawn)
-        if self._opening_future is not None and self._opening_future.done():
-            future, self._opening_future = self._opening_future, None
-            try:
-                self._opening_plan = future.result()
-            except Cancelled:
-                pass
-            except Exception as exc:  # A worker failure (no missile_sim, no FM, ...) is shown, never raised.
-                self._opening_plan = OpeningPlan(False, f"计算失败：{type(exc).__name__}: {exc}",
-                                                 base_s=state.time_s-spawn.time_s)
-            self._deviation_since = None
-        self._opening_schedule(state, spawn)
+        if self._opening_pending and self._opening_job is None:
+            # Input arrived after the start (aircraft identified, mass known): plan once from here.
+            request = self._opening_request(state, t, self._reckoning.x, spawn)
+            if request is not None:
+                self._opening_pending = False
+                self._submit_opening(request, for_start=True)
         result = opening_cue(self._opening_plan, spawn, state)
         if self._opening_blocker and self._opening_plan is None:
-            # Missing input (aircraft, missile, mass): the default climb arrow stays, the text says what to set.
-            result = replace(result, lines=(f"全加力 爬升 {DEFAULT_CLIMB_DEG:.0f}° · 还不能计算", self._opening_blocker,
-                                            *result.lines[1:]))
+            # Missing input: the default climb arrow stays, the second line says what to set.
+            result = replace(result, lines=(result.lines[0], self._opening_blocker, *result.lines[1:]))
         return result
-
-    def _opening_schedule(self, state, spawn):
-        """Start a plan: the first one, every REPLAN_S, or when the flown state has left the plan for
-        DEVIATION_HOLD_S (at most every MIN_REPLAN_S); never in the last FREEZE_BEFORE_PULL_S before the pull-up."""
-        if self._opening_future is not None:
-            return
-        t = state.time_s-spawn.time_s
-        plan = self._opening_plan
-        profile = find_aircraft(state.aircraft_id) if state.aircraft_id else None
-        mass, _ = self._reference_mass(state)
-        # Missing input is re-checked every sample (planning starts as soon as it is set), never stored as a plan.
-        self._opening_blocker = (
-            "请在“进攻辅助”里选择导弹" if not self.opening.missile else
-            f"8111 没给机型：{self._guess.note or '正在按最大油量和推力识别'}，也可在设置“机型”里选" if not state.aircraft_id else
-            f"没有 {state.aircraft_id} 的 FM" if profile is None else
-            "缺少总质量：在设置里填总质量或挂载" if not valid_number(mass) or mass <= 0 else "")
-        path = path_angle_deg(state)
-        if self._opening_blocker or path is None:
-            return
-        if plan is not None:
-            if not plan.available:
-                if t-plan.base_s < REPLAN_S:
-                    return
-            elif t >= plan.pull_s-FREEZE_BEFORE_PULL_S:
-                return
-            else:
-                if deviates(plan, state, t):
-                    self._deviation_since = t if self._deviation_since is None else self._deviation_since
-                else:
-                    self._deviation_since = None
-                late = t-plan.base_s >= REPLAN_S
-                off = (self._deviation_since is not None and t-self._deviation_since >= DEVIATION_HOLD_S
-                       and t-plan.base_s >= MIN_REPLAN_S)
-                if not (late or off):
-                    return
-        hint = (plan.climb_deg, plan.pull_s) if plan is not None and plan.available else None
-        request = PlanRequest(profile.id, float(mass), self.opening.missile, self.opening, spawn.altitude_m,
-                              spawn.tas_mps, t, self._reckoning.x, state.altitude_m, state.tas_mps, path, hint)
-        if self._opening_thread is None:
-            self._opening_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wt-opening")
-        self._opening_cancel = Event()
-        self._opening_future = self._opening_thread.submit(plan_opening, request, self._opening_run,
-                                                           self._opening_cancel)
 
     def tick(self, now: float | None = None) -> OverlaySnapshot:
         """Perform one sampling cycle, on the worker (or synchronously in tests)."""
