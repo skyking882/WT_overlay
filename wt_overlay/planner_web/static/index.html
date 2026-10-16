@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>开局抽奖</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <p class="eyebrow">OPENING SHOT · WT_OVERLAY</p>
+          <h1>开局抽奖：最快命中的飞法</h1>
+        </div>
+      </div>
+      <div class="local-pill"><span></span> 127.0.0.1 · 本机计算</div>
+    </header>
+
+    <div id="alert" class="alert hidden" role="status"></div>
+
+    <div class="workspace">
+      <form id="form" class="scenario-panel" autocomplete="off">
+        <fieldset>
+          <legend>本机</legend>
+          <label class="wide">
+            <span>机型 <em id="aircraft-br"></em></span>
+            <input id="aircraft" list="aircraft-list" placeholder="输入名字搜索，例如 台风 / J-16 / F-16C" required>
+            <datalist id="aircraft-list"></datalist>
+          </label>
+          <label class="wide">
+            <span>导弹</span>
+            <select id="missile" required></select>
+          </label>
+          <p id="missile-note" class="field-help hidden"></p>
+          <div class="field-grid">
+            <label><span>起始高度 <em>m</em></span><input id="altitude" type="number" min="300" max="12000" step="100" value="2500" required></label>
+            <label><span>起始速度 <em>马赫</em></span><input id="mach" type="number" min="0.3" max="2" step="0.05" value="0.85" required></label>
+            <label><span>内油 <em>%</em></span><input id="fuel" type="number" min="5" max="100" step="5" value="50" required></label>
+            <label><span>挂弹数 <em>枚</em></span><input id="missiles" type="number" min="0" max="12" step="1" value="6" required></label>
+          </div>
+          <p id="state-help" class="field-help"></p>
+        </fieldset>
+
+        <details>
+          <summary>敌机假设（直飞、不反应）</summary>
+          <div class="field-grid">
+            <label><span>出生间距 <em>km</em></span><input id="distance" type="number" min="30" max="200" step="5" required></label>
+            <label><span>敌机内油 <em>%</em></span><input id="enemy-fuel" type="number" min="5" max="100" step="5" required></label>
+            <label><span>爬升角 <em>°</em></span><input id="enemy-climb" type="number" min="3" max="45" step="1" required></label>
+            <label><span>改平高度 <em>m</em></span><input id="enemy-level" type="number" min="3000" max="14000" step="500" required></label>
+            <label class="wide"><span>敌机机型</span><input id="enemy" list="aircraft-list" required></label>
+          </div>
+          <p class="field-help">双方同时出生、对头相距上面的间距、出生高度和速度相同。敌机全加力按爬升角直爬到改平高度后平飞，一直朝你直飞，不机动、不放干扰。数据链按全程不断计算。</p>
+        </details>
+
+        <button id="submit" class="primary-button" type="submit">计算</button>
+        <p class="field-help">在本机计算，用除一个以外的全部 CPU 核。第一次会慢一些（要加载飞行模型），之后一般几秒。</p>
+      </form>
+
+      <main class="results-panel">
+        <div id="empty" class="empty-state">
+          <h2>选好机型和导弹，点“计算”</h2>
+          <p>会给出从出生开始的操作顺序：怎么爬、什么时候拉起、什么时候发射、导弹什么时候命中。</p>
+        </div>
+
+        <div id="busy" class="empty-state hidden">
+          <div class="spinner" aria-hidden="true"></div>
+          <h2>正在计算…</h2>
+          <p id="busy-detail">搜索爬升角、发射时刻和发射俯仰角，每个候选都是一次完整的导弹仿真。</p>
+        </div>
+
+        <div id="result" class="hidden">
+          <section class="headline">
+            <div>
+              <p class="eyebrow">预计命中</p>
+              <p class="big"><span id="hit-time"></span><small> 秒（从出生算起）</small></p>
+            </div>
+            <dl id="facts" class="model-facts"></dl>
+          </section>
+
+          <section>
+            <div class="section-heading"><h2>操作顺序</h2><span id="window" class="window-pill"></span></div>
+            <ol id="steps" class="steps"></ol>
+          </section>
+
+          <section>
+            <div class="section-heading"><h2>侧视图</h2><span class="legend"><i class="own"></i>本机 <i class="missile"></i>导弹 <i class="enemy"></i>敌机</span></div>
+            <div id="chart" class="chart"></div>
+          </section>
+
+          <p id="assumptions" class="field-help"></p>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

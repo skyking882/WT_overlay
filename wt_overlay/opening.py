@@ -433,6 +433,57 @@ def shot(job):
                 target_altitude_m=target.position_velocity(runtime.time_s)[0][2])
 
 
+def trace_shot(job):
+    """The chosen shot again, recorded for a side view: (t, x, altitude) of the own aircraft every second to the
+    launch, of the missile every 0.25 s to its end, and of the enemy every second to the end. x is the distance
+    along the spawn line from our spawn (the enemy spawns at distance_m). Runs in a worker process."""
+    from .engagement import LAUNCH_OPTIONS
+    from .escape import from_enu
+    from .flight import SUBSTEP_S
+    request, climb_deg, pull_s, pitch = job
+    own = _own(request, climb_deg)
+    enemy = _enemy(request)
+    state = _at(own, request.t_s, pull_s)
+    pull_time, position, velocity = _pull_up(request.aircraft_id, _r(request.mass_kg, 10.), state, pitch)
+    t_l = pull_s+pull_time
+    own_path = []
+    t = math.ceil(request.t_s)
+    while t < pull_s:
+        p = _at(own, request.t_s, t)[0]
+        own_path.append((float(t), p[0], p[2]))
+        t += 1.
+    p = state[0]
+    own_path += [(pull_s, p[0], p[2]), (t_l, position[0], position[2])]
+    speed = math.sqrt(sum(v*v for v in velocity))
+    launch_path = math.degrees(math.asin(max(-1., min(1., velocity[2]/speed))))
+    library = _library()
+    target = _EnemyTarget(enemy, t_l)
+    runtime = library.create(library.profile(request.missile), launch_position_m=from_enu(position),
+                             launch_velocity_mps=from_enu(velocity), launch_heading_deg=0.,
+                             launch_pitch_deg=launch_path, target=target, launcher_support=_Support(),
+                             **LAUNCH_OPTIONS)
+    missile_path, every, step = [(t_l, position[0], position[2])], max(1, round(.25/SUBSTEP_S)), 0
+    while not runtime.done:
+        runtime.step()
+        step += 1
+        if step % every == 0:
+            missile_path.append((t_l+runtime.time_s, runtime.state[0], runtime.state[1]))
+        if len(runtime._rows) > 96:
+            del runtime._rows[:-1]
+    end = t_l+runtime.time_s
+    missile_path.append((end, runtime.state[0], runtime.state[1]))
+    enemy_path, t = [], 0.
+    while t <= end:
+        p = _at(enemy, 0., t)[0]
+        enemy_path.append((t, p[0], p[2]))
+        t += 1.
+    p = target.position_velocity(runtime.time_s)[0]
+    enemy_path.append((end, p[0], p[2]))
+    return dict(own=own_path, missile=missile_path, enemy=enemy_path, launch=(t_l, position[0], position[2]),
+                end=(end, runtime.state[0], runtime.state[1]), hit=runtime.event == "fuse", event=runtime.event,
+                launch_speed_mps=speed, launch_path_deg=launch_path)
+
+
 def own_profile(job):
     """Predicted own (t_s, altitude, TAS, path) each second from the request time to ``until_s``."""
     request, climb_deg, until_s = job
