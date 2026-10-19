@@ -20,6 +20,7 @@ import threading
 import time
 from urllib.parse import urlsplit, parse_qs
 import webbrowser
+import zlib
 
 from .archetypes import ARCHETYPES, SKILLS, bearing_of
 from .engagement import Action, RadarCommand, ReplayWriter, default_library, equipment_data, STT_TRACK
@@ -27,6 +28,7 @@ from .flight import FlightCommand, KeyboardCommand, MAX_ALTITUDE_M, MIN_STEP_SPE
 from .fm import atmosphere
 from .match import scenario as make_match, modelled_missiles
 from .rl_env import equip_scripts
+from . import terrain
 from .sim import ROOT, Simulation, _RecordedController, _number, _write_json, load_scenario, result_document, validate_scenario
 
 ASSETS = Path(__file__).with_name("sandbox_assets")
@@ -297,8 +299,11 @@ def analysis_snapshot(eng):
 
 class SandboxSession:
     """A single worker world, a responsive cached read API, and bounded commands."""
-    def __init__(self, *, output_root=None, missile_sim=None, replay_root=None):
+    def __init__(self, *, output_root=None, missile_sim=None, replay_root=None, terrain_root=None):
         self.output_root = Path(output_root or ROOT/"outputs"/"sandbox").resolve()
+        # Height rasters exported from the game (local only); contours are cached under the output root
+        self.terrain_root = terrain.terrain_root(terrain_root)
+        self.terrain_cache = self.output_root/"terrain_cache"
         # WT replays (docs/sandbox_replay_spec.md): playback and forks; sandbox runs under output_root are listed too
         self.replay_root = Path(replay_root or ROOT/"outputs"/"engagements"/"wt_real").resolve()
         self.track = self.track_file = self.track_sha = self.track_caps = None
@@ -508,6 +513,14 @@ class SandboxSession:
 
     # -- WT replays (docs/sandbox_replay_spec.md) ------------------------------------------------------------
 
+    def terrains(self):
+        return dict(maps=terrain.list_maps(self.terrain_root))
+
+    def terrain(self, stem):
+        data = dict(terrain.load(stem, root=self.terrain_root, cache_dir=self.terrain_cache))
+        data["center_dagor_xz"] = terrain.map_center(self.terrain_root, stem)
+        return data
+
     def replays(self):
         from .sandbox_replay import list_replays
         return [entry for entry, _ in list_replays(self.replay_root, self.output_root)]
@@ -624,6 +637,7 @@ class SandboxSession:
                     analysis_view=True)
         if self.track is not None:
             snap["replay_file"] = self.track_file
+            snap["terrain"] = dict(map=terrain.map_stem(self.track.level), origin_dagor_xz=self.track.origin_dagor_xz)
         with self.lock:
             self.snapshot = snap
 
@@ -772,6 +786,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(self.server.session.state())
         if parsed.path == "/api/replays":
             return self._reply(self.server.session.replays())
+        if parsed.path == "/api/terrains":
+            return self._reply(self.server.session.terrains())
+        if parsed.path == "/api/terrain":
+            try:
+                return self._reply(self.server.session.terrain(parse_qs(parsed.query).get("map", [""])[0]))
+            except FileNotFoundError as exc:
+                return self._reply(dict(error=str(exc)), 404)
+            except (ValueError, OSError, zlib.error) as exc:
+                return self._reply(dict(error=f"地形读取失败：{exc}"), 400)
         if parsed.path == "/api/catalog":
             return self._reply(dict(self.server.session.catalog, token=self.server.token))
         if parsed.path == "/api/command":
@@ -843,11 +866,13 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=8765, help="127.0.0.1 端口，默认 8765；0 为自动选择")
     parser.add_argument("--missile-sim", type=Path, help="相邻 missle_sim 模型目录的替代路径")
     parser.add_argument("--no-browser", action="store_true", help="只输出网址，不自动打开浏览器")
+    parser.add_argument("--terrain", type=Path, help="地图高度数据目录（每张图一个子目录），默认 outputs/wt_air_maps/air_maps，"
+                                                     "也可用环境变量 WT_TERRAIN_DIR")
     args = parser.parse_args(argv)
     if not 0 <= args.port <= 65535:
         parser.error("端口必须为 0–65535")
     try:
-        session = SandboxSession(missile_sim=args.missile_sim)
+        session = SandboxSession(missile_sim=args.missile_sim, terrain_root=args.terrain)
         server = SandboxServer(("127.0.0.1", args.port), session)
     except (FileNotFoundError, ValueError, OSError) as exc:
         parser.error(str(exc))

@@ -139,6 +139,34 @@ class SandboxTests(unittest.TestCase):
             finally:
                 session.close()
 
+    def test_terrain_routes_serve_local_contours(self):
+        from tests.test_terrain import make_map
+        with tempfile.TemporaryDirectory() as tmp:
+            make_map(Path(tmp)/"maps")
+            session = SandboxSession(output_root=tmp, terrain_root=Path(tmp)/"maps")
+            server = SandboxServer(("127.0.0.1",0),session)
+            thread = threading.Thread(target=server.serve_forever,daemon=True)
+            thread.start()
+            root = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with urlopen(root+"/api/terrains") as response:
+                    self.assertEqual([m["map"] for m in json.load(response)["maps"]], ["air_test"])
+                with urlopen(root+"/api/terrain?map=air_test") as response:
+                    data = json.load(response)
+                self.assertEqual(data["center_dagor_xz"], [-50., -50.])
+                self.assertTrue(data["levels"] and data["heights_i16le"])
+                self.assertTrue((Path(tmp)/"terrain_cache"/"air_test.json").is_file())
+                for name, code in (("air_missing", 404), ("..%2Fmaps", 400)):
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(root+"/api/terrain?map="+name)
+                    self.assertEqual(error.exception.code, code)
+                    error.exception.close()
+                self.assertNotIn("terrain", session.state())   # no replay loaded: the page picks the map
+            finally:
+                server.shutdown()
+                server.server_close()
+                session.close()
+
     def test_http_reads_remain_responsive_during_live_physics_and_commands_are_local(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = SandboxSession(output_root=tmp)

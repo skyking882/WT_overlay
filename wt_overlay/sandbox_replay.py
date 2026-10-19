@@ -135,6 +135,33 @@ class _Series:
         return pos, vel, i, s
 
 
+def export_level(replay_path, export, limit=1 << 20):
+    """The game level ('levels/air_afghan.bin') from the top-level header of a replay's match export. Only the start
+    of the file is read: the header object comes before the unit tracks (byte 435 in the 2026-10 exports)."""
+    if not isinstance(export, str) or not export:
+        return None
+    path = Path(export)
+    candidates = [path] if path.is_absolute() else [Path(replay_path).parent/path, Path(__file__).resolve().parents[1]/path]
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        return None
+    with path.open("rb") as handle:
+        text = handle.read(limit).decode("utf-8", "ignore")
+    at = text.find('"header"')
+    colon = text.find(":", at+8) if at >= 0 else -1
+    if colon < 0:
+        return None
+    start = colon+1
+    while start < len(text) and text[start] in " \t\r\n":
+        start += 1
+    try:
+        header, _ = json.JSONDecoder().raw_decode(text, start)
+    except ValueError:
+        return None
+    level = header.get("level") if isinstance(header, dict) else None
+    return level if isinstance(level, str) else None
+
+
 class ReplayTrack:
     """A whole replay in memory: per plane / missile series, events in time order, header."""
     def __init__(self, path, *, name=None, kind=None):
@@ -161,6 +188,13 @@ class ReplayTrack:
         if self.header is None:
             raise ValueError("回放文件缺少 header")
         self.kind = kind or ("wt" if (self.header.get("source") or {}).get("kind") == "wt_replay" else "sandbox")
+        source = self.header.get("source") or {}
+        # Game level ('levels/air_afghan.bin'): written by the importer, else read from the match export's header
+        self.level = source.get("level") or (export_level(self.path, source.get("export_file")) if self.kind == "wt"
+                                             else None)
+        origin = source.get("origin_dagor_xz")
+        self.origin_dagor_xz = [float(origin[0]), float(origin[1])] if isinstance(origin, list) and len(origin) == 2 \
+            and all(isinstance(c, (int, float)) for c in origin) else None
         self.events.sort(key=lambda e: e.get("t", 0.))
         for s in self.planes.values():
             s.estimate_roll()

@@ -148,6 +148,15 @@
     P.scene.seed=Number($('seed').value);P.scene.time_limit_s=Number($('limit').value);
     await command('configure',{scenario:P.scene});P.dirty=false;
   }
+  // The lists are refreshed on every state poll (~20 Hz). Rows are kept and updated in place by key: a button
+  // replaced between press and release would swallow the click.
+  function rowsFor(list,keys){
+    const old=new Map([...list.children].filter(r=>r.dataset.key!=null).map(r=>[r.dataset.key,r]));
+    const rows=keys.map(k=>{let r=old.get(String(k));if(!r){r=document.createElement('button');r.dataset.key=String(k);
+      const a=document.createElement('span'),b=document.createElement('span');a.className='row-title';b.className='row-meta';r.append(a,b);}return r;});
+    if(rows.length!==list.children.length||rows.some((r,i)=>list.children[i]!==r))list.replaceChildren(...rows);
+    return rows;
+  }
   function render() {
     if(!P.state)return;
     const s=P.state, setup=s.status==='setup', done=s.status==='completed', running=s.status==='running';
@@ -172,13 +181,13 @@
     $('add-blue').disabled=!setup||P.busy||count[0]>=P.catalog.max_team;$('add-orange').disabled=!setup||P.busy||count[1]>=P.catalog.max_team;
     const ps=planes();
     for(const team of [0,1]) {
-      const list=$(team?'orange-list':'blue-list');list.replaceChildren();
-      for(const p of ps.filter(p=>p.team===team)) {
-        const row=document.createElement('button');row.className='unit-row'+(team?' orange-row':'')+(p.id===P.selected?' selected':'')+(!p.alive?' dead':'');
-        const name=document.createElement('span');name.className='row-title';name.textContent=p.player?short(p.player)+' · '+title(p.aircraft):'#'+p.id+' '+title(p.aircraft);
-        const meta=document.createElement('span');meta.className='row-meta';meta.textContent=(p.missile?missileName(p.missile)+' · ':'')+(p.alive?fmt(p.position_m[2])+' m · '+fmt(p.speed_mps)+' m/s · '+(phases[p.phase]||p.phase||'接敌'):'已损失');
-        row.append(name,meta);row.onclick=()=>select(p.id);list.append(row);
-      }
+      const members=ps.filter(p=>p.team===team),rows=rowsFor($(team?'orange-list':'blue-list'),members.map(p=>p.id));
+      members.forEach((p,i)=>{
+        const row=rows[i];row.className='unit-row'+(team?' orange-row':'')+(p.id===P.selected?' selected':'')+(!p.alive?' dead':'');
+        row.children[0].textContent=p.player?short(p.player)+' · '+title(p.aircraft):'#'+p.id+' '+title(p.aircraft);
+        row.children[1].textContent=(p.missile?missileName(p.missile)+' · ':'')+(p.alive?fmt(p.position_m[2])+' m · '+fmt(p.speed_mps)+' m/s · '+(phases[p.phase]||p.phase||'接敌'):'已损失');
+        row.onclick=()=>select(p.id);
+      });
     }
     const p=selected();$('empty-selection').hidden=!!p;$('unit-panel').hidden=!p;
     if(p) {
@@ -220,12 +229,13 @@
     renderEvents();
   }
   function renderReplay(){
-    const s=P.state,list=$('replay-list');list.replaceChildren();
-    if(!P.replays.length){const e=document.createElement('p');e.className='help';e.textContent='没有找到回放（outputs/engagements/wt_real 与 outputs/sandbox）。';list.append(e);}
-    for(const r of P.replays){const row=document.createElement('button');row.className='unit-row replay-row'+(s.replay_file===r.file?' selected':'');
-      const name=document.createElement('span');name.className='row-title';name.textContent=(r.kind==='wt'?'WT · ':'沙盘 · ')+(r.kind==='wt'?r.file.split('/').at(-1).replace(/\.jsonl$/,''):r.file.split('/').at(-2));
-      const meta=document.createElement('span');meta.className='row-meta';meta.textContent=new Date(r.mtime*1000).toLocaleString('zh-CN',{hour12:false})+' · 时长 '+(r.duration_s==null?'—':clockText(r.duration_s))+' · 玩家 '+r.players+(r.units>r.players?' · AI '+(r.units-r.players):'');
-      row.append(name,meta);row.disabled=P.busy||!!s.fork;row.onclick=()=>act(async()=>{await command('load_replay',{file:r.file});});list.append(row);}
+    const s=P.state,list=$('replay-list');
+    if(!P.replays.length){if(!list.querySelector('.help')){const e=document.createElement('p');e.className='help';e.textContent='没有找到回放（outputs/engagements/wt_real 与 outputs/sandbox）。';list.replaceChildren(e);}}
+    else{const rows=rowsFor(list,P.replays.map(r=>r.file));
+      P.replays.forEach((r,i)=>{const row=rows[i];row.className='unit-row replay-row'+(s.replay_file===r.file?' selected':'');
+        row.children[0].textContent=(r.kind==='wt'?'WT · ':'沙盘 · ')+(r.kind==='wt'?r.file.split('/').at(-1).replace(/\.jsonl$/,''):r.file.split('/').at(-2));
+        row.children[1].textContent=new Date(r.mtime*1000).toLocaleString('zh-CN',{hour12:false})+' · 时长 '+(r.duration_s==null?'—':clockText(r.duration_s))+' · 玩家 '+r.players+(r.units>r.players?' · AI '+(r.units-r.players):'');
+        row.disabled=P.busy||!!s.fork;row.onclick=()=>act(async()=>{await command('load_replay',{file:r.file});});});}
     $('replay-tag').textContent=!s.replay_file?'未加载':s.fork?'接管推演':s.replay?.playing?'播放中':'已暂停';
     const ro=s.replay?.roster;
     if(ro&&P.meFile!==s.replay.file){P.meFile=s.replay.file;const sel=$('me');sel.replaceChildren();option(sel,'','（未选择）');
@@ -299,7 +309,7 @@
       P.lastTime=s.time_s;
     }
     if(s.status!=='running'&&P.lastStatus==='running')releaseKeys();
-    P.lastStatus=s.status;P.state=s;P.received=performance.now();render();
+    P.lastStatus=s.status;P.state=s;P.received=performance.now();terrainSync();render();
   }
   function trail(id,position,t,team){const tr=P.trails.get(id)||{points:[],team};tr.points.push({p:position.slice(),t});if(tr.points.length>240)tr.points.shift();P.trails.set(id,tr);}
 
@@ -358,22 +368,112 @@
   // (display only, capped at 0.25 s) so motion and the chase camera stay smooth.
   function lead(){const s=P.state;if(!s||!(s.status==='running'||s.replay?.playing))return 0;return clamp((performance.now()-P.received)/1000*s.speed,0,.25*s.speed);}
   function disp(o,dt){return o.velocity_mps&&o.alive!==false?o.position_m.map((v,i)=>v+o.velocity_mps[i]*dt):o.position_m;}
+
+  // Terrain from the game's height rasters (/api/terrain). Contours arrive in Dagor X/Z; the sandbox frame is
+  // x = X - ox, y = Z - oz with the replay's origin, or the map centre when there is no replay. Display only:
+  // the flight and missile models do not see it.
+  const T={choice:recall('wt-sandbox-terrain')||'auto',maps:[],want:null,key:'',geo:null,loading:null,error:null};
+  function terrainWanted(){
+    const auto=P.state?.terrain?.map||null,stem=T.choice==='auto'?auto:T.choice==='none'?null:T.choice;
+    return stem&&T.maps.some(m=>m.map===stem)?stem:null;
+  }
+  function terrainSync(){
+    const stem=terrainWanted(),origin=P.state?.terrain?.origin_dagor_xz||null,key=stem?stem+'|'+(origin?origin.join(','):'centre'):'';
+    if(key===T.key)return;
+    T.key=key;T.geo=null;T.error=null;
+    if(!stem){legendTerrain();return;}
+    T.loading=key;legendTerrain();
+    api('/api/terrain?map='+encodeURIComponent(stem)).then(data=>{
+      if(T.key!==key)return;
+      T.geo=terrainGeometry(data,origin||data.center_dagor_xz);T.loading=null;legendTerrain();
+    }).catch(error=>{if(T.key!==key)return;T.loading=null;T.error=error.message;legendTerrain();});
+  }
+  function terrainGeometry(d,origin){
+    const[ox,oz]=origin,groups={under:[],minor:[],major:[],water:[]},paths={};
+    for(const lv of d.levels)for(const line of lv.lines){const n=line.length/2,a=new Float32Array(n*3);
+      for(let k=0;k<n;k++){a[3*k]=line[2*k]-ox;a[3*k+1]=line[2*k+1]-oz;a[3*k+2]=lv.h;}groups[lv.kind].push(a);}
+    for(const kind in groups){const p=new Path2D();for(const a of groups[kind]){p.moveTo(a[0],a[1]);for(let k=3;k<a.length;k+=3)p.lineTo(a[k],a[k+1]);}paths[kind]=p;}
+    const raw=atob(d.heights_i16le),nx=d.nx,nz=d.nz,hts=new Float32Array(nx*nz);
+    for(let i=0;i<nx*nz;i++){const v=(raw.charCodeAt(2*i)|raw.charCodeAt(2*i+1)<<8)<<16>>16;hts[i]=v===-32768?NaN:v;}
+    return{d,groups,paths,hts,nx,nz,cell:d.cell_m,x0:d.x0_m-ox,y0:d.z0_m-oz,image:hillshade(d,hts)};
+  }
+  // Muted hypsometric tint with light from the north-west; row 0 is the southern edge (the 2-D transform flips y).
+  function hillshade(d,hts){
+    const nx=d.nx,nz=d.nz,img=document.createElement('canvas');img.width=nx;img.height=nz;
+    const g=img.getContext('2d'),data=g.createImageData(nx,nz),px=data.data,lo=d.height_min_m,span=Math.max(d.height_max_m-lo,1),water=d.water_m;
+    const ramp=[[0,[22,46,42]],[.25,[38,70,52]],[.55,[78,86,60]],[.8,[104,96,76]],[1,[150,146,132]]];
+    const tint=t=>{for(let k=1;k<ramp.length;k++)if(t<=ramp[k][0]){const[a,ca]=ramp[k-1],[b,cb]=ramp[k],f=(t-a)/(b-a);return ca.map((c,i)=>c+(cb[i]-c)*f);}return ramp.at(-1)[1];};
+    const L=unit([-1,1,1.2]),ex=2.5/d.cell_m,at=(i,j)=>hts[clamp(i,0,nz-1)*nx+clamp(j,0,nx-1)];
+    for(let i=0;i<nz;i++)for(let j=0;j<nx;j++){
+      const h=hts[i*nx+j],o=4*(i*nx+j);if(h!==h){px[o+3]=0;continue;}
+      let sx=(at(i,j+1)-at(i,j-1))*ex/2,sy=(at(i+1,j)-at(i-1,j))*ex/2;if(sx!==sx)sx=0;if(sy!==sy)sy=0;
+      const shade=clamp((-sx*L[0]-sy*L[1]+L[2])/Math.hypot(sx,sy,1),0,1)*.75+.35;
+      const c=water!=null&&h<water?[12,30,48]:tint((h-lo)/span);
+      px[o]=c[0]*shade;px[o+1]=c[1]*shade;px[o+2]=c[2]*shade;px[o+3]=255;
+    }
+    g.putImageData(data,0,0);return img;
+  }
+  function groundAt(x,y){
+    const t=T.geo;if(!t)return 0;const c=(x-t.x0)/t.cell,r=(y-t.y0)/t.cell,j=Math.floor(c),i=Math.floor(r);
+    if(j<0||i<0||j>=t.nx-1||i>=t.nz-1)return 0;const f=c-j,e=r-i,n=t.nx,h=t.hts;
+    const v=(h[i*n+j]*(1-f)+h[i*n+j+1]*f)*(1-e)+(h[(i+1)*n+j]*(1-f)+h[(i+1)*n+j+1]*f)*e;return v===v?v:0;
+  }
+  // "under": contours below the configured water level, usually sea floor, kept faint.
+  const TERRAIN_STYLE=[['under','#5f8eb0',1,.14],['minor','#86b79c',1,.32],['major','#c4dcb6',1.35,.62],['water','#72bdf0',1.6,.8]];
+  function drawTerrain(w,h){
+    const t=T.geo;if(!t)return;const dpr=window.devicePixelRatio||1;
+    if(P.view==='2d'){
+      const s=Math.min(w,h)/P.map.span;ctx.save();ctx.setTransform(dpr*s,0,0,-dpr*s,dpr*(w/2-P.map.x*s),dpr*(h/2+P.map.y*s));
+      ctx.globalAlpha=.85;ctx.imageSmoothingEnabled=true;ctx.drawImage(t.image,t.x0-t.cell/2,t.y0-t.cell/2,t.nx*t.cell,t.nz*t.cell);
+      for(const[kind,color,width,alpha]of TERRAIN_STYLE){ctx.globalAlpha=alpha;ctx.strokeStyle=color;ctx.lineWidth=width/s;ctx.stroke(t.paths[kind]);}
+      ctx.restore();return;
+    }
+    // 3-D: every contour at its own height, faded with distance in a few alpha bands (one stroke per band).
+    const e=B.eye,r=B.right,u=B.up,f=B.forward,F=B.focal,cx=w/2,cy=h/2,far=Math.max(P.camera.radius*3,90000),bands=5;
+    for(const[kind,color,width,alpha]of TERRAIN_STYLE){
+      const paths=Array.from({length:bands},()=>new Path2D());
+      for(const a of t.groups[kind]){let prev=false,lx=0,ly=0;
+        for(let k=0;k<a.length;k+=3){const dx=a[k]-e[0],dy=a[k+1]-e[1],dz=a[k+2]-e[2],zc=dx*f[0]+dy*f[1]+dz*f[2];
+          if(zc<NEAR){prev=false;continue;}
+          const sx=cx+(dx*r[0]+dy*r[1]+dz*r[2])*F/zc,sy=cy-(dx*u[0]+dy*u[1]+dz*u[2])*F/zc;
+          if(prev){const b=Math.min(bands-1,Math.floor((1-clamp(1.15-zc/far,.12,1))/.88*bands));paths[b].moveTo(lx,ly);paths[b].lineTo(sx,sy);}
+          lx=sx;ly=sy;prev=true;}}
+      ctx.strokeStyle=color;ctx.lineWidth=width;
+      for(let b=0;b<bands;b++){ctx.globalAlpha=alpha*(1-(b+.5)/bands*.88);ctx.stroke(paths[b]);}
+    }
+    ctx.globalAlpha=1;
+  }
+  function legendTerrain(){
+    const el=$('terrain-legend'),want=T.choice==='auto'?P.state?.terrain?.map:T.choice==='none'?null:T.choice;let text='';
+    if(T.geo){const d=T.geo.d;text='地形 '+d.map+' · 等高线 '+d.interval_m+' m（粗线 '+d.major_m+' m）· '+fmt(d.height_min_m)+'–'+fmt(d.height_max_m)+' m'+(d.water_m!=null?' · 蓝线 配置水位 '+fmt(d.water_m)+' m':'');}
+    else if(T.loading)text='地形加载中（首次约 1 s）…';
+    else if(T.error)text='地形读取失败：'+T.error;
+    else if(want&&!T.maps.some(m=>m.map===want))text='地图 '+want+' 没有高度数据';
+    el.textContent=text;el.hidden=!text;
+  }
+  function fillTerrainPicker(){
+    const sel=$('terrain');sel.replaceChildren();option(sel,'auto','自动（回放地图）');option(sel,'none','不显示');
+    for(const m of T.maps)option(sel,m.map,m.map+' · '+fmt(m.width_km)+' km');
+    if(![...sel.options].some(o=>o.value===T.choice))T.choice='auto';sel.value=T.choice;
+  }
   function bodyAxes(p){
     const H=p.heading_deg*Math.PI/180,Pt=(p.pitch_deg||0)*Math.PI/180,R=(p.roll_deg||0)*Math.PI/180;
     const f=[Math.sin(H)*Math.cos(Pt),Math.cos(H)*Math.cos(Pt),Math.sin(Pt)],r0=[Math.cos(H),-Math.sin(H),0],u0=cross(r0,f);
     const r=r0.map((v,i)=>v*Math.cos(R)-u0[i]*Math.sin(R));return{f,r,u:cross(r,f)};
   }
+  // Symbol size relative to the original icons (aircraft and missiles); the chase view keeps its own size.
+  const ICON=.2;
   const HULL=[[1.35,0],[.55,.1],[.05,.22],[-.15,.95],[-.42,.95],[-.38,.2],[-.72,.22],[-.78,.5],[-.98,.5],[-.92,0]];
   function drawAircraft(p,pos,chosen){
     const xy=project(pos);if(!xy)return null;
-    const color=colors[p.team],ax=bodyAxes(P.view==='2d'?{heading_deg:p.heading_deg}:p),px=chosen&&p.mode==='pilot'&&$('follow').checked&&P.view==='3d'?44:p.ai?11:17,size=clamp(px/xy.scale,12,6000);
+    const color=colors[p.team],ax=bodyAxes(P.view==='2d'?{heading_deg:p.heading_deg}:p),px=chosen&&p.mode==='pilot'&&$('follow').checked&&P.view==='3d'?44:(p.ai?11:17)*ICON,size=clamp(px/xy.scale,7,6000);
     const at=(x,y,z=0)=>pos.map((v,i)=>v+(ax.f[i]*x+ax.r[i]*y+ax.u[i]*z)*size);
     const outline=[...HULL,...HULL.slice(1,-1).reverse().map(([x,y])=>[x,-y])].map(([x,y])=>at(x,y));
     const poly=clipPoly(outline),fin=clipPoly([at(-.45,0),at(-.9,0,.42),at(-.98,0,.42),at(-.92,0)]);
     const toEye=P.view==='2d'?[0,0,1]:unit(B.eye.map((v,i)=>v-pos[i])),top=dot(ax.u,toEye)>=0;
     const me=isMe(p);ctx.globalAlpha=(p.alive?1:.3)*(p.ai?.55:1);
-    if(chosen){ctx.shadowColor=color;ctx.shadowBlur=14;}
-    if(poly){ctx.fillStyle=top?color:shade(color,.55);ctx.strokeStyle=chosen||me?'#ffffff':shade(color,1.35);ctx.lineWidth=me?2.4:chosen?1.6:1;ctx.lineJoin='round';
+    if(chosen){ctx.shadowColor=color;ctx.shadowBlur=8;}
+    if(poly){ctx.fillStyle=top?color:shade(color,.55);ctx.strokeStyle=chosen||me?'#ffffff':shade(color,1.35);ctx.lineWidth=(me?2.4:chosen?1.6:1)*Math.max(ICON,.5);ctx.lineJoin='round';
       ctx.beginPath();poly.forEach((q,i)=>i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y));ctx.closePath();ctx.fill();ctx.stroke();}
     ctx.shadowBlur=0;
     if(fin&&P.view==='3d'){ctx.fillStyle=shade(color,.75);ctx.beginPath();fin.forEach((q,i)=>i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y));ctx.closePath();ctx.fill();}
@@ -432,15 +532,17 @@
       if(sel.mode==='pilot'&&P.view==='3d'){const target=-sel.heading_deg*Math.PI/180+P.camera.orbit;let d=target-P.camera.yaw;d=Math.atan2(Math.sin(d),Math.cos(d));P.camera.yaw+=d*.12;}
     }
     B=P.view==='3d'?cameraBasis():null;
-    backdrop(w,h);
-    const field=clipPoly([[-half,-half,0],[half,-half,0],[half,half,0],[-half,half,0]]);
+    backdrop(w,h);drawTerrain(w,h);
+    // With terrain under it, the 3-D view drops the flat z=0 field and grid (they would show through the hills).
+    const flat=!(T.geo&&P.view==='3d');
+    const field=flat&&clipPoly([[-half,-half,0],[half,-half,0],[half,half,0],[-half,half,0]]);
     if(field){ctx.fillStyle=P.view==='3d'?'rgba(70,120,140,.07)':'rgba(70,120,140,.06)';ctx.beginPath();field.forEach((q,i)=>i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y));ctx.closePath();ctx.fill();}
     const spacing=P.view==='2d'&&P.map.span<40000?5000:10000;
-    for(let i=Math.ceil(-half/spacing)*spacing;i<=half;i+=spacing){const c=i===0?'#5d8aa3':'#36586b';fadedLine([i,-half,0],[i,half,0],c,1,8,.75);fadedLine([-half,i,0],[half,i,0],c,1,8,.75);}
+    if(flat)for(let i=Math.ceil(-half/spacing)*spacing;i<=half;i+=spacing){const c=i===0?'#5d8aa3':'#36586b';fadedLine([i,-half,0],[i,half,0],c,1,8,.75);fadedLine([-half,i,0],[half,i,0],c,1,8,.75);}
     for(const[a,b]of [[[ -half,-half,0],[half,-half,0]],[[half,-half,0],[half,half,0]],[[half,half,0],[-half,half,0]],[[-half,half,0],[-half,-half,0]]])fadedLine(a,b,'#6f9bb3',1.6,8);
     for(const [axis,p]of [['N',[0,half*1.06,0]],['S',[0,-half*1.06,0]],['E',[half*1.06,0,0]],['W',[-half*1.06,0,0]]]){const xy=project(p);if(xy){ctx.globalAlpha=fog(xy.depth);ctx.fillStyle='#8fbad1';ctx.font='600 12px system-ui';ctx.textAlign='center';ctx.fillText(axis,xy.x,xy.y+4);ctx.textAlign='left';ctx.globalAlpha=1;}}
-    if(sel&&sel.alive){const c=disp(sel,dt);for(const r of [10000,20000,40000]){const pts=[];for(let k=0;k<=72;k++){const a=k/72*Math.PI*2;pts.push([c[0]+Math.sin(a)*r,c[1]+Math.cos(a)*r,0]);}
-      for(let k=1;k<pts.length;k++)line(pts[k-1],pts[k],'#9fd3e6',1,[],.28);const lab=project([c[0],c[1]+r,0]);if(lab){ctx.globalAlpha=.6*fog(lab.depth);ctx.fillStyle='#9fd3e6';ctx.font='10px ui-monospace,monospace';ctx.fillText(r/1000+' km',lab.x+4,lab.y-3);ctx.globalAlpha=1;}}}
+    if(sel&&sel.alive){const c=disp(sel,dt);for(const r of [10000,20000,40000]){const pts=[];for(let k=0;k<=72;k++){const a=k/72*Math.PI*2;const x=c[0]+Math.sin(a)*r,y=c[1]+Math.cos(a)*r;pts.push([x,y,groundAt(x,y)]);}
+      for(let k=1;k<pts.length;k++)line(pts[k-1],pts[k],'#9fd3e6',1,[],.28);const lab=project(pts[0]);if(lab){ctx.globalAlpha=.6*fog(lab.depth);ctx.fillStyle='#9fd3e6';ctx.font='10px ui-monospace,monospace';ctx.fillText(r/1000+' km',lab.x+4,lab.y-3);ctx.globalAlpha=1;}}}
     const now=P.state.time_s;
     if($('trails').checked)for(const[id,tr]of P.trails){const missile=id.startsWith('m'),span=missile?20:90,points=tr.points.filter(p=>now-p.t<span);
       for(let i=1;i<points.length;i++){const age=(now-points[i].t)/span;line(points[i-1].p,points[i].p,missile?'#fff3d6':colors[tr.team],missile?1.6:1.4,[],(1-age)*(missile?.85:.6));}}
@@ -452,21 +554,21 @@
     const sorted=ps.map(p=>{const pos=disp(p,dt);return{p,pos,xy:project(pos)};}).filter(o=>o.xy).sort((a,b)=>b.xy.depth-a.xy.depth);
     for(const{p,pos}of sorted){
       const color=colors[p.team],chosen=p.id===P.selected;
-      if(P.view==='3d'&&p.alive){const ground=[pos[0],pos[1],0];line(ground,pos,color,1,[2,4],chosen?.6:.3);const g=project(ground);if(g){ctx.globalAlpha=.45*fog(g.depth);ctx.fillStyle='#000';ctx.beginPath();ctx.ellipse(g.x,g.y,7,2.5,0,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}}
+      if(P.view==='3d'&&p.alive){const ground=[pos[0],pos[1],groundAt(pos[0],pos[1])];line(ground,pos,color,1,[2,4],chosen?.6:.3);const g=project(ground);if(g){ctx.globalAlpha=.45*fog(g.depth);ctx.fillStyle='#000';ctx.beginPath();ctx.ellipse(g.x,g.y,Math.max(2,7*ICON),Math.max(.8,2.5*ICON),0,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}}
       if(p.order?.destination_m){const dest=[...p.order.destination_m,p.order.altitude_m];line(pos,dest,'#a6ece3',1.5,[6,5]);const d=project(dest);if(d){ctx.strokeStyle='#a6ece3';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(d.x,d.y,8,0,Math.PI*2);ctx.moveTo(d.x-12,d.y);ctx.lineTo(d.x+12,d.y);ctx.moveTo(d.x,d.y-12);ctx.lineTo(d.x,d.y+12);ctx.stroke();ctx.fillStyle='#a6ece3';ctx.font='11px system-ui';ctx.fillText('目的地',d.x+12,d.y-6);}}
       const xy=drawAircraft(p,pos,chosen);if(!xy)continue;
       ctx.globalAlpha=p.alive?fog(xy.depth)*.4+.6:.4;
       // Labels go far-to-near; one that would cover an earlier label shrinks to its number.
-      const lx=xy.x+16,ly=xy.y-14,crowded=!chosen&&P.labels.some(([x,y,w,h])=>lx<x+w&&lx+150>x&&ly-16<y+h&&ly+16>y);
+      const lx=xy.x+8,ly=xy.y-10,crowded=!chosen&&P.labels.some(([x,y,w,h])=>lx<x+w&&lx+150>x&&ly-16<y+h&&ly+16>y);
       const tag=p.player?short(p.player):'#'+p.id,head=p.player?tag:'#'+p.id+' '+title(p.aircraft),sub=(p.player?title(p.aircraft)+' · ':'')+(p.alive?fmt(pos[2])+' m · '+fmt(p.speed_mps)+' m/s':'已损失');
       chip(lx,ly,crowded?[tag]:[head,sub],color,chosen||isMe(p));ctx.globalAlpha=1;
       P.screen.push({id:p.id,x:xy.x,y:xy.y});
     }
     for(const m of P.state.missiles){const pos=disp(m,dt),xy=project(pos);if(!xy)continue;const color=colors[m.team];
-      if(m.velocity_mps){const v=unit(m.velocity_mps),tail=project(pos.map((x,i)=>x-v[i]*14/xy.scale));if(tail){ctx.strokeStyle='#fff3d6';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(tail.x,tail.y);ctx.lineTo(xy.x,xy.y);ctx.stroke();}}
-      ctx.fillStyle='#fffbe8';ctx.beginPath();ctx.arc(xy.x,xy.y,2.6,0,Math.PI*2);ctx.fill();
-      ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(xy.x,xy.y,m.seeker?6+2*Math.sin(performance.now()/120):5,0,Math.PI*2);ctx.stroke();
-      ctx.fillStyle=color;ctx.font='600 10px ui-monospace,monospace';ctx.fillText('M'+m.uid+(m.seeker?' 主动':''),xy.x+9,xy.y-6);}
+      if(m.velocity_mps){const v=unit(m.velocity_mps),tail=project(pos.map((x,i)=>x-v[i]*Math.max(3,14*ICON)/xy.scale));if(tail){ctx.strokeStyle='#fff3d6';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(tail.x,tail.y);ctx.lineTo(xy.x,xy.y);ctx.stroke();}}
+      ctx.fillStyle='#fffbe8';ctx.beginPath();ctx.arc(xy.x,xy.y,Math.max(.8,2.6*ICON),0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();ctx.arc(xy.x,xy.y,Math.max(1.4,(m.seeker?6+2*Math.sin(performance.now()/120):5)*ICON),0,Math.PI*2);ctx.stroke();
+      ctx.fillStyle=color;ctx.font='600 10px ui-monospace,monospace';ctx.fillText('M'+m.uid+(m.seeker?' 主动':''),xy.x+5,xy.y-4);}
     if(sel&&sel.alive&&sel.mode==='pilot'&&P.state.status!=='setup')hud({...sel,position_m:disp(sel,dt)},w,h);
     const span=P.view==='2d'?P.map.span:P.camera.radius;$('scale-label').textContent='网格 '+spacing/1000+' km · 视距 '+fmt(span/1000)+' km';
     requestAnimationFrame(draw);
@@ -487,7 +589,7 @@
     P.drag={...pos,startX:pos.x,startY:pos.y,unit:P.state.status==='setup'&&target?target.id:null,moved:false,pan:e.shiftKey};canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove',e=>{
-    const pos=locate(e),world=worldAt(pos.x,pos.y,0);if(world)$('coordinates').textContent='东 '+fmt(world[0]/1000,1)+' km · 北 '+fmt(world[1]/1000,1)+' km · ENU 米制';
+    const pos=locate(e),world=worldAt(pos.x,pos.y,0);if(world)$('coordinates').textContent='东 '+fmt(world[0]/1000,1)+' km · 北 '+fmt(world[1]/1000,1)+' km'+(T.geo&&P.view==='2d'?' · 地形 '+fmt(groundAt(world[0],world[1]))+' m':'')+' · ENU 米制';
     const d=P.drag;if(!d)return;
     const dx=pos.x-d.x,dy=pos.y-d.y;d.moved ||= Math.hypot(pos.x-d.startX,pos.y-d.startY)>4;
     if(d.unit!=null&&d.moved){const p=selectedDraft(),point=worldAt(pos.x,pos.y,p.position_m[2]);if(point){p.position_m[0]=clamp(point[0],-P.scene.map_half_m,P.scene.map_half_m);p.position_m[1]=clamp(point[1],-P.scene.map_half_m,P.scene.map_half_m);P.dirty=true;setField('east',fmt(p.position_m[0]/1000,2));setField('north',fmt(p.position_m[1]/1000,2));}}
@@ -499,6 +601,7 @@
   canvas.addEventListener('pointercancel',()=>{P.drag=null;});
   canvas.addEventListener('contextmenu',e=>{e.preventDefault();if(P.state.status==='setup'||P.state.status==='playback'||selected()?.tracked)return;const pos=locate(e),world=worldAt(pos.x,pos.y,0);if(world)act(()=>destination(world));});
   canvas.addEventListener('wheel',e=>{e.preventDefault();const factor=Math.exp(e.deltaY*.001);if(P.view==='3d')P.camera.radius=clamp(P.camera.radius*factor,600,400000);else P.map.span=clamp(P.map.span*factor,5000,450000);},{passive:false});
+  $('terrain').onchange=()=>{T.choice=$('terrain').value;store('wt-sandbox-terrain',T.choice);terrainSync();legendTerrain();};
   $('view3d').onclick=()=>changeView('3d');$('view2d').onclick=()=>changeView('2d');$('fit').onclick=fit;
   $('add-blue').onclick=()=>{P.pending={type:'deploy',team:0};render();message('在地图点击蓝队飞机的部署位置');};
   $('add-orange').onclick=()=>{P.pending={type:'deploy',team:1};render();message('在地图点击橙队飞机的部署位置');};
@@ -567,7 +670,7 @@
   async function init(){
     try{P.catalog=await api('/api/catalog');for(const speed of P.catalog.speeds)option($('speed'),speed,speed+'×');const groups=new Map();for(const a of P.catalog.aircraft){const g=family(a.id);if(!groups.has(g))groups.set(g,[]);groups.get(g).push(a);}
       for(const g of [...groups.keys()].sort((a,b)=>(a==='其他')-(b==='其他')||groups.get(b).length-groups.get(a).length)){const og=document.createElement('optgroup');og.label=g+' · '+groups.get(g).length;
-        for(const a of groups.get(g).sort((x,y)=>title(x.id).localeCompare(title(y.id),'zh')))option(og,a.id,title(a.id)+(names[a.id]&&family(a.id)!=='中国'?'（'+names[a.id][1]+'）':'')+' — '+a.missiles.map(m=>missileName(m.id)).join(' / '));$('aircraft').append(og);}for(const a of P.catalog.archetypes)option($('archetype'),a,archetypes[a]||a);for(const s of P.catalog.skills)option($('skill'),s,s==='top'?'高手':'普通');await poll();if(P.mode==='replay')await loadReplays();$('preset').value=Object.keys(P.catalog.presets).find(k=>P.catalog.presets[k].name===P.scene.name)||'duel';$('seed').value=P.scene.seed;$('limit').value=P.scene.time_limit_s;fit();draw();
+        for(const a of groups.get(g).sort((x,y)=>title(x.id).localeCompare(title(y.id),'zh')))option(og,a.id,title(a.id)+(names[a.id]&&family(a.id)!=='中国'?'（'+names[a.id][1]+'）':'')+' — '+a.missiles.map(m=>missileName(m.id)).join(' / '));$('aircraft').append(og);}for(const a of P.catalog.archetypes)option($('archetype'),a,archetypes[a]||a);for(const s of P.catalog.skills)option($('skill'),s,s==='top'?'高手':'普通');try{T.maps=(await api('/api/terrains')).maps;}catch(error){T.maps=[];}fillTerrainPicker();await poll();if(P.mode==='replay')await loadReplays();$('preset').value=Object.keys(P.catalog.presets).find(k=>P.catalog.presets[k].name===P.scene.name)||'duel';$('seed').value=P.scene.seed;$('limit').value=P.scene.time_limit_s;fit();draw();
       while(true){await sleep(50);try{await poll();}catch(error){message('连接中断：'+error.message,true);await sleep(1200);}}
     }catch(error){message('启动失败：'+error.message,true);}
   }
