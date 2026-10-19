@@ -14,8 +14,8 @@ branch's patches, plus the game's aces / game / char .vromfs.bin of the replay's
 Output: outputs/engagements/wt_real/<replay name>.jsonl, one file per input:
   header   planes [{id, team, aircraft, name, archetype (player), skill ("AI" for unowned aircraft), missile, missiles,
            chaff, ..., wt{eid, player, team_source, samples, gaps, ...}}], the standard plane_columns / missile_columns,
-           map_half_m, frame_dt_s=0.25, time_limit_s, and ``source``: provenance, frame, and ``fields`` saying for
-           each item whether it came from the replay or was inferred;
+           map_half_m, frame_dt_s=0.25, time_limit_s, and ``source``: provenance, frame, the game level and mission
+           from the export header, and ``fields`` saying for each item whether it came from the replay or was inferred;
   frame    every 0.25 s of replay time, rows interpolated linearly between the decoded samples (about 4 Hz);
   event    launch (target and target_basis.source), missile_end (outcome, outcome_basis, evidence, closest approach,
            end altitude / speed / flight-path angle), kill and death (kill feed), damage (severe / critical damage
@@ -1049,6 +1049,8 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
                               export_sha256=source_sha, replay=raw.get("source"),
                               replay_sha256=raw.get("source_sha256"), backend_revision=raw.get("backend_revision"),
                               replay_length_s=replay_len, origin_dagor_xz=[round(origin[0], 2), round(origin[1], 2)],
+                              level=(raw.get("header") or {}).get("level"),
+                              mission=(raw.get("header") or {}).get("mission"),
                               frame="ENU m: x=Dagor X, y=Dagor Z, z=Dagor Y (up), minus origin_dagor_xz; "
                                     "t = replay packet time, s",
                               teams=team_info, skipped_units=skipped,
