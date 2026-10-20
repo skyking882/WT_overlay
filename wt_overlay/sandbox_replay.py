@@ -671,17 +671,17 @@ class ReplayForkSimulation(SandboxSimulation):
         mid = base_missile(e.get("missile"))
         reason = None
         if shooter is None:
-            reason = "射手不在世界里"
+            reason = "射手不在推演中"
         elif not shooter.alive:
-            reason = "射手已在本推演中损失"
+            reason = "射手已损失"
         elif not shooter.flight.tracked:
-            reason = "射手已接管（由脚本 / 人决定发射）"
+            reason = "射手已接管"
         elif not missile_modelled(self.library, mid):
-            reason = f"导弹 {e.get('missile')} 不在模型库（非主动雷达或无 missile_sim 档案）"
+            reason = f"导弹 {e.get('missile')} 不在模型库"
         elif target is None:
-            reason = "目标不在世界里"
+            reason = "目标不在推演中"
         elif not target.alive:
-            reason = "目标已在本推演中损失"
+            reason = "目标已损失"
         elif target.team == shooter.team:
             reason = "目标为友军"
         if reason is not None:
@@ -720,7 +720,7 @@ class ReplayForkSimulation(SandboxSimulation):
     def _do_release(self, t, data):
         p, mode = self.planes[data["plane"]], data["mode"]
         if not p.alive:
-            self.event("replay_release_skipped", plane=p.ident, replay_id=self.rids[p.ident], reason="已在本推演中损失")
+            self.event("replay_release_skipped", plane=p.ident, replay_id=self.rids[p.ident], reason="已损失")
             return
         pilot = p.controller.pilot
         p.flight.release()
@@ -778,7 +778,7 @@ def build_fork(track, t_fork, control, *, library, include_ai=False, me=None, se
     # an aircraft still on the airfield (parked / taxiing) cannot be built by the flight model: left out like a late one
     members = [rid for rid in present if _airborne(track, rid, t0)]
     if len(members) < len(present):
-        notes.append(f"{len(present)-len(members)} 架在世界起点仍在机场（速度低于 {MIN_STEP_SPEED_MPS:.0f} m/s），不在推演里")
+        notes.append(f"{len(present)-len(members)} 架还在机场，未加入")
     for rid in released:
         if rid not in members:
             raise ValueError(f"{track.label(rid)} 在世界起点 t0={t0:.2f} s 不在空中")
@@ -792,7 +792,7 @@ def build_fork(track, t_fork, control, *, library, include_ai=False, me=None, se
             key = (lambda r: (r not in released and r != anchor, math.dist(track.kinematics(r, t0)[0], ref))) \
                 if ref is not None else (lambda r: (r not in released, r))
             chosen = sorted(group, key=key)[:REPLAY_MAX_TEAM]
-            notes.append(f"队伍 {team} 有 {len(group)} 架，只取" + ("离我的飞机最近的" if ref is not None else "编号最小的")
+            notes.append(f"队伍 {team} 共 {len(group)} 架，取" + ("离我最近的" if ref is not None else "编号最小的")
                          + f" {REPLAY_MAX_TEAM} 架")
             group = [r for r in group if r in chosen]
         kept += group
@@ -855,17 +855,13 @@ def build_fork(track, t_fork, control, *, library, include_ai=False, me=None, se
             pilot.ident = ident
         specs.append(s)
     if surrogates:
-        notes.append(f"{len(surrogates)} 架没有飞行模型的钉轨飞机借用 {SURROGATE_FM} 的模型构造（不积分、无传感器）")
-    notes.append(f"导弹重飞：只重飞接管时尚未过最近点、且发射不早于接管前 {REFLY_MAX_AGE_S:.0f} s 的已建模导弹")
-    notes.append("箔条数量回放里未知：按种子抽样（与普通沙盘相同）；回放箔条事件按记录时刻各投 1 束，不足时跳过")
-    notes.append("导弹数量 = t0 时帧里的 missiles 列（WT 导入里是此后回放中看到的发射次数，不是真实挂载）")
-    notes.append("世界在回放结束时到达时间上限；钉轨飞机在其轨迹结束后沿最后速度直线外推")
+        notes.append(f"{len(surrogates)} 架无飞行模型，只按轨迹")
     duration = max(1., track.duration_s-t0)
     eng = ReplayForkSimulation(specs, seed, track=track, offset=t0, rids=members, surrogates=surrogates,
                                library=library, map_half_m=track.map_half_m, time_limit_s=duration)
     idents = {rid: i for i, rid in enumerate(members)}
     if me is not None and me not in idents:
-        notes.append("我的飞机不在世界里")
+        notes.append("我的飞机不在推演中")
     skipped_static = []
     eng.scenario = dict(name=f"WT 回放接管 · {file or track.name} @ {t_fork:.2f} s", seed=seed, time_limit_s=duration,
                         map_half_m=track.map_half_m, notes=notes)
@@ -880,7 +876,7 @@ def build_fork(track, t_fork, control, *, library, include_ai=False, me=None, se
         if e["t"] < t0-EPS and track.missile_live_until(uid) > t_fork+EPS and \
                 missile_modelled(library, base_missile(e.get("missile"))):
             skipped_static.append(dict(replay_uid=uid, replay_t=e["t"],
-                                       reason=f"发射早于接管 {REFLY_MAX_AGE_S:.0f} s 以上，视为能量耗尽，不重飞"))
+                                       reason=f"发射已超过 {REFLY_MAX_AGE_S:.0f} s"))
     for e in track.events:
         t, k = e.get("t", 0.), e.get("kind")
         if t < t0-EPS:
@@ -891,11 +887,11 @@ def build_fork(track, t_fork, control, *, library, include_ai=False, me=None, se
             sched.append((t, 2, "launch", e))
             reason = None
             if e.get("shooter") not in idents:
-                reason = "射手不在世界里"
+                reason = "射手不在推演中"
             elif not missile_modelled(library, base_missile(e.get("missile"))):
-                reason = f"导弹 {e.get('missile')} 不在模型库（非主动雷达或无 missile_sim 档案）"
+                reason = f"导弹 {e.get('missile')} 不在模型库"
             elif e.get("target") not in idents:
-                reason = "目标不在世界里"
+                reason = "目标不在推演中"
             if reason is not None:
                 skipped_static.append(dict(replay_uid=e.get("uid"), replay_t=t, reason=reason))
         elif k == "chaff" and e.get("plane") in idents:
