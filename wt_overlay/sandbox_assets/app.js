@@ -6,7 +6,8 @@
     view: '3d', pending: null, camera: {x: 0, y: 0, z: 2500, yaw: .45, elevation: .62, radius: 120000, orbit: 0}, received: 0,
     map: {x: 0, y: 0, span: 140000}, screen: [], trails: new Map(), events: new Map(), keys: new Set(),
     drag: null, lastTime: -1, lastStatus: '', formSignature: '', inputPending: false,
-    mode: 'setup', replays: [], me: '', showAI: false, seeking: false, markerFile: null, meFile: null, lastFork: false};
+    mode: 'setup', replays: [], me: '', showAI: false, seeking: false, markerFile: null, meFile: null, lastFork: false,
+    sel: [], ownId: null, missileOwner: new Map(), trackSig: {}};
   const teams = ['蓝队', '橙队'], colors = ['#54bdff', '#ffaf64'];
   // Display name and country group per airframe; unknown ids fall back to the raw id.
   const names = {
@@ -62,7 +63,17 @@
   const roster = () => P.state?.replay?.roster || P.state?.fork?.roster || null;
   const nameOf = id => { const r=roster()?.[id]; return r?.player ? short(r.player) : '#'+id; };
   const mapHalf = () => P.state?.map_half_m || P.scene.map_half_m;
-  function isMe(p){ const s=P.state; if(!s)return false; if(s.fork)return p.id===s.fork.me; return s.status==='playback'&&!!P.me&&p.player===P.me; }
+  // 本机: in playback the replay's 我的飞机; otherwise the aircraft set with 设为本机, the fork's own aircraft, or the
+  // one being flown by keyboard.
+  function ownId(){
+    const s=P.state;if(!s)return null;const ps=s.planes||[];
+    if(s.status==='playback'){const p=P.me?ps.find(p=>p.player===P.me):null;return p?p.id:null;}
+    if(s.status==='setup')return null;
+    if(P.ownId!=null&&ps.some(p=>p.id===P.ownId))return P.ownId;
+    if(s.fork?.me!=null)return s.fork.me;
+    const pilot=ps.find(p=>p.mode==='pilot'&&p.alive);return pilot?pilot.id:null;
+  }
+  function isMe(p){ return p!=null&&p.id===ownId(); }
   function store(key,value){ try{ localStorage.setItem(key,value); }catch(error){} }
   function recall(key){ try{ return localStorage.getItem(key)||''; }catch(error){ return ''; } }
   function message(text, error=false) { $('notice').textContent=text; $('notice').className='visible'+(error?' error':''); }
@@ -130,7 +141,27 @@
     $('velocity').value=fmt(order?order.speed_mps:p.speed_mps);
     $('heading').value=fmt(order?order.heading_deg:p.heading_deg,1);
   }
-  function select(id) {releaseKeys();P.selected=id;P.formSignature='';render();}
+  // Ctrl / Cmd + click adds or removes an aircraft (not while deploying); P.selected stays the primary (last chosen).
+  function select(id,add=false) {
+    releaseKeys();
+    if(add&&P.state&&P.state.status!=='setup'){const i=P.sel.indexOf(id);if(i<0)P.sel.push(id);else if(P.sel.length>1)P.sel.splice(i,1);}
+    else P.sel=[id];
+    P.selected=P.sel.at(-1);P.formSignature='';render();
+  }
+  function selection() {
+    const ps=planes();if(!P.sel.includes(P.selected))P.sel=[P.selected];
+    if(P.state?.status==='setup')P.sel=[P.selected];
+    P.sel=P.sel.filter(id=>ps.some(p=>p.id===id));
+    return P.sel.map(id=>ps.find(p=>p.id===id));
+  }
+  // A <select> refreshed every poll keeps its options (and an open drop-down) while the set of values is unchanged.
+  function syncOptions(sel,items,empty){
+    const sig=items.map(i=>i.value).join('|')||'-';
+    if(sel.dataset.sig!==sig){const prev=sel.value;sel.replaceChildren();if(!items.length)option(sel,'',empty);
+      for(const i of items)option(sel,i.value,i.text);if(items.some(i=>String(i.value)===prev))sel.value=prev;sel.dataset.sig=sig;}
+    else items.forEach((i,k)=>{if(sel.options[k]&&sel.options[k].textContent!==i.text)sel.options[k].textContent=i.text;});
+  }
+  const trackItems=p=>(p.tracks||[]).map(c=>({value:String(c.track),text:'航迹 '+c.track+' · '+fmt(c.range_m/1000,1)+' km · '+fmt(c.bearing_deg)+'°'}));
   function editDraft() {
     if(P.state.status!=='setup')return;
     const p=selectedDraft();if(!p)return;
@@ -186,10 +217,12 @@
         const row=rows[i];row.className='unit-row'+(team?' orange-row':'')+(p.id===P.selected?' selected':'')+(!p.alive?' dead':'');
         row.children[0].textContent=p.player?short(p.player)+' · '+title(p.aircraft):'#'+p.id+' '+title(p.aircraft);
         row.children[1].textContent=(p.missile?missileName(p.missile)+' · ':'')+(p.alive?fmt(p.position_m[2])+' m · '+fmt(p.speed_mps)+' m/s · '+(phases[p.phase]||p.phase||'接敌'):'已损失');
-        row.onclick=()=>select(p.id);
+        row.onclick=e=>select(p.id,e.ctrlKey||e.metaKey);
       });
     }
-    const p=selected();$('empty-selection').hidden=!!p;$('unit-panel').hidden=!p;
+    const chosen=selection(),multi=chosen.length>1,p=multi?null:selected();
+    $('empty-selection').hidden=chosen.length>0;$('unit-panel').hidden=!p;$('group-panel').hidden=!multi;
+    if(multi)renderGroup(chosen,{playback,done});
     if(p) {
       $('unit-id').textContent=teams[p.team]+' #'+p.id;$('unit-name').textContent=p.player?short(p.player)+' · '+title(p.aircraft):title(p.aircraft);$('unit-name').className='unit-name '+(p.team?'orange':'blue');
       $('unit-state').replaceChildren();
@@ -208,16 +241,16 @@
       $('mode-help').textContent=p.mode==='auto'?'飞行与武器由原脚本决定，观测限制保持生效。':p.mode==='pilot'?'点地图获得焦点；W/S 俯仰，A/D 滚转，R/F 油门，空格减速板，按住 L 自动改平；拖动环视，C 回正。暂停或失焦释放按键。':'设置航向或地图目的地；高度和速度由真实飞行模型跟随。雷达自动搜索，武器由你发射。';
       const signature=p.id+'|'+setup+'|'+p.mode;
       if(P.formSignature!==signature){rebuildForm();P.formSignature=signature;}
-      $('weapon-panel').hidden=setup||locked||p.mode==='auto';
-      const previous=$('tracks').value;$('tracks').replaceChildren();
-      for(const c of p.tracks)option($('tracks'),c.track,'航迹 '+c.track+' · '+fmt(c.range_m/1000,1)+' km · '+fmt(c.bearing_deg)+'°');
-      if(p.tracks.length===0)option($('tracks'),'','暂无可发射雷达航迹');
-      else if(p.tracks.some(c=>String(c.track)===previous))$('tracks').value=previous;
-      $('fire').disabled=P.busy||done||!p.alive||!p.tracks.length||p.missiles<=0;
+      // The own aircraft's weapons live in the 本机 section.
+      $('weapon-panel').hidden=setup||locked||p.mode==='auto'||isMe(p);
+      syncOptions($('tracks'),trackItems(p),'暂无可发射雷达航迹');
+      $('fire').disabled=P.busy||done||!p.alive||!(p.tracks||[]).length||p.missiles<=0;
       $('drop-chaff').disabled=P.busy||done||!p.alive||p.chaff<=0;
-      $('control-banner').hidden=p.mode!=='pilot'||!p.alive||done;
-      if(p.mode==='pilot')$('control-banner').textContent=(document.activeElement===canvas?'驾驶焦点已启用':'点击战场启用驾驶键盘')+' · W/S 拉起/下压 · A/D 滚转 · R/F 油门 · 空格减速板 · L 改平 · 拖动环视 / C 回正';
-    } else $('control-banner').hidden=true;
+      $('make-me').hidden=setup||isMe(p)||playback&&!p.player||!playback&&(!p.alive||done);
+    }
+    const q=selected();$('control-banner').hidden=!q||q.mode!=='pilot'||!q.alive||done;
+    if(q&&q.mode==='pilot')$('control-banner').textContent=(document.activeElement===canvas?'驾驶焦点已启用':'点击战场启用驾驶键盘')+' · W/S 拉起/下压 · A/D 滚转 · R/F 油门 · 空格减速板 · L 改平 · 拖动环视 / C 回正';
+    renderOwn({setup,playback,done});
     $('deployment-help').textContent=P.pending?.type==='deploy'?'在地图点击部署'+teams[P.pending.team]+'飞机。按 Esc 取消。':setup?'点选飞机编辑参数；拖动飞机修改位置。点击「部署」后，在地图选位置。':'点选飞机下令或进入驾驶。重置后可重新布置，当前未完成对局保存为中止。';
     $('health').textContent='导弹错误 '+s.missile_errors+' · 飞行模型越界 '+s.fm_faults;
     $('health').style.color=s.missile_errors||s.fm_faults?'#ff979a':'';
@@ -279,6 +312,7 @@
     if(e.kind==='missile_end')return '导弹 #'+e.uid+' 终止 · '+({lifetime:'达到仿真寿命上限',fuse:'近炸触发',ground:'触地',error:'模型错误',target_dead:'目标已损失'}[e.result]||e.result)+(['fuse','error'].includes(e.result)?'':'（额外脱靶原因未单独记录）');
     if(e.kind==='death')return nameOf(e.plane)+' 损失 · '+({missile:'导弹击落',crash:'坠毁',out_of_bounds:'出界',left_replay:'离开回放'}[e.cause]||(String(e.cause).startsWith('replay_')?'回放记录 · '+e.cause.slice(7):e.cause));
     if(e.kind==='chaff')return who+'投放箔条';
+    if(e.kind==='damage')return (e.by!=null?nameOf(e.by)+' 对 ':'')+nameOf(e.plane)+' 造成'+(e.severity==='critical'?'致命':'严重')+'损伤'+(e.fire?'（起火）':'');
     if(e.kind==='phase'&&['evade','recommit','round2'].includes(e.to))return who+(phases[e.to]||e.to);
     if(e.kind==='human_order')return who+({auto:'返回自主脚本',manual:'接收人工导航',pilot:'进入玩家驾驶'}[e.mode]);
     if(e.kind==='human_input')return who+'操纵输入 · 滚转 '+e.keys.roll+' / 俯仰 '+e.keys.pitch;
@@ -288,21 +322,77 @@
     if(e.kind==='missile_error')return '导弹模型错误 · '+(e.error||'查看完整回放');
     return null;
   }
+  // Events go to three lists: 全局 (kills, losses, damage, end, system notes), the selected aircraft and 本机. Key-by-key
+  // manual input is not listed. Lists only append (oldest first) and stay scrolled to the bottom unless scrolled up.
+  const GLOBAL_KINDS=new Set(['kill','death','damage','end','missile_error','replay_shot_skipped','replay_release']);
+  function concerns(e){
+    const ids=new Set();for(const k of ['plane','shooter','killer','victim','by'])if(e[k]!=null)ids.add(e[k]);
+    if(e.kind==='launch'&&e.target!=null)ids.add(e.target);
+    if(e.uid!=null&&e.kind!=='launch'){const o=P.missileOwner.get(e.uid);if(o){ids.add(o.shooter);if(o.target!=null)ids.add(o.target);}}
+    return ids;
+  }
+  function eventRows(entries){
+    return entries.map(([k,e])=>({key:k,cls:e.kind==='death'||e.kind==='kill'||e.kind==='damage'?'hit':e.kind==='rwr'?'warning':e.kind.startsWith('human')?'order':'',
+      time:fmt(e.t+(P.state.fork?.offset||0),1),text:e.text}));
+  }
+  function syncList(el,items,empty){
+    if(!items.length){if(!(el.children.length===1&&el.firstChild.className==='help')){const h=document.createElement('p');h.className='help';h.textContent=empty;el.replaceChildren(h);}return;}
+    const keys=new Set(items.map(i=>String(i.key))),bottom=el.scrollHeight-el.scrollTop-el.clientHeight<12;
+    let kept=0;for(const c of [...el.children]){if(c.dataset.key!=null&&keys.has(c.dataset.key))kept++;else c.remove();}
+    const have=new Set([...el.children].map(c=>c.dataset.key));
+    for(const i of items){if(have.has(String(i.key)))continue;const row=document.createElement('div');row.dataset.key=String(i.key);row.className='event '+i.cls;
+      const t=document.createElement('time');t.textContent=i.time;const x=document.createElement('span');x.textContent=i.text;row.append(t,x);el.append(row);}
+    if(bottom||kept<items.length/2)el.scrollTop=el.scrollHeight;
+  }
   function renderEvents(){
     const s=P.state,start=s.event_total-s.events.length;
-    s.events.forEach((e,i)=>{const t=eventText(e);if(t)P.events.set(start+i,{...e,text:t});});
-    if(P.events.size>100)for(const k of [...P.events.keys()].slice(0,P.events.size-100))P.events.delete(k);
-    $('event-count').textContent=P.events.size+' 条';
-    const list=$('events');list.replaceChildren();
-    if(!P.events.size){const p=document.createElement('p');p.className='help';p.textContent='发现、发射、告警、支援中断和结果将在这里出现。';list.append(p);}
-    for(const e of [...P.events.values()].reverse()) {const row=document.createElement('div');row.className='event '+(e.kind==='death'||e.kind==='kill'?'hit':e.kind==='rwr'?'warning':e.kind.startsWith('human')?'order':'');const t=document.createElement('time');t.textContent=fmt(e.t+(P.state.fork?.offset||0),1);const text=document.createElement('span');text.textContent=e.text;row.append(t,text);list.append(row);}
+    s.events.forEach((e,i)=>{if(e.kind==='launch'&&e.uid!=null)P.missileOwner.set(e.uid,{shooter:e.shooter??e.plane,target:e.target});
+      const t=eventText(e);if(t)P.events.set(start+i,{...e,text:t});});
+    if(P.events.size>400)for(const k of [...P.events.keys()].slice(0,P.events.size-400))P.events.delete(k);
+    const all=[...P.events.entries()].filter(([,e])=>e.kind!=='human_input'),global=all.filter(([,e])=>GLOBAL_KINDS.has(e.kind));
+    $('global-count').textContent=global.length+' 条';
+    syncList($('global-events'),eventRows(global.slice(-120)),'击落、损失、受损与对局结束会显示在这里。回放导出里没有聊天文字。');
+    const picked=new Set(selection().map(p=>p.id)),own=ownId();
+    syncList($('unit-events'),eventRows(all.filter(([,e])=>[...concerns(e)].some(id=>picked.has(id))).slice(-40)),'所选飞机的发射、来袭、告警、导弹状态和命令。');
+    syncList($('own-events'),own==null?[]:eventRows(all.filter(([,e])=>concerns(e).has(own)).slice(-80)),'本机的发射、来袭、告警、导弹状态和命令。');
   }
+  function renderGroup(list,{playback,done}){
+    const rows=rowsFor($('group-rows'),list.map(p=>p.id)),cmd=list.filter(p=>p.alive&&!p.tracked&&!playback);
+    list.forEach((p,i)=>{const row=rows[i];row.className='unit-row'+(p.team?' orange-row':'')+(p.id===P.selected?' selected':'')+(!p.alive?' dead':'');
+      row.children[0].textContent=(p.player?short(p.player):'#'+p.id)+' · '+title(p.aircraft)+(isMe(p)?' · 本机':'');
+      row.children[1].textContent=p.alive?fmt(p.position_m[2])+' m · '+fmt(p.speed_mps)+' m/s · '+(p.tracked?'WT 轨迹':controlModes[p.mode]||p.mode||'—'):'已损失';
+      row.onclick=e=>select(p.id,e.ctrlKey||e.metaKey);});
+    $('unit-id').textContent='已选 '+list.length+' 架';
+    $('group-note').textContent=playback?'原样回放：只能查看。':cmd.length===list.length?'全部 '+cmd.length+' 架可下令。':cmd.length+' 架可下令（钉在 WT 轨迹或已损失的不受影响）。';
+    const sig=list.map(p=>p.id).join(',');
+    if(P.groupSig!==sig){const lead=selected()||list[0];$('g-altitude').value=Math.round(lead.position_m[2]/100)*100;$('g-velocity').value=Math.round(lead.speed_mps/10)*10;$('g-heading').value=Math.round(lead.heading_deg||0);$('g-mode').value='';P.groupSig=sig;}
+    for(const id of ['g-mode','g-altitude','g-velocity','g-heading','g-apply','g-destination'])$(id).disabled=P.busy||done||!cmd.length;
+  }
+  function renderOwn({setup,playback,done}){
+    const id=ownId(),p=id==null?null:(P.state.planes||[]).find(q=>q.id===id);
+    $('own-empty').hidden=!!p;$('own-panel').hidden=!p;
+    $('own-tag').textContent=p?(p.player?short(p.player)+' · ':'#'+p.id+' ')+title(p.aircraft):'未指定';
+    if(!p){$('own-empty').textContent=setup?'开始推演后，选中飞机点「设为本机」；进入亲自驾驶的飞机也会成为本机。':playback?'在左侧「我的飞机」选择，或选中飞机后点「设为本机」。':'选中飞机后点「设为本机」；进入亲自驾驶的飞机也会成为本机。';return;}
+    const st=$('own-state');st.replaceChildren();
+    for(const text of ['高度 '+fmt(p.position_m[2])+' m','速度 '+fmt(p.speed_mps)+' m/s','航向 '+fmt(p.heading_deg,1)+'°','导弹 '+fmt(p.missiles)+' 枚',p.chaff==null?'箔条 未知':'箔条 '+fmt(p.chaff)+' 束',p.alive?(p.tracked||playback?'WT 轨迹':controlModes[p.mode]||p.mode):'已损失']){const t=document.createElement('span');t.textContent=text;st.append(t);}
+    const inc=(P.state.missiles||[]).filter(m=>m.target===p.id).map(m=>Math.hypot(...m.position_m.map((v,i)=>v-p.position_m[i]))).sort((a,b)=>a-b);
+    $('own-threat').hidden=!inc.length||!p.alive;if(inc.length)$('own-threat').textContent='来袭导弹 '+inc.length+' 枚 · 最近 '+fmt(inc[0]/1000,1)+' km';
+    const can=!setup&&!playback&&!done&&p.alive&&!p.tracked,armed=can&&p.mode!=='auto';
+    $('own-weapons').hidden=setup||playback||!!p.tracked;
+    $('own-note').hidden=!can||armed;$('own-note').textContent='自主脚本在控制武器；切到人工导航或亲自驾驶后可手动发射。';
+    syncOptions($('own-tracks'),trackItems(p),'暂无可发射雷达航迹');
+    $('own-tracks').disabled=!armed;
+    $('own-fire').disabled=P.busy||!armed||!(p.tracks||[]).length||p.missiles<=0;$('own-chaff').disabled=P.busy||!armed||p.chaff<=0;
+    $('own-pilot').hidden=!can;$('own-pilot').disabled=P.busy;$('own-pilot').textContent=p.mode==='pilot'?'退出驾驶 → 自主脚本':'驾驶本机（1×）';
+  }
+
   async function poll(){
     const s=await api('/api/state');
     if(!P.scene||(!P.dirty&&s.status==='setup'))P.scene=clone(s.scenario);
     if(s.status==='playback'||s.fork)P.mode='replay';
-    const fork=!!s.fork;if(fork!==P.lastFork||(s.replay_file||null)!==(P.state?.replay_file||null)){P.trails.clear();P.events.clear();P.lastTime=-1;P.lastFork=fork;}
-    if(s.time_s<P.lastTime||s.status==='setup'&&P.lastStatus!=='setup'){P.trails.clear();P.events.clear();P.lastTime=-1;P.formSignature='';}
+    const fork=!!s.fork;if(fork!==P.lastFork||(s.replay_file||null)!==(P.state?.replay_file||null)){P.trails.clear();P.events.clear();P.missileOwner.clear();P.lastTime=-1;P.lastFork=fork;P.ownId=null;P.sel=[];}
+    if(s.time_s<P.lastTime||s.status==='setup'&&P.lastStatus!=='setup'){P.trails.clear();P.events.clear();P.missileOwner.clear();P.lastTime=-1;P.formSignature='';}
+    if(s.status==='setup'&&P.lastStatus!=='setup')P.ownId=null;
     if(s.time_s>P.lastTime){
       for(const p of s.planes.filter(p=>p.alive&&(P.showAI||!p.ai)))trail('p'+p.id,p.position_m,s.time_s,p.team);
       for(const m of s.missiles)trail('m'+m.uid,m.position_m,s.time_s,m.team);
@@ -526,7 +616,7 @@
     if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}
     ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
     if(!P.state){requestAnimationFrame(draw);return;}
-    const half=mapHalf(),ps=planes(),sel=selected(),dt=lead();
+    const half=mapHalf(),ps=planes(),sel=selected(),dt=lead(),picked=new Set(P.sel.length?P.sel:[P.selected]);
     if($('follow').checked&&sel){
       const at=disp(sel,dt);P.camera.x=at[0];P.camera.y=at[1];P.camera.z=at[2];P.map.x=at[0];P.map.y=at[1];
       if(sel.mode==='pilot'&&P.view==='3d'){const target=-sel.heading_deg*Math.PI/180+P.camera.orbit;let d=target-P.camera.yaw;d=Math.atan2(Math.sin(d),Math.cos(d));P.camera.yaw+=d*.12;}
@@ -553,7 +643,7 @@
     P.screen=[];P.labels=[];
     const sorted=ps.map(p=>{const pos=disp(p,dt);return{p,pos,xy:project(pos)};}).filter(o=>o.xy).sort((a,b)=>b.xy.depth-a.xy.depth);
     for(const{p,pos}of sorted){
-      const color=colors[p.team],chosen=p.id===P.selected;
+      const color=colors[p.team],chosen=picked.has(p.id);
       if(P.view==='3d'&&p.alive){const ground=[pos[0],pos[1],groundAt(pos[0],pos[1])];line(ground,pos,color,1,[2,4],chosen?.6:.3);const g=project(ground);if(g){ctx.globalAlpha=.45*fog(g.depth);ctx.fillStyle='#000';ctx.beginPath();ctx.ellipse(g.x,g.y,Math.max(2,7*ICON),Math.max(.8,2.5*ICON),0,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}}
       if(p.order?.destination_m){const dest=[...p.order.destination_m,p.order.altitude_m];line(pos,dest,'#a6ece3',1.5,[6,5]);const d=project(dest);if(d){ctx.strokeStyle='#a6ece3';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(d.x,d.y,8,0,Math.PI*2);ctx.moveTo(d.x-12,d.y);ctx.lineTo(d.x+12,d.y);ctx.moveTo(d.x,d.y-12);ctx.lineTo(d.x,d.y+12);ctx.stroke();ctx.fillStyle='#a6ece3';ctx.font='11px system-ui';ctx.fillText('目的地',d.x+12,d.y-6);}}
       const xy=drawAircraft(p,pos,chosen);if(!xy)continue;
@@ -581,11 +671,19 @@
     if(P.scene.teams[team].length>=P.catalog.max_team){message('每队最多 '+P.catalog.max_team+' 架',true);return;}
     const p=clone(P.scene.teams[team].at(-1));p.position_m[0]=world[0];p.position_m[1]=world[1];P.scene.teams[team].push(p);P.dirty=true;P.pending=null;P.selected=team===0?P.scene.teams[0].length-1:P.scene.teams.flat().length-1;P.formSignature='';render();
   }
-  async function destination(world){const p=selected();if(!p||!p.alive)return;await command('order',{plane:p.id,order:{mode:'manual',destination_m:world.slice(0,2),altitude_m:Number($('altitude').value),speed_mps:Number($('velocity').value)}});P.pending=null;P.formSignature='';message('已下达 #'+p.id+' 目的地：东 '+fmt(world[0]/1000,1)+' / 北 '+fmt(world[1]/1000,1)+' km');}
+  // One aircraft flies to the point; several keep their offsets from the group centre.
+  async function destination(world){
+    const chosen=selection(),multi=chosen.length>1,group=chosen.filter(p=>p.alive&&!p.tracked&&(!multi||p.mode!=='pilot'));if(!group.length)return;
+    const alt=Number($(multi?'g-altitude':'altitude').value),spd=Number($(multi?'g-velocity':'velocity').value);
+    const cx=group.reduce((a,p)=>a+p.position_m[0],0)/group.length,cy=group.reduce((a,p)=>a+p.position_m[1],0)/group.length;
+    for(const p of group){const d=multi?[world[0]+p.position_m[0]-cx,world[1]+p.position_m[1]-cy]:world.slice(0,2);
+      await command('order',{plane:p.id,order:{mode:'manual',destination_m:d,altitude_m:alt,speed_mps:spd}});}
+    P.pending=null;P.formSignature='';message((multi?group.length+' 架':'#'+group[0].id)+' 目的地：东 '+fmt(world[0]/1000,1)+' / 北 '+fmt(world[1]/1000,1)+' km'+(multi?'（保持相对位置）':''));
+  }
   canvas.addEventListener('pointerdown',e=>{
     if(e.button!==0)return;canvas.focus();const pos=locate(e),target=hit(pos.x,pos.y);
     if(P.pending){const world=worldAt(pos.x,pos.y,0);if(world){world[0]=clamp(world[0],-mapHalf(),mapHalf());world[1]=clamp(world[1],-mapHalf(),mapHalf());if(P.pending.type==='deploy')deploy(P.pending.team,world);else act(()=>destination(world));}return;}
-    if(target)select(target.id);
+    if(target)select(target.id,e.ctrlKey||e.metaKey);
     P.drag={...pos,startX:pos.x,startY:pos.y,unit:P.state.status==='setup'&&target?target.id:null,moved:false,pan:e.shiftKey};canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove',e=>{
@@ -599,7 +697,7 @@
   });
   canvas.addEventListener('pointerup',()=>{P.drag=null;render();});
   canvas.addEventListener('pointercancel',()=>{P.drag=null;});
-  canvas.addEventListener('contextmenu',e=>{e.preventDefault();if(P.state.status==='setup'||P.state.status==='playback'||selected()?.tracked)return;const pos=locate(e),world=worldAt(pos.x,pos.y,0);if(world)act(()=>destination(world));});
+  canvas.addEventListener('contextmenu',e=>{e.preventDefault();if(P.state.status==='setup'||P.state.status==='playback'||selection().every(p=>p.tracked))return;const pos=locate(e),world=worldAt(pos.x,pos.y,0);if(world)act(()=>destination(world));});
   canvas.addEventListener('wheel',e=>{e.preventDefault();const factor=Math.exp(e.deltaY*.001);if(P.view==='3d')P.camera.radius=clamp(P.camera.radius*factor,600,400000);else P.map.span=clamp(P.map.span*factor,5000,450000);},{passive:false});
   $('terrain').onchange=()=>{T.choice=$('terrain').value;store('wt-sandbox-terrain',T.choice);terrainSync();legendTerrain();};
   $('view3d').onclick=()=>changeView('3d');$('view2d').onclick=()=>changeView('2d');$('fit').onclick=fit;
@@ -619,10 +717,19 @@
   $('save').onclick=()=>act(async()=>{await configure();const output=await command('save');if(output?.scenario){const a=document.createElement('a');a.href=output.scenario;a.download='scenario.json';a.click();}message('已保存到 '+(output?.path||'outputs/sandbox'));});
   $('apply').onclick=()=>act(async()=>{if(P.state.status==='setup'){editDraft();await configure();message('初始状态已应用');}else{releaseKeys();await command('order',{plane:P.selected,order:{mode:'manual',destination_m:null,heading_deg:Number($('heading').value),altitude_m:Number($('altitude').value),speed_mps:Number($('velocity').value)}});P.formSignature='';message('导航命令已下达');}});
   $('destination').onclick=()=>{P.pending={type:'destination'};message('点击地图设置所选飞机的水平目的地；目标高度与速度使用右侧数值。按 Esc 取消。');};
-  async function enterPilot(){releaseKeys();await command('speed',{speed:1});await command('order',{plane:P.selected,order:{mode:'pilot'}});P.formSignature='';$('follow').checked=true;P.camera.radius=1800;P.camera.elevation=.12;P.camera.orbit=0;const p=selected();P.camera.yaw=-(p.heading_deg||0)*Math.PI/180;changeView('3d');canvas.focus();message('已进入驾驶：点击战场后用 W/S 俯仰、A/D 滚转、R/F 或 ＋/－ 油门、空格减速板、按住 L 改平。拖动环视，C 回正视角。');}
+  async function enterPilot(id=P.selected){if(id!==P.selected)select(id);releaseKeys();await command('speed',{speed:1});await command('order',{plane:P.selected,order:{mode:'pilot'}});P.formSignature='';$('follow').checked=true;P.camera.radius=1800;P.camera.elevation=.12;P.camera.orbit=0;const p=selected();P.camera.yaw=-(p.heading_deg||0)*Math.PI/180;changeView('3d');canvas.focus();message('已进入驾驶：点击战场后用 W/S 俯仰、A/D 滚转、R/F 或 ＋/－ 油门、空格减速板、按住 L 改平。拖动环视，C 回正视角。');}
   $('pilot').onclick=()=>act(async()=>{if(selected().mode==='pilot'){releaseKeys();await command('order',{plane:P.selected,order:{mode:'auto'}});P.formSignature='';}else await enterPilot();});
   $('mode').onchange=()=>{const mode=$('mode').value;act(async()=>{if(mode==='pilot')await enterPilot();else{releaseKeys();await command('order',{plane:P.selected,order:{mode}});P.formSignature='';}});};
   $('fire').onclick=()=>act(()=>command('fire',{plane:P.selected,track:Number($('tracks').value)}));
+  $('make-me').onclick=()=>{const p=selected();if(!p)return;if(P.state.status==='playback'){if(!p.player)return;P.me=p.player;store('wt-sandbox-me',P.me);$('me').value=P.me;}else P.ownId=p.id;render();};
+  $('own-fire').onclick=()=>act(()=>command('fire',{plane:ownId(),track:Number($('own-tracks').value)}));
+  $('own-chaff').onclick=()=>act(()=>command('chaff',{plane:ownId()}));
+  $('own-pilot').onclick=()=>act(async()=>{const id=ownId(),p=(P.state.planes||[]).find(q=>q.id===id);if(!p)return;if(p.mode==='pilot'){releaseKeys();await command('order',{plane:id,order:{mode:'auto'}});P.formSignature='';}else{P.ownId=id;await enterPilot(id);}});
+  const group=()=>selection().filter(p=>p.alive&&!p.tracked);
+  $('g-mode').onchange=()=>{const mode=$('g-mode').value;if(!mode)return;act(async()=>{releaseKeys();for(const p of group())await command('order',{plane:p.id,order:{mode}});P.formSignature='';message(group().length+' 架改为'+controlModes[mode]);});};
+  $('g-apply').onclick=()=>act(async()=>{const list=group().filter(p=>p.mode!=='pilot');for(const p of list)await command('order',{plane:p.id,order:{mode:'manual',destination_m:null,heading_deg:Number($('g-heading').value),altitude_m:Number($('g-altitude').value),speed_mps:Number($('g-velocity').value)}});P.formSignature='';message('已向 '+list.length+' 架下达航向 / 高度 / 速度');});
+  $('g-destination').onclick=()=>{P.pending={type:'destination'};message('点击地图设置目的地：所选飞机保持相对位置飞过去；高度与速度用上面的数值。按 Esc 取消。');};
+  $('g-clear').onclick=()=>select(P.selected);
   $('drop-chaff').onclick=()=>act(()=>command('chaff',{plane:P.selected}));
   async function loadReplays(){try{P.replays=await api('/api/replays');}catch(error){message('无法读取回放列表：'+error.message,true);}render();}
   $('mode-replay').onclick=()=>{if(P.mode==='replay')return;if(P.state.status!=='setup'){message('请先重置当前推演，再切换到 WT 回放',true);return;}P.mode='replay';P.selected=-1;P.pending=null;loadReplays();render();};
