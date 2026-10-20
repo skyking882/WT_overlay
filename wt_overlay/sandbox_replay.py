@@ -43,7 +43,7 @@ PARKED_MPS = 30.          # a pinned aircraft slower than this is on the ground 
 REPLAY_MAX_TEAM = 24      # fork worlds: per team (the editor's MAX_TEAM stays 16)
 GHOST_S, GHOST_STEP_S = 120., 1.
 SURROGATE_FM = "su_30sm2" # flight model carried (never flown) by pinned units without one of their own (AI units)
-PLAYBACK_EVENTS = ("launch", "missile_end", "kill", "death")
+PLAYBACK_EVENTS = ("launch", "missile_end", "kill", "death", "damage")
 CONTROL_MODES = ("track", "auto", "manual", "pilot")
 EPS = 1e-9
 

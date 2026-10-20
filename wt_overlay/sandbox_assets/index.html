@@ -28,16 +28,26 @@
 <div class="bottom-strip"><span>人类下令 → 共同时钟 → 真实模型推进</span><span id="run-note">布置完成后开始；也可单步建立暂停的对局。</span></div>
 </section>
 <aside class="inspector">
-<div class="panel-heading"><h2>所选飞机</h2><span id="unit-id" class="tag">—</span></div><div id="empty-selection" class="help">点击地图上的飞机，或左侧列表选择。</div>
+<section id="sec-selected" class="sec">
+<div class="panel-heading"><h2>选中对象</h2><span id="unit-id" class="tag">—</span></div><div id="empty-selection" class="help">点击地图上的飞机，或左侧列表选择；推演中按住 Ctrl / ⌘ 点击可多选。</div>
 <div id="unit-panel" hidden>
 <div class="unit-overview"><div id="unit-name" class="unit-name"></div><div id="unit-state" class="unit-state"></div></div>
 <div id="edit-panel"><label>机型<select id="aircraft"></select></label><label>主动雷达导弹<select id="missile"></select></label><div class="two-fields"><label>导弹 / 枚<input id="ammo" type="number" min="0"></label><label>箔条 / 束<input id="chaff" type="number" min="0"></label></div><div class="two-fields"><label>东坐标 / km<input id="east" type="number" step="0.1"></label><label>北坐标 / km<input id="north" type="number" step="0.1"></label></div><div class="two-fields"><label>打法<select id="archetype"></select></label><label>技能<select id="skill"></select></label></div></div>
 <div id="mode-panel" hidden><label>控制方式<select id="mode"><option value="auto">自主脚本 · 导航 / 武器自动</option><option value="manual">人工导航 · 武器手动</option><option value="pilot">亲自驾驶 · 键盘操纵 / 武器手动</option></select></label><p id="mode-help" class="help"></p></div>
 <p id="track-note" class="help" hidden></p><div id="nav-fields"><div class="two-fields"><label>高度 / m<input id="altitude" type="number" min="100" max="19500" step="100"></label><label>速度 / m/s<input id="velocity" type="number" min="50" step="10"></label></div><label>航向 / °（北 0 · 东 90）<input id="heading" type="number" min="0" max="360" step="5"></label></div>
-<button id="apply" class="wide primary">应用初始状态</button><button id="destination" class="wide" hidden>⌖ 在地图指定目的地</button><button id="pilot" class="wide" hidden>进入键盘驾驶（1×）</button><button id="remove" class="wide danger">移除飞机</button>
+<button id="apply" class="wide primary">应用初始状态</button><button id="destination" class="wide" hidden>⌖ 在地图指定目的地</button><button id="pilot" class="wide" hidden>进入键盘驾驶（1×）</button><button id="make-me" class="wide" hidden>★ 设为本机</button><button id="remove" class="wide danger">移除飞机</button>
 <div id="weapon-panel" hidden><p class="help">人工模式：雷达自动 TWS 搜索；仅可向所选飞机的实际雷达航迹发射。</p><select id="tracks" aria-label="实际观测雷达航迹"></select><div class="two-fields"><button id="fire">发射 1 枚</button><button id="drop-chaff">投放箔条</button></div></div>
 </div>
-<div class="events-heading"><h2>交战事件</h2><span id="event-count">0 条</span></div><div id="events" class="events"><p class="help">开始推演后显示发现、发射、告警、支援中断与交战结果。</p></div>
+<div id="group-panel" hidden><div id="group-rows" class="unit-list"></div><p id="group-note" class="help"></p><label>控制方式（全部）<select id="g-mode"><option value="">— 保持各自 —</option><option value="auto">自主脚本 · 导航 / 武器自动</option><option value="manual">人工导航 · 武器手动</option></select></label><div class="two-fields"><label>高度 / m<input id="g-altitude" type="number" min="100" max="19500" step="100"></label><label>速度 / m/s<input id="g-velocity" type="number" min="50" step="10"></label></div><label>航向 / °（北 0 · 东 90）<input id="g-heading" type="number" min="0" max="360" step="5"></label><button id="g-apply" class="wide primary">下达航向 / 高度 / 速度</button><button id="g-destination" class="wide">⌖ 在地图指定目的地（保持相对位置）</button><button id="g-clear" class="wide quiet">只保留主选</button></div>
+<div class="sub-heading">所选飞机事件</div><div id="unit-events" class="events mini"></div>
+</section>
+<section id="sec-global" class="sec">
+<div class="panel-heading"><h2>全局</h2><span id="global-count" class="tag">0 条</span></div><div id="global-events" class="events"></div>
+</section>
+<section id="sec-own" class="sec">
+<div class="panel-heading"><h2>本机</h2><span id="own-tag" class="tag">未指定</span></div><div id="own-empty" class="help"></div>
+<div id="own-panel" hidden><div id="own-state" class="unit-state"></div><p id="own-threat" class="own-threat" hidden></p><div id="own-weapons"><p id="own-note" class="help" hidden></p><select id="own-tracks" aria-label="本机雷达航迹"></select><div class="two-fields"><button id="own-fire">发射 1 枚</button><button id="own-chaff">投放箔条</button></div><button id="own-pilot" class="wide" hidden>驾驶本机（1×）</button></div><div id="own-events" class="events"></div></div>
+</section>
 </aside>
 </main>
 <script src="/app.js"></script>
