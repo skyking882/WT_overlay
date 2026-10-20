@@ -414,14 +414,14 @@ class SandboxSession:
         action = command["action"]
         if action == "configure":
             if self.status != "setup":
-                raise ValueError("布置只在准备阶段可修改，请先重置")
+                raise ValueError("先重置再修改布置")
             checked = validate_sandbox(command["scenario"])
             # Build with the real models so equipment errors surface before Start.
             build_sandbox(checked, library=self.library)
             self.scenario = checked
         elif action == "start":
             if self.status == "playback":
-                raise ValueError("回放模式：请用播放 / 暂停，或从此刻接管")
+                raise ValueError("回放模式只能播放、暂停或接管")
             if self.status == "setup":
                 self._start_world()
             if self.eng.reason is not None or self.status == "error":
@@ -455,7 +455,7 @@ class SandboxSession:
             self.speed = float(speed)
         elif action == "order":
             if self.eng is None or self.status == "error":
-                raise ValueError("先启动或单步建立对局，再下达航行命令")
+                raise ValueError("先开始推演再下令")
             self._check_released(command.get("plane"))
             set_order(self.eng, command.get("plane"), command.get("order", {}))
         elif action == "keys":
@@ -494,16 +494,16 @@ class SandboxSession:
                 observed = [] if obs is None else [STT_TRACK if c.kind == "stt" else c.track_id for c in obs.radar
                                                    if c.kind == "stt" or c.track_id is not None]
                 if type(track) is not int or track not in observed:
-                    raise ValueError("只能向该飞机实际观测到的雷达航迹发射")
+                    raise ValueError("只能向该机的雷达航迹发射")
                 if self.eng.launch(p, track) is None:
-                    raise ValueError("发射被现有检查拒绝：航迹、弹药、间隔或发射角条件未满足")
+                    raise ValueError("不满足发射条件（航迹、弹药、间隔或发射角）")
             else:
                 if p.chaff <= 0:
                     raise ValueError("箔条已用完")
                 self.eng.apply(p, Action(chaff=1))
         elif action == "save":
             if self.eng is None and self.status == "playback":
-                raise ValueError("回放模式没有可保存的推演；接管后才会生成记录")
+                raise ValueError("回放模式无可保存内容，接管后再保存")
             return self._save("completed" if self.eng and self.eng.reason else
                               "error" if self.status == "error" else "partial")
         elif action in ("load_replay", "play", "seek", "unload", "fork"):
@@ -862,7 +862,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="本机空战沙盘：地图布置、实时推演与人工导航")
+    parser = argparse.ArgumentParser(description="空战沙盘")
     parser.add_argument("--port", type=int, default=8765, help="127.0.0.1 端口，默认 8765；0 为自动选择")
     parser.add_argument("--missile-sim", type=Path, help="相邻 missle_sim 模型目录的替代路径")
     parser.add_argument("--no-browser", action="store_true", help="只输出网址，不自动打开浏览器")
