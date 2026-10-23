@@ -15,7 +15,7 @@ War Thunder 空战研究工具集：Windows 8111 透明能量 HUD（能量指标
 | [交互空战沙盘](#交互空战沙盘) | `python -m wt_overlay.sandbox` | `../missle_sim` | 可用 |
 | [无画面空战模拟器](#无画面空战模拟器) | `python -m wt_overlay.sim` | `../missle_sim` | 可用 |
 | [强化学习训练](#强化学习训练) | `python -m rl.train` | PyTorch，`../missle_sim` | 开发中 |
-| [战雷回放工具](#战雷回放工具) | `scripts/wt_replay_*.py` | missile_sim 回放解析分支 | 开发中 |
+| [战雷回放工具](#战雷回放工具) | 沙盘里拖入 `.wrpl`，或 `python -m wt_overlay.wrpl` | 同版本的游戏文件 | 可用 |
 
 除 HUD 图形界面（PySide6）和 RL 训练（PyTorch）外，其余入口只用 Python 3.11+ 标准库。模拟器、沙盘、RL 和回放对照共用相邻目录 `../missle_sim` 的导弹模型，可用 `--missile-sim` 指定其他路径。
 
@@ -37,7 +37,7 @@ War Thunder 空战研究工具集：Windows 8111 透明能量 HUD（能量指标
 
 推演中点选飞机，可下达航向／高度／速度或地图目的地，也可「进入键盘驾驶」：点战场取得键盘焦点，W/S（或上下箭头）拉起／下压，A/D（或左右箭头）滚转，＋/－调油门，空格打开减速板。驾驶模式使用现有 `KeyboardCommand`（50% 操纵幅度）；人工导航使用 `FlightCommand`，均保留真实响应与惯性。暂停、失焦和退出驾驶释放按键；右侧可返回自主脚本。人工导航／驾驶下雷达自动 TWS 搜索，导弹和箔条由按钮控制，发射仍需要该飞机实际观测的雷达航迹并通过现有发射检查。旁观相机与飞行员有限视野相机独立，世界真值不会传给自主脚本。
 
-页面也能加载回放：列表读取 `outputs/engagements/wt_real/`（由 [战雷回放工具](#战雷回放工具) 导入）和 `outputs/sandbox/run-*/replay.jsonl`。「原样回放」完全按记录的位置、速度和事件播放，不经过任何模型，姿态为估算（俯仰取速度方向，滚转按协调转弯）。暂停后可从当前时刻「接管」：选中的飞机改由我们的飞行模型和脚本／人工／键盘驾驶推进，其余飞机继续钉在回放轨迹上，回放里真实发射过、且我们有模型的导弹按原时刻重新发射。用于回答“那一刻换个打法会怎样”，设计见 [docs/sandbox_replay_spec.md](docs/sandbox_replay_spec.md)。
+页面也能加载回放：列表读取 `outputs/engagements/wt_real/`（把 `.wrpl` 拖进列表即可导入，见 [战雷回放工具](#战雷回放工具)）和 `outputs/sandbox/run-*/replay.jsonl`。「原样回放」完全按记录的位置、速度和事件播放，不经过任何模型，姿态为估算（俯仰取速度方向，滚转按协调转弯）。暂停后可从当前时刻「接管」：选中的飞机改由我们的飞行模型和脚本／人工／键盘驾驶推进，其余飞机继续钉在回放轨迹上，回放里真实发射过、且我们有模型的导弹按原时刻重新发射。用于回答“那一刻换个打法会怎样”，设计见 [docs/sandbox_replay_spec.md](docs/sandbox_replay_spec.md)。
 
 每次推演在 `outputs/sandbox/run-…/` 自动保存场景、既有 JSONL 回放和结果；结束后可在页面下载。运行中保存的是未完成结果，重置或关闭服务将未完成对局记录为中止，不产生虚构终局。「寿命上限」指仿真允许的导弹飞行时间，额外脱靶原因未单独记录时保持未知。当前仍是平地、现代导弹空战的研究沙盘，沿用下文模拟器的模型边界。
 
@@ -74,7 +74,11 @@ python -m wt_overlay.sim --scenario data/sim/duel.json --seed 2 --out outputs/he
 
 把真实战雷对局与我们的模型放在一起比较，主要用来校准导弹模型（波门、下视、多径）。
 
-1. `scripts/wt_replay_import.py`：读取 missile_sim 回放解析器导出的 `match_export.json`（`.wrpl` 需先用该解析器导出，命令见脚本说明），转成与模拟器相同的回放 JSONL，写到 `outputs/engagements/wt_real/`。每个字段注明来自回放还是推断。
+1. 导入（`main`、`RL`）：在沙盘回放列表上点「导入 .wrpl」或直接把文件拖进去，也可以用命令行 `python -m wt_overlay.wrpl 回放.wrpl [更多文件或文件夹]`。结果是与模拟器相同格式的回放 JSONL，写到 `outputs/engagements/wt_real/`，每个字段注明来自回放还是推断；导入过的同一文件不会重复导入。
+   - 需要与回放同一游戏版本的 `aces.vromfs.bin`、`game.vromfs.bin`、`char.vromfs.bin`。回放还在游戏的 `Replays` 文件夹里时会自动找到游戏目录，否则填一次路径（命令行 `--game`），之后会记住。只读取，不改游戏文件。
+   - 第一次导入时需要下载解析后端 `wrpl_export`（约 10 MB，来自本仓库的 [Release](https://github.com/skyking882/WT_overlay/releases/tag/wrpl-backend-v1.0.0)），确认后才下载，并校验 SHA-256。有 Windows x64、macOS（Apple Silicon 原生和 Intel）、Linux x64 四个版本。Windows 版目前只验证过能启动，还没在实机回放上对照过。
+   - 后端由 [WrplReplayParser](https://github.com/LivingTheDagor/WrplReplayParser) 的 [fork](https://github.com/skyking882/WrplReplayParser/tree/wt-overlay) 构建，fork 以子模块 `third_party/WrplReplayParser` 引用，构建脚本在 `tools/wrpl_backend/`，许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。设计见 [docs/wrpl_import_spec.md](docs/wrpl_import_spec.md)。
+   - 已有解析器导出的 `match_export.json` 时，也可以直接用 `scripts/wt_replay_import.py` 转换。
 2. `scripts/wt_replay_missiles.py`：逐枚导弹的发射几何、离轴角、最近距离、末段是否在波门内、箔条等，并把真实与模拟的命中率并列汇总。
 
 导入的回放也可以在 [交互空战沙盘](#交互空战沙盘) 里原样播放或接管。
