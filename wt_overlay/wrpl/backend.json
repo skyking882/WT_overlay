@@ -1,0 +1,16 @@
+{
+ "version": "1.0.0",
+ "published": false,
+ "note": "未发布：首个 Release（标签 wrpl-backend-v1.0.0）之后填写各平台的 url、sha256、size",
+ "upstream_revision": "221be5cac8e772ab41eefb0e7dac35ce6fb5c39b",
+ "fork": "https://github.com/skyking882/WrplReplayParser",
+ "fork_branch": "wt-overlay",
+ "fork_commit": "75466886122c6130de916139c1b3254c32f906b1",
+ "release_tag": "wrpl-backend-v1.0.0",
+ "assets": {
+  "windows-x64": {"file": "wrpl_export-windows-x64.zip", "url": null, "sha256": null, "size": null},
+  "macos-arm64": {"file": "wrpl_export-macos-arm64.zip", "url": null, "sha256": null, "size": null},
+  "macos-x64": {"file": "wrpl_export-macos-x64.zip", "url": null, "sha256": null, "size": null},
+  "linux-x64": {"file": "wrpl_export-linux-x64.zip", "url": null, "sha256": null, "size": null}
+ }
+}

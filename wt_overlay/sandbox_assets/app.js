@@ -7,7 +7,7 @@
     map: {x: 0, y: 0, span: 140000}, screen: [], trails: new Map(), events: new Map(), keys: new Set(),
     drag: null, lastTime: -1, lastStatus: '', formSignature: '', inputPending: false,
     mode: 'setup', replays: [], me: '', showAI: false, seeking: false, markerFile: null, meFile: null, lastFork: false,
-    sel: [], ownId: null, missileOwner: new Map(), trackSig: {}};
+    sel: [], ownId: null, missileOwner: new Map(), trackSig: {}, wrplMine: new Map(), wrplLoaded: new Set(), wrplSig: '', dragDepth: 0};
   const teams = ['蓝队', '橙队'], colors = ['#54bdff', '#ffaf64'];
   // Display name and country group per airframe; unknown ids fall back to the raw id.
   const names = {
@@ -269,6 +269,7 @@
         row.children[0].textContent=(r.kind==='wt'?'WT · ':'沙盘 · ')+(r.kind==='wt'?r.file.split('/').at(-1).replace(/\.jsonl$/,''):r.file.split('/').at(-2));
         row.children[1].textContent=new Date(r.mtime*1000).toLocaleString('zh-CN',{hour12:false})+' · 时长 '+(r.duration_s==null?'—':clockText(r.duration_s))+' · 玩家 '+r.players+(r.units>r.players?' · AI '+(r.units-r.players):'');
         row.disabled=P.busy||!!s.fork;row.onclick=()=>act(async()=>{await command('load_replay',{file:r.file});});});}
+    renderWrpl();
     $('replay-tag').textContent=!s.replay_file?'未加载':s.fork?'接管推演':s.replay?.playing?'播放中':'已暂停';
     const ro=s.replay?.roster;
     if(ro&&P.meFile!==s.replay.file){P.meFile=s.replay.file;const sel=$('me');sel.replaceChildren();option(sel,'','（未选择）');
@@ -286,6 +287,52 @@
       $('tl-label').textContent=clockText(P.seeking?Number(range.value):s.time_s)+' / '+clockText(r.duration_s);
       if(P.markerFile!==r.file){P.markerFile=r.file;const marks=$('tl-markers'),span=Math.max(1e-6,r.duration_s-r.start_s);marks.replaceChildren();
         for(const m of r.markers){const e=document.createElement('span');e.className='tl-mark '+m.kind;e.textContent=m.kind==='launch'?'▲':'✕';e.style.left=clamp((m.t-r.start_s)/span*100,0,100)+'%';e.title=clockText(m.t)+' · '+m.text;marks.append(e);}}}
+  }
+  // .wrpl import (docs/wrpl_import_spec.md §5): uploads queue on the server; progress comes with /api/state.
+  const wrplPhases={saving:'上传中',queued:'排队',parse:'解析中',convert:'转换中',done:'完成',error:'失败',needs_game:'需要游戏目录',
+    needs_backend:'需要解析后端',downloading:'下载中',cancelled:'已取消'};
+  function renderWrpl(){
+    const w=P.state?.wrpl;if(!w)return;
+    const items=w.items.filter(i=>!i.done||P.wrplMine.has(i.id)).slice(-4);
+    $('wrpl-box').hidden=!items.length;$('wrpl-pick').disabled=!!P.state.fork;
+    const sig=JSON.stringify([items,P.busy]);
+    if(sig!==P.wrplSig){P.wrplSig=sig;const rows=$('wrpl-rows');rows.replaceChildren();
+      for(const i of items){const row=document.createElement('div');row.className='wrpl-row'+(i.phase==='error'?' error':'');
+        const t=document.createElement('div');const pct=(i.phase==='saving'||i.phase==='downloading')&&i.total?' '+Math.min(100,Math.round(i.received/i.total*100))+'%':'';
+        t.textContent=i.name+' · '+(wrplPhases[i.phase]||i.phase)+pct;row.append(t);
+        if(i.message){const m=document.createElement('small');m.textContent=i.message;row.append(m);}
+        if(i.log&&i.log.length){const pre=document.createElement('pre');pre.textContent=i.log.join('\n');row.append(pre);}
+        const file=P.wrplMine.get(i.id),buttons=[];
+        if(i.done&&i.duplicate&&file)buttons.push(['重新导入',()=>importFiles([file],true)]);
+        if(i.phase==='error'&&file)buttons.push(['重试',()=>importFiles([file],true)]);
+        if(!i.done&&i.phase!=='saving')buttons.push(['取消',()=>act(()=>command('wrpl_cancel',{id:i.id}))]);
+        for(const [text,fn] of buttons){const b=document.createElement('button');b.textContent=text;b.disabled=P.busy;b.onclick=fn;row.append(b);}
+        rows.append(row);}}
+    const head=w.items.find(i=>!i.done&&i.phase!=='saving');
+    $('wrpl-game').hidden=head?.phase!=='needs_game';$('wrpl-dl').hidden=head?.phase!=='needs_backend';
+    $('wrpl-game-ok').disabled=$('wrpl-dl-go').disabled=P.busy;
+    if(head?.phase==='needs_game'&&!$('wrpl-game-path').value&&w.game_dir&&document.activeElement!==$('wrpl-game-path'))$('wrpl-game-path').value=w.game_dir;
+    for(const i of items)if(i.phase==='done'&&i.file&&!P.wrplLoaded.has(i.id)){P.wrplLoaded.add(i.id);afterImport(i);}
+  }
+  async function afterImport(i){
+    await loadReplays();const s=P.state;
+    if(P.mode!=='replay'||!['setup','playback'].includes(s.status)||P.busy||!P.replays.some(r=>r.file===i.file))return;
+    try{await command('load_replay',{file:i.file});message((i.duplicate?'已导入过，已定位：':'已导入：')+i.file.split('/').at(-1).replace(/\.jsonl$/,''));}
+    catch(error){message(error.message,true);}
+  }
+  async function uploadWrpl(file,force){
+    const max=P.state?.wrpl?.max_bytes;if(max&&file.size>max)throw new Error('文件超过 '+Math.round(max/1048576)+' MB 上限');
+    const response=await fetch('/api/wrpl?name='+encodeURIComponent(file.name)+(force?'&force=1':''),{method:'POST',cache:'no-store',
+      headers:{'Content-Type':'application/octet-stream','X-Sandbox-Token':P.catalog.token},body:file});
+    let data={};try{data=await response.json();}catch(error){}
+    if(!response.ok||data.error)throw new Error(data.error||'上传失败');
+    P.wrplMine.set(data.id,file);
+  }
+  async function importFiles(files,force=false){
+    const list=[...files];
+    if(!list.length)return;
+    if(list.some(f=>!/\.wrpl$/i.test(f.name)))message('只接受 .wrpl 文件',true);
+    for(const f of list.filter(f=>/\.wrpl$/i.test(f.name))){try{await uploadWrpl(f,force);}catch(error){message(f.name+'：'+error.message,true);}}
   }
   function openFork(){
     const s=P.state;if(s.status!=='playback'||s.replay?.playing)return;
@@ -732,6 +779,19 @@
   $('g-clear').onclick=()=>select(P.selected);
   $('drop-chaff').onclick=()=>act(()=>command('chaff',{plane:P.selected}));
   async function loadReplays(){try{P.replays=await api('/api/replays');}catch(error){message('无法读取回放列表：'+error.message,true);}render();}
+  $('wrpl-pick').onclick=()=>$('wrpl-file').click();
+  $('wrpl-file').onchange=()=>{const files=[...$('wrpl-file').files];$('wrpl-file').value='';importFiles(files);};
+  $('wrpl-game-ok').onclick=()=>act(async()=>{await command('wrpl_game',{path:$('wrpl-game-path').value});message('已设置游戏目录，继续导入');});
+  $('wrpl-game-path').addEventListener('keydown',e=>{if(e.key==='Enter')$('wrpl-game-ok').click();});
+  $('wrpl-dl-go').onclick=()=>act(async()=>{await command('wrpl_download');message('正在下载解析后端');});
+  const dropZone=$('replay-side'),hasFiles=e=>[...(e.dataTransfer?.types||[])].includes('Files');
+  dropZone.addEventListener('dragenter',e=>{if(!hasFiles(e))return;e.preventDefault();P.dragDepth++;dropZone.classList.add('drop');});
+  dropZone.addEventListener('dragover',e=>{if(!hasFiles(e))return;e.preventDefault();e.dataTransfer.dropEffect=P.state?.fork?'none':'copy';});
+  dropZone.addEventListener('dragleave',()=>{P.dragDepth=Math.max(0,P.dragDepth-1);if(!P.dragDepth)dropZone.classList.remove('drop');});
+  dropZone.addEventListener('drop',e=>{if(!hasFiles(e))return;e.preventDefault();P.dragDepth=0;dropZone.classList.remove('drop');if(!P.state?.fork)importFiles(e.dataTransfer.files);});
+  // A file dropped elsewhere must not make the browser leave the page.
+  window.addEventListener('dragover',e=>{if(hasFiles(e))e.preventDefault();});
+  window.addEventListener('drop',e=>{if(hasFiles(e))e.preventDefault();});
   $('mode-replay').onclick=()=>{if(P.mode==='replay')return;if(P.state.status!=='setup'){message('先重置推演再切到回放',true);return;}P.mode='replay';P.selected=-1;P.pending=null;loadReplays();render();};
   $('mode-setup').onclick=()=>{if(P.mode==='setup')return;releaseKeys();act(async()=>{if(P.state.replay_file||inReplay())await command('unload');P.mode='setup';P.selected=0;P.formSignature='';$('fork-panel').hidden=true;fit();});};
   $('me').onchange=()=>{P.me=$('me').value;store('wt-sandbox-me',P.me);render();};

@@ -299,7 +299,7 @@ def analysis_snapshot(eng):
 
 class SandboxSession:
     """A single worker world, a responsive cached read API, and bounded commands."""
-    def __init__(self, *, output_root=None, missile_sim=None, replay_root=None, terrain_root=None):
+    def __init__(self, *, output_root=None, missile_sim=None, replay_root=None, terrain_root=None, wrpl=None):
         self.output_root = Path(output_root or ROOT/"outputs"/"sandbox").resolve()
         # Height rasters exported from the game (local only); contours are cached under the output root, where the
         # terrain pack (the caches alone, a release asset) can also be unzipped
@@ -309,6 +309,11 @@ class SandboxSession:
         self.replay_root = Path(replay_root or ROOT/"outputs"/"engagements"/"wt_real").resolve()
         self.track = self.track_file = self.track_sha = self.track_caps = None
         self.play_t, self.playing, self._play_wall, self.fork_t = 0., False, 0., None
+        # .wrpl imports (docs/wrpl_import_spec.md §5): own worker thread, results land in replay_root
+        if wrpl is None:
+            from .wrpl.importer import ImportQueue
+            wrpl = ImportQueue(out_dir=self.replay_root)
+        self.wrpl = wrpl
         self.library = default_library(missile_sim)
         self.catalog = catalog(self.library)
         self.scenario = preset()
@@ -337,6 +342,14 @@ class SandboxSession:
         if not isinstance(command, dict) or not isinstance(command.get("action"), str):
             raise ValueError("命令必须包含 action")
         jid = secrets.token_hex(6)
+        if command["action"].startswith("wrpl_"):   # import queue commands: answered at once, not by the world thread
+            try:
+                receipt = dict(id=jid, done=True, result=self.wrpl.command(command))
+            except ValueError as exc:
+                receipt = dict(id=jid, done=True, error=str(exc))
+            with self.lock:
+                self.jobs[jid] = receipt
+            return jid
         with self.lock:
             self.jobs[jid] = dict(id=jid, done=False)
             # Completed job receipts are ephemeral; active requests are retained.
@@ -348,15 +361,19 @@ class SandboxSession:
 
     def state(self):
         with self.lock:
-            return copy.deepcopy(self.snapshot)
+            snap = copy.deepcopy(self.snapshot)
+        snap["wrpl"] = self.wrpl.status()
+        return snap
 
     def job(self, jid):
         with self.lock:
-            return copy.deepcopy(self.jobs.get(jid))
+            job = copy.deepcopy(self.jobs.get(jid))
+        return job if job is not None else self.wrpl.item(jid)
 
     def close(self):
         self.stop_event.set()
         self.thread.join(timeout=10.)
+        self.wrpl.close()
 
     def _start_world(self, eng=None):
         eng = eng or build_sandbox(self.scenario, library=self.library)
@@ -845,13 +862,16 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_POST(self):
-        if not self._valid_host() or urlsplit(self.path).path != "/api/command":
+        path = urlsplit(self.path).path
+        if not self._valid_host() or path not in ("/api/command", "/api/wrpl"):
             return self._reply(dict(error="拒绝请求"), 403)
         origin = self.headers.get("Origin")
         if origin is not None and origin != f"http://127.0.0.1:{self.server.server_port}":
             return self._reply(dict(error="拒绝跨站命令"), 403)
         if self.headers.get("X-Sandbox-Token") != self.server.token:
             return self._reply(dict(error="页面会话已过期，请刷新"), 403)
+        if path == "/api/wrpl":
+            return self._post_wrpl()
         try:
             length = int(self.headers.get("Content-Length", 0))
             if not 0 < length <= 131072 or self.headers.get_content_type() != "application/json":
@@ -859,6 +879,26 @@ class Handler(BaseHTTPRequestHandler):
             command = json.loads(self.rfile.read(length))
             jid = self.server.session.submit(command)
         except (ValueError, json.JSONDecodeError) as exc:
+            return self._reply(dict(error=str(exc)), 400)
+        self._reply(dict(id=jid), 202)
+
+    def _post_wrpl(self):
+        """POST /api/wrpl?name=<file name>[&force=1]: the .wrpl body is streamed to outputs/wrpl_inbox/ and queued."""
+        from .wrpl.importer import UploadTooLarge
+        self.close_connection = True          # a refused body is never read
+        query = parse_qs(urlsplit(self.path).query)
+        if self.headers.get_content_type() != "application/octet-stream":
+            return self._reply(dict(error="需要 application/octet-stream"), 400)
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            return self._reply(dict(error="需要 Content-Length"), 411)
+        try:
+            jid = self.server.session.wrpl.receive(query.get("name", [""])[0], length, self.rfile,
+                                                   force=query.get("force", ["0"])[0] == "1")
+        except UploadTooLarge as exc:
+            return self._reply(dict(error=str(exc)), 413)
+        except ValueError as exc:
             return self._reply(dict(error=str(exc)), 400)
         self._reply(dict(id=jid), 202)
 

@@ -1,0 +1,4 @@
+[submodule "third_party/WrplReplayParser"]
+	path = third_party/WrplReplayParser
+	url = https://github.com/skyking882/WrplReplayParser.git
+	branch = wt-overlay

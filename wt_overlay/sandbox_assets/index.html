@@ -7,7 +7,7 @@
 <div id="notice" role="status" aria-live="polite"></div>
 <main>
 <aside class="deployment">
-<div id="replay-side" hidden><div class="panel-heading"><h2>WT 回放</h2><span id="replay-tag" class="tag">未加载</span></div><label>我的飞机<select id="me"></select></label><label class="check side-check"><input type="checkbox" id="show-ai">显示 AI 单位</label><button id="fork" class="wide primary">从此刻接管</button><p id="replay-help" class="help">选一个回放，暂停后可从当前时刻接管。</p><div id="replay-list" class="unit-list"></div></div>
+<div id="replay-side" hidden><div class="panel-heading"><h2>WT 回放</h2><span id="replay-tag" class="tag">未加载</span></div><label>我的飞机<select id="me"></select></label><label class="check side-check"><input type="checkbox" id="show-ai">显示 AI 单位</label><button id="fork" class="wide primary">从此刻接管</button><p id="replay-help" class="help">选一个回放，暂停后可从当前时刻接管。</p><button id="wrpl-pick" class="wide" title="也可以把 .wrpl 拖到这里">导入 .wrpl</button><input id="wrpl-file" type="file" accept=".wrpl" multiple hidden><div id="wrpl-box" hidden><div id="wrpl-rows"></div><div id="wrpl-game" hidden><input id="wrpl-game-path" type="text" spellcheck="false" placeholder="游戏目录（含 aces / game / char.vromfs.bin）"><button id="wrpl-game-ok" class="wide">确定</button></div><div id="wrpl-dl" hidden><button id="wrpl-dl-go" class="wide primary">下载</button></div></div><div id="replay-list" class="unit-list"></div></div>
 <div id="fork-info" class="boundary" hidden></div>
 <div id="setup-side">
 <div class="panel-heading"><h2>战场布置</h2><span id="setup-tag" class="tag">布置中</span></div>

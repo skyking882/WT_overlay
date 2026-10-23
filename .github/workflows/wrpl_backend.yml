@@ -1,0 +1,123 @@
+# Builds the wrpl_export replay backend (docs/wrpl_import_spec.md §2, §3) for Windows, Linux and macOS and, for a
+# wrpl-backend-v* tag, attaches the zips, SHA256SUMS and THIRD_PARTY_NOTICES.md to a pre-release of that tag (a draft's
+# assets cannot be fetched without signing in). There are no game files or replays in CI: it proves that the backend
+# builds and starts (--version). Parse results are compared locally (§8.4) before backend.json gets the URLs and hashes;
+# nothing downloads a backend until then.
+name: wrpl backend
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["wrpl-backend-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, platform: windows-x64}
+          - {os: ubuntu-latest, platform: linux-x64}
+          - {os: macos-15, platform: macos-arm64}
+          - {os: macos-15-intel, platform: macos-x64}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SRC: third_party/WrplReplayParser
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fork commit matches backend.json
+        run: |
+          commit=$(git -C "$SRC" rev-parse HEAD)
+          python -c "import json,sys; m=json.load(open('wt_overlay/wrpl/backend.json')); sys.exit(0 if m['fork_commit']=='$commit' else 'backend.json fork_commit '+m['fork_commit']+' != submodule $commit')"
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libunwind-dev liblzma-dev
+
+      - name: Configure
+        run: |
+          py=$(python -c "import pathlib, sys; print(pathlib.Path(sys.executable).as_posix())")
+          args=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_LTO=OFF
+                -DPARSER_ENABLE_PYTHON_BINDINGS=ON -DPARSER_ENABLE_INSPECTOR=OFF -DMI_BUILD_TESTS=OFF
+                -DMI_BUILD_SHARED=OFF -DPYTHON_VERSION_TO_USE=3.12 "-DPython_EXECUTABLE=$py")
+          case "${{ matrix.platform }}" in
+            windows-x64) args+=(-A x64) ;;                    # default Visual Studio generator, MSVC, static CRT
+            macos-x64)   args+=(-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_SYSTEM_PROCESSOR=x86_64
+                                "-DCMAKE_C_FLAGS=-msse4.2 -mpopcnt"
+                                "-DCMAKE_CXX_FLAGS=-msse4.2 -mpopcnt -include smmintrin.h") ;;
+            macos-arm64) args+=(-DCMAKE_OSX_ARCHITECTURES=arm64) ;;
+          esac
+          cmake -S "$SRC" -B build "${args[@]}"
+
+      - name: Build
+        run: cmake --build build --config Release --target PyReplayParser signal_tracer --parallel 4
+
+      - name: Collect the module
+        run: |
+          mkdir module
+          find build/python/main -maxdepth 2 -type f \( -name 'PyReplayParser*.so' -o -name 'PyReplayParser*.pyd' \) \
+            -exec cp {} module/ \;
+          if [ "${{ runner.os }}" != Windows ]; then
+            cp build/3rdParty/signal_tracer/signal_tracer module/
+          fi
+          ls -l module
+
+      - name: Freeze and zip (ends with a --version smoke test)
+        run: |
+          python -m pip install pyinstaller==6.22.3
+          python tools/wrpl_backend/build.py --module-dir module --platform ${{ matrix.platform }} \
+            --fork-src "$SRC" --dist dist --work work --zip
+
+      - name: --version
+        run: |
+          exe=dist/wrpl_export/wrpl_export
+          [ "${{ runner.os }}" = Windows ] && exe=$exe.exe
+          "$exe" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrpl_export-${{ matrix.platform }}
+          path: dist/wrpl_export-${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/wrpl-backend-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: SHA256SUMS and notices
+        run: |
+          cd assets
+          sha256sum wrpl_export-*.zip > SHA256SUMS
+          cat SHA256SUMS
+          cp ../THIRD_PARTY_NOTICES.md .
+
+      - name: Pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" assets/wrpl_export-*.zip assets/SHA256SUMS assets/THIRD_PARTY_NOTICES.md \
+            --prerelease --title "$GITHUB_REF_NAME" \
+            --notes "wrpl_export backend for python -m wt_overlay.wrpl and the sandbox import. Third-party licenses: THIRD_PARTY_NOTICES.md."
