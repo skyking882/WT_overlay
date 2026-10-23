@@ -22,7 +22,7 @@ if errorlevel 1 goto failed
 rem missile_sim is a git submodule (the opening-shot planner and the sandbox need it).
 if exist ".gitmodules" (
     where git >nul 2>nul
-    if not errorlevel 1 git submodule update --init
+    if not errorlevel 1 git submodule update --init missile_sim
 )
 
 :launch

@@ -283,8 +283,8 @@ def missile_sim_root():
             old.append(root)
     if old:
         raise FileNotFoundError(f"{old[0]} 里的 missile_sim 版本太旧（没有步进接口 create_surface_missile）；"
-                                "在 WT_overlay 目录运行 git submodule update --init 用仓库内的版本")
-    raise FileNotFoundError("没找到 missile_sim：在 WT_overlay 目录运行 git submodule update --init"
+                                "在 WT_overlay 目录运行 git submodule update --init missile_sim 用仓库内的版本")
+    raise FileNotFoundError("没找到 missile_sim：在 WT_overlay 目录运行 git submodule update --init missile_sim"
                             f"（start_windows.cmd 会自动做），或用环境变量 {MISSILE_SIM_ENV} 指定"
                             f"（找过：{'、'.join(str(c) for c in candidates)}）")
 

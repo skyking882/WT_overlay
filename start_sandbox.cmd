@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-if exist ".gitmodules" (git submodule update --init 2>nul)
+if exist ".gitmodules" (git submodule update --init missile_sim 2>nul)
 if exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -m wt_overlay.sandbox %*
 ) else (

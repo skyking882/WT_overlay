@@ -5,7 +5,7 @@ rem Opening-shot planner page, computed on this computer (python -m wt_overlay.p
 rem missile_sim is a git submodule: fetch it if needed.
 if exist ".gitmodules" (
     where git >nul 2>nul
-    if not errorlevel 1 git submodule update --init
+    if not errorlevel 1 git submodule update --init missile_sim
 )
 if exist ".venv\Scripts\python.exe" (
     ".venv\Scripts\python.exe" -m wt_overlay.planner_web %*
