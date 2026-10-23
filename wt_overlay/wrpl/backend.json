@@ -5,7 +5,7 @@
  "upstream_revision": "221be5cac8e772ab41eefb0e7dac35ce6fb5c39b",
  "fork": "https://github.com/skyking882/WrplReplayParser",
  "fork_branch": "wt-overlay",
- "fork_commit": "75466886122c6130de916139c1b3254c32f906b1",
+ "fork_commit": "4f743ac10c181fcab23bbbcb27bdc739daa6a969",
  "release_tag": "wrpl-backend-v1.0.0",
  "assets": {
   "windows-x64": {"file": "wrpl_export-windows-x64.zip", "url": null, "sha256": null, "size": null},
