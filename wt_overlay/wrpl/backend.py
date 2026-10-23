@@ -230,7 +230,8 @@ def download(asset, cache=None, progress=None, chunk=1 << 20):
 def version(backend, timeout=120):
     """The backend's --version JSON. Raises BackendError with a Chinese reason (Rosetta, not executable, ...)."""
     try:
-        out = backend.run(["--version"], capture_output=True, text=True, timeout=timeout)
+        out = backend.run(["--version"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=timeout)
     except OSError as exc:
         if getattr(exc, "errno", None) == 86 or "Bad CPU type" in str(exc):
             raise BackendError(ROSETTA_HINT) from None

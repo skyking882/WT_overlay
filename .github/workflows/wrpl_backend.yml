@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - {os: windows-latest, platform: windows-x64}
-          - {os: ubuntu-latest, platform: linux-x64}
+          - {os: ubuntu-24.04, platform: linux-x64}         # GCC 13, the upstream-verified toolchain
           - {os: macos-15, platform: macos-arm64}
           - {os: macos-15-intel, platform: macos-x64}
     runs-on: ${{ matrix.os }}
@@ -42,7 +42,7 @@ jobs:
       - name: Fork commit matches backend.json
         run: |
           commit=$(git -C "$SRC" rev-parse HEAD)
-          python -c "import json,sys; m=json.load(open('wt_overlay/wrpl/backend.json')); sys.exit(0 if m['fork_commit']=='$commit' else 'backend.json fork_commit '+m['fork_commit']+' != submodule $commit')"
+          python -c "import json,sys; m=json.load(open('wt_overlay/wrpl/backend.json', encoding='utf-8')); sys.exit(0 if m['fork_commit']=='$commit' else 'backend.json fork_commit '+m['fork_commit']+' != submodule $commit')"
 
       - name: Linux packages
         if: runner.os == 'Linux'
@@ -61,10 +61,26 @@ jobs:
                                 "-DCMAKE_CXX_FLAGS=-msse4.2 -mpopcnt -include smmintrin.h") ;;
             macos-arm64) args+=(-DCMAKE_OSX_ARCHITECTURES=arm64) ;;
           esac
-          cmake -S "$SRC" -B build "${args[@]}"
+          set +e
+          cmake -S "$SRC" -B build "${args[@]}" 2>&1 | tee configure.log
+          status=${PIPESTATUS[0]}
+          [ "$status" != 0 ] && grep -E -m 20 -A2 "CMake Error" configure.log | while IFS= read -r line; do
+            echo "::error::${line:0:900}"
+          done
+          exit "$status"
 
       - name: Build
-        run: cmake --build build --config Release --target PyReplayParser signal_tracer --parallel 4
+        run: |
+          set +e
+          cmake --build build --config Release --target PyReplayParser signal_tracer --parallel 4 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" != 0 ]; then
+            # job logs need a sign-in; annotations are public
+            grep -E -m 20 "error|Error|undefined reference" build.log | while IFS= read -r line; do
+              echo "::error::${line:0:900}"
+            done
+          fi
+          exit "$status"
 
       - name: Collect the module
         run: |
