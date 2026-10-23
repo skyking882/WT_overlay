@@ -72,7 +72,9 @@ jobs:
       - name: Build
         run: |
           set +e
-          cmake --build build --config Release --target PyReplayParser signal_tracer --parallel 4 2>&1 | tee build.log
+          targets=(PyReplayParser)
+          [ "${{ runner.os }}" != Windows ] && targets+=(signal_tracer)   # a POSIX helper (unistd.h), Unix only
+          cmake --build build --config Release --target "${targets[@]}" --parallel 4 2>&1 | tee build.log
           status=${PIPESTATUS[0]}
           if [ "$status" != 0 ]; then
             # job logs need a sign-in; annotations are public
