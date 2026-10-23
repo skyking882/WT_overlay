@@ -14,12 +14,16 @@ branch's patches, plus the game's aces / game / char .vromfs.bin of the replay's
 Output: outputs/engagements/wt_real/<replay name>.jsonl, one file per input:
   header   planes [{id, team, aircraft, name, archetype (player), skill ("AI" for unowned aircraft), missile, missiles,
            chaff, ..., wt{eid, player, team_source, samples, gaps, ...}}], the standard plane_columns / missile_columns,
-           map_half_m, frame_dt_s=0.25, time_limit_s, and ``source``: provenance, frame, the game level and mission
-           from the export header, and ``fields`` saying for each item whether it came from the replay or was inferred;
-  frame    every 0.25 s of replay time, rows interpolated linearly between the decoded samples (about 4 Hz);
-  event    launch (target and target_basis.source), missile_end (outcome, outcome_basis, evidence, closest approach,
-           end altitude / speed / flight-path angle), kill and death (kill feed), damage (severe / critical damage
-           messages), chaff and flare (countermeasure projectiles grouped per release), death "left_replay";
+           map_half_m, frame_dt_s=null, base_frame_dt_s=0.25, time_limit_s, and ``source``: provenance, frame, the
+           game level and mission from the export header, and ``fields`` saying for each item whether it came from the
+           replay or was inferred;
+  frame    the union of the 0.25 s background grid and native missile sample times. native_missile_uids identifies
+           observations; other missile rows are interpolated. native_missile_samples retains their clock and raw
+           position/velocity provenance. age_s counts from the existing launch event;
+  event    launch (t = launch time, see "launch" below; t_first_sample, launch_t_source, launch_pos_enu; target and
+           target_basis.source), missile_end (outcome, outcome_basis, evidence, closest approach, flight_s from the
+           launch, end altitude / speed / flight-path angle), kill and death (kill feed), damage (severe / critical
+           damage messages), chaff and flare (countermeasure projectiles grouped per release), death "left_replay";
   end      reason "replay_end" with the usual result summary.
 
 Frame: ENU metres, x = Dagor X, y = Dagor Z, z = Dagor Y (altitude), recentred on the middle of the aircraft tracks
@@ -27,6 +31,22 @@ Frame: ENU metres, x = Dagor X, y = Dagor Z, z = Dagor Y (altitude), recentred o
 east-west, with no range, altitude, angle or speed changed.
 
 Where each item comes from (match export first, then the fallback used for raw_extended.json):
+  launch      time: the rocket's creation_raw_fields.creation_time (s, packet clock; on a 1/48 s grid for every
+              named missile in the 2026-10-08 exports), else created_at_ms (packet time of the creation message,
+              0.03-0.33 s later), else the first track sample (0.04-1.77 s, median 0.47 s, after creation_time); a
+              creation_time / created_at_ms after the first sample or more than LAUNCH_LEAD_MAX_S before it is not
+              used. Evidence grade C (replay identification over the 767 rockets of
+              the 2026-10-08 exports, outputs/wt_shot_refly/launch_offsets/): starting_pos lies 1-17 m (median 9 m)
+              from the shooter's track at creation_time but 47-447 m (p10-p90) from the missile's first sample.
+              launch_t_source names the field used, t_first_sample keeps the first sample's time; the shooter /
+              target state, range_m (from launch_pos_enu when the time is creation_time, else from the shooter, else
+              from the first sample), altitude, speeds and off-boresight angles are taken at the launch time.
+              launch_pos_enu: creation_raw_fields.starting_pos (Dagor) in this frame (grade C, same evidence); null
+              when absent or when the launch time is not creation_time (the two come from one creation record).
+              Not exported: creation_raw_fields.u12_2, a velocity 4 m/s / 0.3 deg (median) from the shooter's
+              decoded velocity at creation_time; it failed the pre-registered kinematic check against the missile's
+              own track (outputs/wt_launch_impulse/u12_2_check.txt), so its meaning as the launch velocity is not
+              confirmed. Target inference and missile uids still use the first track sample (as importer v2).
   team        MPlayer.team of the owning player, else the unit's army (BaseExtReflectable.unitArmyNo) -- replay;
               fallback: 2-means on spawn positions, checked against shooter / target pairs; --team NAME=0|1 overrides
   kills       KillMessage (killer, victim, weapon name, weapon and death type) -- replay. The kill feed's weapon name
@@ -42,13 +62,17 @@ Where each item comes from (match export first, then the fallback used for raw_e
               runner-up is within 10 points)
   outcome     kill feed or damage messages with the missile within 150 m of the target, else closest approach:
               hit, hit_nokill, miss, target_dead (target killed before the missile got there), unknown
-  velocity    decoded aircraft sync velocity (upstream scale, matches position differences to ~4 m/s median),
-              else finite differences of the positions; missiles: sync b7 velocity (candidate scale) at their samples
+  velocity    aircraft: native position secants (the decoded FM magnitude can saturate at 500 m/s), with decoded
+              velocity only when no position interval is available; missiles: sync b7 velocity at their samples
   missile end the entity's destroy time when it comes within 3 s of the last sample (far missiles are synced only
               every 0.8-1.6 s), with the missile carried on straight from its last sample to that time
   not in the data: radar / RWR display state (sensor lists and designations exist only as candidate fields in the
               export), seeker / datalink on-off, loadout (the missiles column counts down launches seen), terrain.
 
+Optional --weapon-states FILE.jsonl (one export only): raw WeaponSync rows with eid, packet_ms, b5 (already ZigZag
+decoded), xyz, and optional euler_raw, b7_candidate, sf_raw/sf_decoded_s. Output uses b5/48; attribution keeps the
+original packet tracks. Every rocket row must match an export track position at its packet time. A JSONL header
+with source_sha256, FILE.meta.json, or the audit's *_weapon_meta.json additionally checks the replay hash.
 Run:  .venv/bin/python scripts/wt_replay_import.py [inputs ...] [--out-dir DIR] [--team NAME=0] [--all-units]
 Pure standard library (Python 3.10+).
 """
@@ -67,7 +91,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_IN = [ROOT / "outputs" / "wt_replays", ROOT / "outputs" / "wt_replay_exports"]
 DEFAULT_OUT = ROOT / "outputs" / "engagements" / "wt_real"
-IMPORTER_VERSION = 2
+IMPORTER_VERSION = 5   # 5: native missile times/markers, optional b5 clock; 4: aircraft position-secant velocity
 
 UNKNOWN_MS = 0xFFFFFFFF          # inspector sentinel for "no such event"
 FRAME_DT = 0.25
@@ -85,6 +109,8 @@ KILL_FEED_AFTER_S = 30.0   # a kill-feed entry naming the shooter, the target an
 DESTROY_EXTRA_S = 3.0   # at most this long from the last missile sample to the entity's destroy time; client replays
                         # sync far missiles only every 0.8-1.6 s, so the last sample can be ~1 km short of the target
 EXTRAP_S = 0.5          # aircraft tracks are extrapolated at most this far past their ends (geometry only)
+LAUNCH_LEAD_MAX_S = 5.0 # creation_time / created_at_ms used as the launch time only up to this long before the
+                        # missile's first track sample (measured: at most 1.77 s); never after it
 DIST_PTS_PER_KM = 10.0  # target score: median azimuth error (deg) + this per km of closest approach (capped) ...
 DIST_CAP_KM = 5.0
 CPA_BONUS = ((150.0, 40.0), (500.0, 20.0))   # ... - 40 when it came within 150 m, - 20 within 500 m ...
@@ -169,18 +195,19 @@ class Track:
     """One object's decoded samples: times (s, strictly increasing), ENU positions, finite-difference velocities and
     (optionally) nose unit vectors."""
 
-    def __init__(self, samples, origin=(0.0, 0.0)):
+    def __init__(self, samples, origin=(0.0, 0.0), *, position_velocity=False, time_key="t_ms"):
+        self.position_velocity = position_velocity
         by_time = {}
         for s in samples:
-            t, xyz = s.get("t_ms"), s.get("xyz")
+            t, xyz = s.get(time_key), s.get("xyz")
             if t is None or not xyz or any(c is None or not math.isfinite(c) for c in xyz):
                 continue
-            by_time[int(t)] = s          # a repeated packet time keeps the last state sent with it
+            by_time[int(t) if time_key == "t_ms" else float(t)] = s
         self.t, self.p, self.nose = [], [], []
         for t_ms in sorted(by_time):
             s = by_time[t_ms]
             e, n, u = dagor_to_enu(s["xyz"])
-            self.t.append(t_ms/1000.0)
+            self.t.append(t_ms/1000.0 if time_key == "t_ms" else t_ms)
             self.p.append((e-origin[0], n-origin[1], u))
             self.nose.append(nose_enu(s.get("euler_raw")))
         self.v = [self._velocity(i) for i in range(len(self.t))]
@@ -189,6 +216,9 @@ class Track:
         t, p, n = self.t, self.p, len(self.t)
         if n < 2:
             return (0.0, 0.0, 0.0)
+        if self.position_velocity:
+            j = min(i, n-2)
+            return mul(sub(p[j+1], p[j]), 1./(t[j+1]-t[j]))
         j = i-1 if i > 0 and t[i]-t[i-1] <= GAP_S else i
         k = i+1 if i < n-1 and t[i+1]-t[i] <= GAP_S else i
         if j == k:                                   # isolated sample: use the nearer neighbour
@@ -202,8 +232,8 @@ class Track:
 
     def set_velocity(self, samples, origin_unused=None, max_dt=0.3):
         """Replace the finite-difference velocity at each sample by the nearest decoded velocity (ENU tuples with time
-        in s) within max_dt. Returns the number of samples replaced."""
-        if not samples:
+        in s) within max_dt. Aircraft with a position interval retain their secants. Returns the number replaced."""
+        if not samples or (self.position_velocity and len(self.t) >= 2):
             return 0
         ts = [s[0] for s in samples]
         n = 0
@@ -242,7 +272,8 @@ class Track:
         a, b = i-1, i
         f = (t-ts[a])/(ts[b]-ts[a])
         p = add(self.p[a], mul(sub(self.p[b], self.p[a]), f))
-        v = add(self.v[a], mul(sub(self.v[b], self.v[a]), f))
+        v = mul(sub(self.p[b], self.p[a]), 1./(ts[b]-ts[a])) if self.position_velocity else \
+            add(self.v[a], mul(sub(self.v[b], self.v[a]), f))
         na, nb = self.nose[a], self.nose[b]
         nose = None
         if na is not None and nb is not None:
@@ -616,6 +647,30 @@ def designated_target(fm_rows, t0, planes, origin, shooter):
     return (best[1], round(best[0], 1)) if best else (None, None)
 
 
+def _finite(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def launch_time(rocket, t_first):
+    """(launch time s, source) of one rocket whose first track sample is at ``t_first``: creation_raw_fields.
+    creation_time, else created_at_ms, else the first sample. A field after the first sample or more than
+    LAUNCH_LEAD_MAX_S before it is skipped."""
+    c = rocket.get("creation_raw_fields") or {}
+    for src, t in (("creation_time", c.get("creation_time")), ("created_at", ms(rocket.get("created_at_ms")))):
+        if _finite(t) and t_first-LAUNCH_LEAD_MAX_S <= t <= t_first+1e-6:
+            return float(t), src
+    return t_first, "first_sample"
+
+
+def launch_position(rocket, origin):
+    """creation_raw_fields.starting_pos (Dagor) -> ENU in the output frame, or None."""
+    sp = (rocket.get("creation_raw_fields") or {}).get("starting_pos")
+    if not isinstance(sp, (list, tuple)) or len(sp) < 3 or not all(_finite(c) for c in sp[:3]):
+        return None
+    e, n, u = dagor_to_enu(sp)
+    return (e-origin[0], n-origin[1], u)
+
+
 def classify_cm(cm):
     """Flare or chaff for one countermeasure projectile: spin in its creation record (u12_3) means flare; without
     spin data, a lifetime under 8 s. In the 2026-10-08 replays spinning ones lived 1.7-4.5 s and the others 15-20 s."""
@@ -635,10 +690,143 @@ def classify_cm(cm):
 
 # -- conversion --------------------------------------------------------------------------------------------------
 
-def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=None):
+def load_weapon_states(path, raw):
+    """Validate a single replay's optional raw-state sidecar before using its physics clock.
+
+    Position matching is mandatory even when a replay hash is present. Supplied entities must cover their export
+    tracks, so a partial sidecar cannot silently replace a complete trajectory. Other entities retain packet time.
+    """
+    path = Path(path)
+    payload = path.read_bytes()
+    declared_sha = None
+    meta_path = path.with_suffix(".meta.json")
+    if path.name.endswith("_weapons_raw.jsonl"):
+        meta_path = path.with_name(path.name.replace("_weapons_raw.jsonl", "_weapon_meta.json"))
+    if meta_path.exists():
+        declared_sha = json.loads(meta_path.read_text(encoding="utf-8")).get("source_sha256")
+    rockets = {r["eid"]: r for r in raw.get("rockets") or ()}
+    ignored = {r["eid"] for k in ("untracked_rockets", "countermeasures") for r in raw.get(k) or ()}
+    expected, covered, grouped = {}, {}, {}
+    for eid, rocket in rockets.items():
+        expected[eid] = {}
+        for i, s in enumerate(rocket.get("track") or ()):
+            if s.get("t_ms") is not None and vector3(s.get("xyz")):
+                expected[eid].setdefault(s["t_ms"], []).append((i, s))
+    for number, line in enumerate(payload.decode("utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        s = json.loads(line)
+        if s.get("type") == "header":
+            sha = s.get("source_sha256")
+            if declared_sha is not None and sha != declared_sha:
+                raise ValueError("weapon states: conflicting replay hashes")
+            declared_sha = sha
+            continue
+        if s.get("kind", "rocket") != "rocket":
+            continue
+        eid = s.get("eid")
+        if eid in ignored:
+            continue
+        if eid not in rockets:
+            raise ValueError(f"weapon states line {number}: unknown rocket eid {eid}")
+        packet, tick = s.get("packet_ms"), s.get("b5")
+        if type(packet) is not int or type(tick) is not int or tick < 0 or not vector3(s.get("xyz")):
+            raise ValueError(f"weapon states line {number}: need packet_ms, decoded b5 and finite xyz")
+        for key in ("b7_candidate", "euler_raw"):
+            if s.get(key) is not None and not vector3(s[key]):
+                raise ValueError(f"weapon states line {number}: invalid {key}")
+        candidates = expected[eid].get(packet, ())
+        used = covered.setdefault(eid, set())
+        matches = [(i, x) for i, x in candidates if i not in used
+                   and max(abs(a-b) for a, b in zip(s["xyz"], x["xyz"])) <= .003
+                   and (not vector3(x.get("euler_raw")) or not vector3(s.get("euler_raw"))
+                        or max(abs(a-b) for a, b in zip(s["euler_raw"], x["euler_raw"])) <= 1e-5)]
+        if not matches:
+            raise ValueError(f"weapon states line {number}: no matching export state for eid {eid}, packet {packet}")
+        used.add(matches[0][0])
+        sf1 = (s.get("sf_raw") or {}).get("1")
+        if sf1 is not None:
+            if type(sf1) is not int or sf1 < 1:
+                raise ValueError(f"weapon states line {number}: invalid sf1 raw count")
+            decoded = (s.get("sf_decoded_s") or {}).get("1")
+            if decoded is not None and (not _finite(decoded) or abs(decoded-(sf1-1)/48) > 1e-5):
+                raise ValueError(f"weapon states line {number}: sf1 already decoded inconsistently")
+            creation = (rockets[eid].get("creation_raw_fields") or {}).get("creation_time")
+            if _finite(creation) and tick-(sf1-1) != round(creation*48):
+                raise ValueError(f"weapon states line {number}: b5/sf1 disagrees with creation_time")
+        tr = grouped.setdefault(eid, [])
+        if tr and tick < tr[-1]["b5"]:
+            raise ValueError(f"weapon states line {number}: b5 moves backwards for eid {eid}")
+        if tr and tick == tr[-1]["b5"] and any(s.get(k) != tr[-1].get(k)
+                                              for k in ("xyz", "euler_raw", "b7_candidate")):
+            raise ValueError(f"weapon states line {number}: conflicting states at one b5 tick")
+        tr.append(s)
+    if declared_sha is not None and declared_sha != raw.get("source_sha256"):
+        raise ValueError("weapon states: replay source_sha256 does not match the export")
+    if not grouped:
+        raise ValueError("weapon states: no matching rocket states")
+    for eid, tr in grouped.items():
+        count = sum(len(v) for v in expected[eid].values())
+        if len(covered[eid]) != count:
+            raise ValueError(f"weapon states: incomplete export track coverage for eid {eid}")
+    return grouped, dict(file=str(path), sha256=hashlib.sha256(payload).hexdigest(),
+                         replay_sha256=declared_sha, validation="all supplied rocket states match export tracks",
+                         rows=sum(len(tr) for tr in grouped.values()), entities=len(grouped))
+
+
+def vector3(value):
+    return isinstance(value, (list, tuple)) and len(value) == 3 and all(_finite(x) for x in value)
+
+
+def missile_output_track(m, native, origin):
+    """Output-only trajectory and observation provenance; packet tracks remain available for attribution."""
+    if native:
+        by_tick, packets = {}, {}
+        for s in native:
+            by_tick[s["b5"]] = s
+            packets.setdefault(s["b5"], []).append(s["packet_ms"])
+        ordered = [by_tick[k] for k in sorted(by_tick)]
+        tr = Track([dict(t_s=s["b5"]/48, xyz=s["xyz"], euler_raw=s.get("euler_raw")) for s in ordered],
+                   origin, time_key="t_s")
+        observations = {}
+        for i, s in enumerate(ordered):
+            if s.get("b7_candidate") is not None:
+                tr.v[i] = dagor_to_enu(s["b7_candidate"])
+            record = dict(uid=m["uid"], wt_eid=m["eid"], clock="b5/48", packet_ms=s["packet_ms"],
+                          b5=s["b5"], xyz_dagor=s["xyz"], b7_dagor=s.get("b7_candidate"),
+                          velocity_source="b7_candidate" if s.get("b7_candidate") is not None else "position_difference")
+            if len(packets[s["b5"]]) > 1:
+                record["packet_ms_all"] = packets[s["b5"]]
+            sf1 = (s.get("sf_raw") or {}).get("1")
+            if sf1 is not None:
+                record.update(sf1_raw=sf1, sf1_age_s=(sf1-1)/48)
+            if s.get("sf_flags") is not None:
+                record["sf_flags"] = s["sf_flags"]
+            observations[round(s["b5"]/48, 9)] = record
+        return tr, observations
+    tr = m["track"]
+    observations = {round(t, 9): dict(uid=m["uid"], wt_eid=m["eid"], clock="packet_ms/1000",
+                                      packet_ms=round(t*1000)) for t in tr.t}
+    return tr, observations
+
+
+def main_weapon(weapons):
+    """The plane's header missile: its most launched weapon. On a tie ``X`` beats ``X_default`` (one missile under two
+    names), otherwise the one launched first wins (``weapons`` is in launch order), so the choice never depends on set or
+    hash order."""
+    counts = {}
+    for w in weapons:
+        counts[w] = counts.get(w, 0)+1
+    most = max(counts.values(), default=0)
+    top = [w for w in counts if counts[w] == most]
+    return next((w for w in top if not (str(w).endswith("_default") and str(w)[:-len("_default")] in top)), None)
+
+
+def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=None, *, weapon_states=None):
     raw = json.loads(path.read_text(encoding="utf-8"))
     units, rockets = raw.get("units") or [], raw.get("rockets") or []
     replay_len = ms(raw.get("replay_length_ms"))
+    native_states, native_source = load_weapon_states(weapon_states, raw) if weapon_states is not None else ({}, None)
 
     # origin: middle of the aircraft tracks (Dagor X/Z)
     xs, zs = [], []
@@ -658,7 +846,7 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
         if not all_units and ground:                     # tanks, fortifications (tankModels/... names)
             skipped["ground"] += 1
             continue
-        tr = Track(u.get("track") or (), origin)
+        tr = Track(u.get("track") or (), origin, position_velocity=True)
         if len(tr) < 2:
             skipped["empty"] += 1
             continue
@@ -743,17 +931,21 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
         b7 = [(row[0]/1000.0, (row[1], row[3], row[2])) for row in r.get("sync") or ()
               if len(row) > 3 and None not in row[1:4]]
         tr.set_velocity(b7, max_dt=0.02)                   # missile sync velocity (b7, candidate scale) at its samples
+        t_launch, launch_src = launch_time(r, tr.first)
         mlist.append(dict(eid=r.get("eid"), weapon=r.get("weapon_name") or "?", track=tr,
                           shooter=owner["id"] if owner else None, created_s=ms(r.get("created_at_ms")),
                           destroyed_s=ms(r.get("destroyed_at_ms")), sync=r.get("sync"),
-                          template=r.get("template")))
+                          template=r.get("template"), t_launch=t_launch, launch_src=launch_src,
+                          launch_pos=launch_position(r, origin) if launch_src == "creation_time" else None,
+                          packet_time_collisions=sum(s.get("t_ms") is not None and vector3(s.get("xyz"))
+                                                     for s in r.get("track") or ())-len(tr)))
     for cm in raw.get("countermeasures") or ():
         owner = by_eid.get(cm.get("owner_eid"))
         t_cm = ms(cm.get("created_at_ms"))
         if owner is not None and t_cm is not None:
             kind, basis = classify_cm(cm)
             cms.append((t_cm, owner["id"], kind, cm.get("launcher"), basis))
-    mlist.sort(key=lambda m: (m["track"].first, m["eid"] or 0))
+    mlist.sort(key=lambda m: (m["track"].first, m["eid"] or 0))   # uids in first-sample order (as importer v2)
     for uid, m in enumerate(mlist):
         m["uid"] = uid
         d = m["destroyed_s"]
@@ -791,6 +983,7 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
     for m in mlist:
         geo_id, geo_info = infer_target(m["track"], m["shooter"], planes, team)
         seek_id, seek_info = seeker_target(m.get("sync"), planes, origin, m["shooter"])
+        # designation at the first track sample, as in importer v2 (targets unchanged by the launch-time fix)
         des_id, des_d = designated_target(fm_rows.get(by_id[m["shooter"]]["eid"]) if m["shooter"] is not None
                                           else None, m["track"].first, planes, origin, m["shooter"])
         # the kill feed's weapon name is often not the missile that hit (it names e.g. R-73 for an R-77 kill), so a
@@ -880,7 +1073,7 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
     launch_times = {}
     for m in mlist:
         if m["shooter"] is not None:
-            launch_times.setdefault(m["shooter"], []).append(m["track"].first)
+            launch_times.setdefault(m["shooter"], []).append(m["t_launch"])
     for v in launch_times.values():
         v.sort()
     weapon_of = {}
@@ -897,12 +1090,18 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
     # events
     for m in mlist:
         tr = m["track"]
-        t0 = tr.first
+        t0 = m["t_launch"]
         sh = by_id.get(m["shooter"])
         tg = by_id.get(m["target"])
         s_st = sh["track"].at(t0, EXTRAP_S) if sh else None
         t_st = tg["track"].at(t0, EXTRAP_S) if tg else None
-        rng = round(norm(sub(t_st[0], tr.p[0]))) if t_st else None
+        if m["launch_pos"] is not None:                    # only with launch_src "creation_time"
+            p_launch = m["launch_pos"]
+        elif m["launch_src"] != "first_sample" and s_st:
+            p_launch = s_st[0]
+        else:
+            p_launch = tr.p[0]
+        rng = round(norm(sub(t_st[0], p_launch))) if t_st else None
         ob = ob_v = nose_list = None
         if s_st and t_st:
             los = sub(t_st[0], s_st[0])
@@ -915,9 +1114,12 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
             lt = launch_times[m["shooter"]]
             left = len(lt)-bisect.bisect_right(lt, t0)
         r1 = lambda x: None if x is None else round(x, 1)  # noqa: E731
+        lp = m["launch_pos"]
         events.append(dict(type="event", t=round(t0, 3), kind="launch", uid=m["uid"], shooter=m["shooter"],
                            target=m["target"], missile=m["weapon"], mode=None, range_m=rng, left=left,
-                           altitude_m=r1(s_st[0][2]) if s_st else r1(tr.p[0][2]),
+                           t_first_sample=round(tr.first, 3), launch_t_source=m["launch_src"],
+                           launch_pos_enu=None if lp is None else [round(c, 1) for c in lp],
+                           altitude_m=r1(s_st[0][2]) if s_st else r1(p_launch[2]),
                            target_altitude_m=r1(t_st[0][2]) if t_st else None,
                            speed_mps=r1(norm(s_st[1])) if s_st else None,
                            target_speed_mps=r1(norm(t_st[1])) if t_st else None,
@@ -977,10 +1179,16 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
             p["left_replay"] = True
 
     # frames
+    for m in mlist:
+        m["output_track"], m["observations"] = missile_output_track(m, native_states.get(m["eid"]), origin)
+    background_start = math.floor(t_first/FRAME_DT)*FRAME_DT
+    background_times = {round(background_start+k*FRAME_DT, 9)
+                        for k in range(math.floor((t_last-background_start)/FRAME_DT+1e-9)+1)}
+    frame_times = sorted(background_times | {t for m in mlist for t in m["observations"]})
+    output_last = max([t_last]+[m["output_track"].last for m in mlist])
     frames = []
-    t = math.floor(t_first/FRAME_DT)*FRAME_DT
     n_frames = 0
-    while t <= t_last+1e-9:
+    for t in frame_times:
         rows = []
         for p in planes:
             tr = p["track"]
@@ -995,17 +1203,21 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
             rows.append([p["id"], round(pos[0], 1), round(pos[1], 1), round(pos[2], 1), round(v[0], 1),
                          round(v[1], 1), round(v[2], 1), round(heading(p, st), 1) % 360.0, left, "?", ""])
         mrows = []
+        native_samples = []
         for m in mlist:
-            tr = m["track"]
+            tr = m["output_track"]
             if t < tr.first-1e-9 or t > tr.last+1e-9:
                 continue
             pos, v, _ = tr.at(t)
             mrows.append([m["uid"], m["shooter"], m["target"], round(pos[0], 1), round(pos[1], 1), round(pos[2], 1),
                           round(v[0], 1), round(v[1], 1), round(v[2], 1), round(compass_deg(v), 1) % 360.0,
-                          round(t-tr.first, 2), 0, 0])
-        frames.append(dict(type="frame", t=round(t, 3), planes=rows, missiles=mrows))
+                          round(t-m["t_launch"], 9), 0, 0])
+            if t in m["observations"]:
+                native_samples.append(m["observations"][t])
+        frames.append(dict(type="frame", t=t, planes=rows, missiles=mrows,
+                           native_missile_uids=[s["uid"] for s in native_samples],
+                           native_missile_samples=native_samples, background_grid=t in background_times))
         n_frames += 1
-        t += FRAME_DT
 
     # header
     extent = 0.0
@@ -1019,7 +1231,7 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
     hplanes = []
     for p in planes:
         weapons = weapon_of.get(p["id"], [])
-        main = max(set(weapons), key=weapons.count) if weapons else None
+        main = main_weapon(weapons)
         med, mx = p["track"].gaps()
         hplanes.append(dict(id=p["id"], team=team[p["id"]], aircraft=p["aircraft"],
                             name=f"{p['player'] or '?'}:{p['aircraft']}", archetype=p["player"] or None,
@@ -1036,13 +1248,15 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
         source_sha = hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         source_sha = None
-    outcomes, outcome_basis, cm_counts = {}, {}, {}
+    outcomes, outcome_basis, cm_counts, launch_src = {}, {}, {}, {}
     for m in mlist:
+        launch_src[m["launch_src"]] = launch_src.get(m["launch_src"], 0)+1
         outcomes[m["judge"]["outcome"]] = outcomes.get(m["judge"]["outcome"], 0)+1
         outcome_basis[m["judge"]["basis"]] = outcome_basis.get(m["judge"]["basis"], 0)+1
     for g in groups:
         cm_counts[g["kind"]] = cm_counts.get(g["kind"], 0)+g["n"]
-    header = dict(type="header", version=1, seed=None, map_half_m=map_half, tick_s=None, frame_dt_s=FRAME_DT,
+    header = dict(type="header", version=1, seed=None, map_half_m=map_half, tick_s=None, frame_dt_s=None,
+                  base_frame_dt_s=FRAME_DT, frame_sampling="background_grid_union_native_missile_times",
                   time_limit_s=round(replay_len if replay_len is not None else t_last, 3), planes=hplanes,
                   plane_columns=PLANE_COLUMNS, missile_columns=MISSILE_COLUMNS,
                   source=dict(kind="wt_replay", importer_version=IMPORTER_VERSION, export_file=str(path),
@@ -1052,7 +1266,18 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
                               level=(raw.get("header") or {}).get("level"),
                               mission=(raw.get("header") or {}).get("mission"),
                               frame="ENU m: x=Dagor X, y=Dagor Z, z=Dagor Y (up), minus origin_dagor_xz; "
-                                    "t = replay packet time, s",
+                                    "t in battle seconds; aircraft use packet time, missiles use b5/48 when "
+                                    "weapon_states is supplied, otherwise packet time",
+                              weapon_states=native_source,
+                              sampling=dict(base_frame_dt_s=FRAME_DT, variable_step=True,
+                                            missile_clock="b5/48 with packet fallback" if native_states else "packet_ms/1000",
+                                            native_marker="native_missile_uids; other rendered missiles are interpolated",
+                                            missile_samples=[dict(uid=m["uid"], wt_eid=m["eid"],
+                                                                  clock="b5/48" if m["eid"] in native_states else "packet_ms/1000",
+                                                                  observations=len(m["observations"]),
+                                                                  unresolved_packet_time_collisions=0 if m["eid"] in native_states
+                                                                  else m["packet_time_collisions"])
+                                                             for m in mlist]),
                               teams=team_info, skipped_units=skipped,
                               attitude=dict(ok=attitude_ok, median_nose_vs_velocity_deg=None if nose_med is None
                                             else round(nose_med, 2), samples=len(nose_err),
@@ -1060,6 +1285,7 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
                               thresholds=dict(reach_m=REACH_M, near_m=NEAR_M, end_at_cpa_s=END_AT_CPA_S,
                                               kill_before_s=KILL_BEFORE_S, kill_after_s=KILL_AFTER_S),
                               missile_outcomes=outcomes, outcome_basis=outcome_basis, target_source=target_src,
+                              launch_t_source=launch_src,
                               countermeasures=cm_counts,
                               fields=dict(
                                   team=team_info["basis"],
@@ -1073,10 +1299,13 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
                                                   "none in this export",
                                   target="seeker block (candidate layout) > kill feed > shooter designation (6,0) "
                                          "(candidate) > geometry; see launch target_basis.source",
-                                  aircraft_velocity=f"decoded sync velocity at {n_vel} samples (candidate scale), "
-                                                    "else finite differences",
+                                  aircraft_velocity=f"native position secants first; decoded sync fallback at {n_vel} "
+                                                    "samples without a position interval",
                                   outcome="kill feed / damage messages / DVM messages + closest approach; "
-                                          "see missile_end outcome_basis"),
+                                          "see missile_end outcome_basis",
+                                  launch_time="creation_raw_fields.creation_time > created_at_ms > first track "
+                                              "sample (evidence grade C); see launch launch_t_source, t_first_sample; "
+                                              "launch_pos_enu = creation_raw_fields.starting_pos"),
                               unknown=["radar / RWR display state (sensor and designation fields exported only as "
                                        "candidates)", "seeker/datalink on/off", "loadout (missiles column = launches "
                                        "seen)", "terrain (ground impacts not identified)"]))
@@ -1095,7 +1324,7 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
                                    death=None if d is None else dict(cause=d["cause"], time_s=d["time_s"],
                                                                      killer=d["killer"]),
                                    fm_faults=0))
-    end = dict(type="end", reason="replay_end", t=round(t_last, 3),
+    end = dict(type="end", reason="replay_end", t=round(output_last, 9),
                result=dict(teams_alive=alive_end, kills=kills, deaths=deaths, launches=len(mlist),
                            planes=summary_planes))
 
@@ -1123,6 +1352,7 @@ def convert(path, out_dir, team_overrides, all_units, name_override=None, taken=
         f.write(json.dumps(end, separators=(",", ":"), allow_nan=False)+"\n")
     return out, dict(aircraft=len(planes), missiles=len(mlist), frames=n_frames, outcomes=outcomes, teams=team_info,
                      targets=target_src, outcome_basis=outcome_basis, countermeasures=cm_counts, kills=len(kills),
+                     launch_t_source=launch_src,
                      attitude_ok=attitude_ok, nose_vs_velocity_deg=None if nose_med is None else round(nose_med, 1),
                      t=[round(t_first, 2), round(t_last, 2)], skipped=skipped)
 
@@ -1134,6 +1364,8 @@ def main(argv=None):
                          "(default outputs/wt_replays and outputs/wt_replay_exports)")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT), help="output folder (default outputs/engagements/wt_real)")
     ap.add_argument("--name", help="output file name (single input only)")
+    ap.add_argument("--weapon-states", type=Path, help="raw WeaponSync JSONL for one export; b5/48 output clock, "
+                    "packet_ms/export-position validation; optional source_sha256 header or companion metadata")
     ap.add_argument("--team", action="append", default=[], metavar="NAME=0|1",
                     help="fix a team: player name, aircraft name or plane id (repeatable)")
     ap.add_argument("--all-units", action="store_true", help="keep ground units and units that never move")
@@ -1150,9 +1382,12 @@ def main(argv=None):
         return 1
     if args.name and len(found) > 1:
         ap.error("--name needs a single input")
+    if args.weapon_states is not None and len(found) != 1:
+        ap.error("--weapon-states needs a single input")
     taken = set()
     for path in found:
-        out, info = convert(path, Path(args.out_dir), args.team, args.all_units, args.name, taken)
+        out, info = convert(path, Path(args.out_dir), args.team, args.all_units, args.name, taken,
+                            weapon_states=args.weapon_states)
         print(f"{path} -> {out}")
         print("   " + json.dumps(info))
     return 0
