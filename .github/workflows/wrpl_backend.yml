@@ -31,8 +31,9 @@ jobs:
       SRC: third_party/WrplReplayParser
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
+
+      - name: Parser submodule only (main's missile_sim submodule is not needed here)
+        run: git submodule update --init "$SRC"
 
       - uses: actions/setup-python@v5
         with:
