@@ -1,7 +1,7 @@
 """Terrain contours for the sandbox map, standard library only.
 
-Source: the per-map height rasters exported from the installed game (``outputs/wt_air_maps/air_maps/<map>/``, local
-only, never published): ``height_world_y_m.tif`` is a float32 Deflate TIFF whose pixel [row_z, column_x] is the
+Source: the per-map height rasters exported from the installed game (``outputs/wt_air_maps/air_maps/<map>/``; the
+rasters stay local): ``height_world_y_m.tif`` is a float32 Deflate TIFF whose pixel [row_z, column_x] is the
 world height Y in metres at X = origin_x_m + column * cell_size_m, Z = origin_z_m + row * cell_size_m (metadata.json);
 uncovered samples are NaN. The sandbox frame is x = Dagor X - origin_x, y = Dagor Z - origin_z, z = Dagor Y, so the
 contours below stay in Dagor X / Z and the page subtracts the replay origin.
@@ -12,6 +12,9 @@ Douglas-Peucker. The interval is the smallest of ``INTERVALS`` that keeps the es
 ``SEGMENT_BUDGET``. One extra line follows the configured water level when the map has one; it is where the terrain
 crosses that level, not a surveyed shoreline, and lines below it are marked "under" (often sea floor, but the level
 alone does not prove there is water). The result is cached as JSON per map.
+
+Without the rasters the caches alone are enough (list_maps / load with ``cache_dir``): the terrain pack (a release
+asset of these JSON files) unzipped into the cache directory gives every map it holds.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ SEGMENT_BUDGET = 240000
 INTERVALS = ((10, 50), (20, 100), (25, 100), (50, 250), (100, 500), (200, 1000), (250, 1000), (500, 2500),
              (1000, 5000))
 SIMPLIFY_CELLS = .3
-VERSION = 2
+VERSION = 3
 _STEM = re.compile(r"^[A-Za-z0-9_]+$")
 
 
@@ -62,13 +65,36 @@ def _folder(root, stem):
     return folder
 
 
-def list_maps(root=None):
-    """[{map, width_km, height_min_m, height_max_m}] for every exported map under root, by name."""
+_INDEX = {}
+
+
+def _cache_entry(path):
+    """The list_maps entry of one contour cache (the terrain pack), None when unusable; memoised by size and mtime."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (st.st_size, st.st_mtime_ns)
+    hit = _INDEX.get(str(path))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))["data"]
+        entry = dict(map=d["map"], width_km=round(d["nx"]*d["cell_m"]/1000., 1), height_min_m=round(d["height_min_m"]),
+                     height_max_m=round(d["height_max_m"])) \
+            if d.get("version") == VERSION and d.get("map") == path.stem and _STEM.match(path.stem) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        entry = None
+    _INDEX[str(path)] = (key, entry)
+    return entry
+
+
+def list_maps(root=None, cache_dir=None):
+    """[{map, width_km, height_min_m, height_max_m}] for every exported map under root and, where its raster is
+    missing, every map with a current contour cache in ``cache_dir`` (the terrain pack), by name."""
     root = terrain_root(root)
     out = []
-    if not root.is_dir():
-        return out
-    for folder in sorted(root.iterdir()):
+    for folder in sorted(root.iterdir()) if root.is_dir() else ():
         try:
             meta = json.loads((folder/"metadata.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -77,6 +103,10 @@ def list_maps(root=None):
             continue
         out.append(dict(map=folder.name, width_km=round(meta["width"]*meta["cell_size_m"]/1000., 1),
                         height_min_m=round(meta["height_min_m"]), height_max_m=round(meta["height_max_m"])))
+    if cache_dir is not None and Path(cache_dir).is_dir():
+        have = {m["map"] for m in out}
+        out += [e for e in (_cache_entry(f) for f in sorted(Path(cache_dir).glob("*.json")) if f.stem not in have) if e]
+        out.sort(key=lambda m: m["map"])
     return out
 
 
@@ -324,7 +354,8 @@ def build(root, stem, target=TARGET):
     heights = array("h", (-32768 if v != v else max(-32767, min(32767, round(v))) for v in grid))
     if sys.byteorder != "little":
         heights.byteswap()
-    return dict(version=VERSION, map=stem, x0_m=x0, z0_m=z0, cell_m=cell, nx=nx, nz=nz,
+    center = [x0+(meta["width"]-1)*meta["cell_size_m"]/2., z0+(meta["height"]-1)*meta["cell_size_m"]/2.]
+    return dict(version=VERSION, map=stem, x0_m=x0, z0_m=z0, cell_m=cell, nx=nx, nz=nz, center_dagor_xz=center,
                 heights_i16le=base64.b64encode(heights.tobytes()).decode("ascii"),
                 height_min_m=round(lo, 1), height_max_m=round(hi, 1), interval_m=minor, major_m=major,
                 water_m=water if isinstance(water, (int, float)) else None,
@@ -336,9 +367,30 @@ _MEMORY = {}
 
 
 def load(stem, *, root=None, cache_dir=None):
-    """Contours for one map, from memory, the JSON cache (keyed by the TIFF's size and mtime), or built."""
+    """Contours for one map, from memory, the JSON cache (keyed by the TIFF's size and mtime), or built. Without the
+    raster, a current cache in ``cache_dir`` (the terrain pack) is used as it is."""
     root = terrain_root(root)
-    tif = _folder(root, stem)/"height_world_y_m.tif"
+    try:
+        tif = _folder(root, stem)/"height_world_y_m.tif"       # a bad name is a ValueError before anything is read
+    except FileNotFoundError:
+        cached = Path(cache_dir)/f"{stem}.json" if cache_dir else None
+        if cached is None or not cached.is_file():
+            raise
+        st = cached.stat()
+        key = ["pack", st.st_size, st.st_mtime_ns]
+        with _LOCK:
+            hit = _MEMORY.get(stem)
+            if hit is not None and hit[0] == key:
+                return hit[1]
+            try:
+                data = json.loads(cached.read_text(encoding="utf-8"))["data"]
+            except (OSError, ValueError, KeyError) as exc:
+                raise FileNotFoundError(f"地图 {stem} 的地形缓存无法读取") from exc
+            if data.get("version") != VERSION or data.get("map") != stem:
+                raise FileNotFoundError(f"地图 {stem} 的地形缓存版本不对，需要新的地形包")
+            _MEMORY.clear()
+            _MEMORY[stem] = (key, data)
+            return data
     st = tif.stat()
     key = [VERSION, TARGET, SEGMENT_BUDGET, st.st_size, st.st_mtime_ns]
     with _LOCK:
