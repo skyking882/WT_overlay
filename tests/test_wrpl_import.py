@@ -193,6 +193,14 @@ def manifest_for(zip_path, platform_key, sha=None):
                                       "sha256": sha or hashlib.sha256(data).hexdigest(), "size": len(data)}}}
 
 
+def unpublished_manifest():
+    """The repo's backend.json with every asset's url / sha256 removed: no platform has a download."""
+    manifest = backends.load_manifest()
+    for entry in manifest["assets"].values():
+        entry.update(url=None, sha256=None, size=None)
+    return manifest
+
+
 @unittest.skipIf(os.name == "nt", "the test bundle is a POSIX script with a symlink")
 class BackendTests(Base):
     key = "linux-x64"
@@ -245,7 +253,7 @@ class BackendTests(Base):
 
     def test_unpublished_platform_and_bad_archives(self):
         with self.assertRaises(backends.BackendMissing) as ctx:
-            backends.find_backend(cache=self.cache, manifest=backends.load_manifest(), env={})
+            backends.find_backend(cache=self.cache, manifest=unpublished_manifest(), env={})
         self.assertIsNone(ctx.exception.asset)
         evil = self.tmp/"evil.zip"
         with zipfile.ZipFile(evil, "w") as z:
@@ -336,10 +344,23 @@ class CliTests(Base):
 
     def test_no_backend_non_interactive(self):
         replay = write_replay(self.tmp/"r.wrpl")
-        with mock.patch.object(sys.stdin, "isatty", lambda: False):
+        manifest = unpublished_manifest()
+        with mock.patch.object(backends, "load_manifest", lambda path=None: manifest), \
+                mock.patch.object(sys.stdin, "isatty", lambda: False):
             code, _, err = self.run_cli(replay, "--game", self.game, "--out-dir", self.out)
         self.assertEqual(code, 1)
         self.assertIn("还没有发布的解析后端", err)
+
+    def test_the_committed_manifest_is_published(self):
+        manifest = backends.load_manifest()
+        tag = manifest["release_tag"]
+        self.assertEqual(tag, f"wrpl-backend-v{manifest['version']}")
+        self.assertEqual(sorted(manifest["assets"]), ["linux-x64", "macos-arm64", "macos-x64", "windows-x64"])
+        for key, entry in manifest["assets"].items():
+            self.assertEqual(entry["file"], f"wrpl_export-{key}.zip")
+            self.assertEqual(entry["url"], f"https://github.com/skyking882/WT_overlay/releases/download/{tag}/{entry['file']}")
+            self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$")
+            self.assertGreater(entry["size"], 1 << 20)
 
     @unittest.skipIf(os.name == "nt", "the test bundle is a POSIX script")
     def test_download_needs_the_flag_when_not_interactive(self):

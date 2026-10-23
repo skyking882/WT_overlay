@@ -1,16 +1,36 @@
 {
  "version": "1.0.0",
- "published": false,
- "note": "未发布：首个 Release（标签 wrpl-backend-v1.0.0）之后填写各平台的 url、sha256、size",
+ "published": true,
+ "note": "CI 构建（fork 4f743ac）；macOS arm64 / x64 已在 4 个回放上与参考导出逐字段对照",
  "upstream_revision": "221be5cac8e772ab41eefb0e7dac35ce6fb5c39b",
  "fork": "https://github.com/skyking882/WrplReplayParser",
  "fork_branch": "wt-overlay",
  "fork_commit": "4f743ac10c181fcab23bbbcb27bdc739daa6a969",
  "release_tag": "wrpl-backend-v1.0.0",
  "assets": {
-  "windows-x64": {"file": "wrpl_export-windows-x64.zip", "url": null, "sha256": null, "size": null},
-  "macos-arm64": {"file": "wrpl_export-macos-arm64.zip", "url": null, "sha256": null, "size": null},
-  "macos-x64": {"file": "wrpl_export-macos-x64.zip", "url": null, "sha256": null, "size": null},
-  "linux-x64": {"file": "wrpl_export-linux-x64.zip", "url": null, "sha256": null, "size": null}
+  "windows-x64": {
+   "file": "wrpl_export-windows-x64.zip",
+   "url": "https://github.com/skyking882/WT_overlay/releases/download/wrpl-backend-v1.0.0/wrpl_export-windows-x64.zip",
+   "sha256": "076de9f64958d12c733b1afc9791d66ab83155c744f87ae8f4a2dab3f90fcfe3",
+   "size": 10259779
+  },
+  "macos-arm64": {
+   "file": "wrpl_export-macos-arm64.zip",
+   "url": "https://github.com/skyking882/WT_overlay/releases/download/wrpl-backend-v1.0.0/wrpl_export-macos-arm64.zip",
+   "sha256": "62cd65dc2813e6e7558cc90dd456ed61bb60c189a5ced2f252ade1e2a77dd87e",
+   "size": 9724901
+  },
+  "macos-x64": {
+   "file": "wrpl_export-macos-x64.zip",
+   "url": "https://github.com/skyking882/WT_overlay/releases/download/wrpl-backend-v1.0.0/wrpl_export-macos-x64.zip",
+   "sha256": "788afc7bd5b78622b91346f3fc71d96cfcb658b2b9f7bea77cbc142cd663a1f4",
+   "size": 10520315
+  },
+  "linux-x64": {
+   "file": "wrpl_export-linux-x64.zip",
+   "url": "https://github.com/skyking882/WT_overlay/releases/download/wrpl-backend-v1.0.0/wrpl_export-linux-x64.zip",
+   "sha256": "da8037115cf8d20120e645d5f40f050ce7799bd55a3b7f7c9a1290411a1d05be",
+   "size": 24540714
+  }
  }
 }
