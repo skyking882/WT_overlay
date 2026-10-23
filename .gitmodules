@@ -2,3 +2,7 @@
 	path = missile_sim
 	url = https://github.com/skyking882/missile_sim.git
 	branch = wt-overlay-runtime
+[submodule "third_party/WrplReplayParser"]
+	path = third_party/WrplReplayParser
+	url = https://github.com/skyking882/WrplReplayParser.git
+	branch = wt-overlay
