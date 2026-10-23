@@ -122,10 +122,38 @@ class TerrainTests(unittest.TestCase):
             self.assertTrue((cache/"air_test.json").is_file())
             terrain._MEMORY.clear()
             self.assertEqual(terrain.load("air_test", root=root, cache_dir=cache), data)
+            self.assertEqual(data["center_dagor_xz"], [-50., -50.])
             with self.assertRaises(ValueError):
                 terrain.load("../air_test", root=root)
             with self.assertRaises(FileNotFoundError):
                 terrain.load("air_missing", root=root)
+
+    def test_the_caches_alone_are_enough(self):
+        # the terrain pack: contour caches without the rasters (a release asset unzipped into the cache directory)
+        import json, shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            root, cache = Path(tmp)/"maps", Path(tmp)/"cache"
+            make_map(root)
+            built = terrain.load("air_test", root=root, cache_dir=cache)
+            shutil.rmtree(root)
+            terrain._MEMORY.clear()
+            self.assertEqual(terrain.list_maps(root), [])
+            self.assertEqual(terrain.list_maps(root, cache_dir=cache),
+                             [dict(map="air_test", width_km=6.4, height_min_m=round(built["height_min_m"]),
+                                   height_max_m=round(built["height_max_m"]))])
+            self.assertEqual(terrain.load("air_test", root=root, cache_dir=cache), built)
+            self.assertEqual(built["center_dagor_xz"], [-50., -50.])
+            with self.assertRaises(FileNotFoundError):
+                terrain.load("air_test", root=root)                       # no cache directory given
+            with self.assertRaises(ValueError):
+                terrain.load("../air_test", root=root, cache_dir=cache)   # names are checked before any file
+            # a cache of another version is neither listed nor loaded
+            old = json.loads((cache/"air_test.json").read_text())
+            old["data"]["version"] = terrain.VERSION-1
+            (cache/"air_old.json").write_text(json.dumps(dict(old, data=dict(old["data"], map="air_old"))))
+            self.assertEqual([m["map"] for m in terrain.list_maps(root, cache_dir=cache)], ["air_test"])
+            with self.assertRaises(FileNotFoundError):
+                terrain.load("air_old", root=root, cache_dir=cache)
 
 
 if __name__ == "__main__":

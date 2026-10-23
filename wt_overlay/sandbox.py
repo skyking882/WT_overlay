@@ -301,7 +301,8 @@ class SandboxSession:
     """A single worker world, a responsive cached read API, and bounded commands."""
     def __init__(self, *, output_root=None, missile_sim=None, replay_root=None, terrain_root=None):
         self.output_root = Path(output_root or ROOT/"outputs"/"sandbox").resolve()
-        # Height rasters exported from the game (local only); contours are cached under the output root
+        # Height rasters exported from the game (local only); contours are cached under the output root, where the
+        # terrain pack (the caches alone, a release asset) can also be unzipped
         self.terrain_root = terrain.terrain_root(terrain_root)
         self.terrain_cache = self.output_root/"terrain_cache"
         # WT replays (docs/sandbox_replay_spec.md): playback and forks; sandbox runs under output_root are listed too
@@ -514,11 +515,12 @@ class SandboxSession:
     # -- WT replays (docs/sandbox_replay_spec.md) ------------------------------------------------------------
 
     def terrains(self):
-        return dict(maps=terrain.list_maps(self.terrain_root))
+        return dict(maps=terrain.list_maps(self.terrain_root, cache_dir=self.terrain_cache))
 
     def terrain(self, stem):
         data = dict(terrain.load(stem, root=self.terrain_root, cache_dir=self.terrain_cache))
-        data["center_dagor_xz"] = terrain.map_center(self.terrain_root, stem)
+        if "center_dagor_xz" not in data:
+            data["center_dagor_xz"] = terrain.map_center(self.terrain_root, stem)
         return data
 
     def replays(self):
