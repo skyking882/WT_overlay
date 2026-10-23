@@ -76,7 +76,8 @@ jobs:
           status=${PIPESTATUS[0]}
           if [ "$status" != 0 ]; then
             # job logs need a sign-in; annotations are public
-            grep -E -m 20 "error|Error|undefined reference" build.log | while IFS= read -r line; do
+            grep -E "error C[0-9]+|error LNK[0-9]+|: (fatal )?error:|undefined reference|ld: error" build.log \
+              | awk '!seen[$0]++' | head -n 40 | while IFS= read -r line; do
               echo "::error::${line:0:900}"
             done
           fi
