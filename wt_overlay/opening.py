@@ -294,6 +294,15 @@ def _library():
     return default_library(missile_sim_root())
 
 
+def _launch_options(library, missile):
+    """engagement.LAUNCH_OPTIONS, without the active-radar-only CW option for a semi-active (SARH) missile:
+    missile_sim refuses cw_on_clear_beam on SARH profiles. Launcher support (illumination) stays always on."""
+    from .engagement import LAUNCH_OPTIONS
+    if library.is_active(library.info(missile).profile_id):
+        return LAUNCH_OPTIONS
+    return {k: v for k, v in LAUNCH_OPTIONS.items() if k != "cw_on_clear_beam"}
+
+
 def _r(x, step):
     return round(x/step)*step
 
@@ -402,7 +411,6 @@ def _pull_up(aircraft, mass, state, pitch):
 def shot(job):
     """One candidate: (request, climb_deg, pull_s, pitch). pitch 'auto' = loft_rule at the pull-up range.
     Runs in a worker process."""
-    from .engagement import LAUNCH_OPTIONS
     from .escape import from_enu
     request, climb_deg, pull_s, pitch = job
     own = _own(request, climb_deg)
@@ -420,7 +428,7 @@ def shot(job):
     runtime = library.create(library.profile(request.missile), launch_position_m=from_enu(position),
                              launch_velocity_mps=from_enu(velocity), launch_heading_deg=0.,
                              launch_pitch_deg=launch_path, target=target, launcher_support=_Support(),
-                             **LAUNCH_OPTIONS)
+                             **_launch_options(library, request.missile))
     while not runtime.done:
         runtime.step()
         if len(runtime._rows) > 96:
@@ -437,7 +445,6 @@ def trace_shot(job):
     """The chosen shot again, recorded for a side view: (t, x, altitude) of the own aircraft every second to the
     launch, of the missile every 0.25 s to its end, and of the enemy every second to the end. x is the distance
     along the spawn line from our spawn (the enemy spawns at distance_m). Runs in a worker process."""
-    from .engagement import LAUNCH_OPTIONS
     from .escape import from_enu
     from .flight import SUBSTEP_S
     request, climb_deg, pull_s, pitch = job
@@ -461,7 +468,7 @@ def trace_shot(job):
     runtime = library.create(library.profile(request.missile), launch_position_m=from_enu(position),
                              launch_velocity_mps=from_enu(velocity), launch_heading_deg=0.,
                              launch_pitch_deg=launch_path, target=target, launcher_support=_Support(),
-                             **LAUNCH_OPTIONS)
+                             **_launch_options(library, request.missile))
     missile_path, every, step = [(t_l, position[0], position[2])], max(1, round(.25/SUBSTEP_S)), 0
     while not runtime.done:
         runtime.step()

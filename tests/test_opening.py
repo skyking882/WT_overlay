@@ -291,6 +291,29 @@ class MissileSimLocationTests(unittest.TestCase):
                 self.assertEqual(opening.missile_sim_root().resolve(), elsewhere.resolve())
 
 
+@unittest.skipUnless(HAVE_MISSILE_SIM, "missile_sim not present")
+class LaunchOptionTests(unittest.TestCase):
+    def test_semi_active_missiles_get_no_cw_option(self):
+        # missile_sim refuses cw_on_clear_beam on SARH profiles; the planner used to pass it to every missile.
+        from wt_overlay.engagement import LAUNCH_OPTIONS
+        from wt_overlay.opening import _launch_options, _library
+        library = _library()
+        self.assertTrue(_launch_options(library, "us_aim_120c_5")["cw_on_clear_beam"])
+        sarh = _launch_options(library, "su_r_27er")
+        self.assertNotIn("cw_on_clear_beam", sarh)
+        self.assertEqual(set(sarh), set(LAUNCH_OPTIONS)-{"cw_on_clear_beam"})
+
+    def test_a_semi_active_shot_flies(self):
+        from wt_overlay.flight import fuel_data
+        from wt_overlay.opening import shot
+        fuel = fuel_data("su_30sm2")
+        request = PlanRequest("su_30sm2", fuel.empty_kg+.5*fuel.internal_kg+6*350., "su_r_27er",
+                              OpeningSettings(True, "su_r_27er"), 2500., 281., 0., 0., 2500., 281., 0.)
+        result = shot((request, 20., 45., "auto"))   # about 64 km: inside the R-27ER's 60 s lifetime
+        self.assertTrue(result["hit"], result["event"])
+        self.assertLess(result["range_m"], 70000.)
+
+
 class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.client = FakeClient()
